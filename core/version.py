@@ -7,4 +7,4 @@ __version__ = "1.5.0"
 
 # GitHub-Repository "besitzer/repo", aus dem Updates geladen werden. Leer = Update-Prüfung aus.
 # Zum Testen überschreibbar per Umgebungsvariable MCSM_UPDATE_REPO bzw. MCSM_UPDATE_API (volle URL).
-UPDATE_REPO = ""
+UPDATE_REPO = "Luca-Partikel/mcsm-wip"
