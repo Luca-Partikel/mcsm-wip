@@ -78,7 +78,15 @@ const fmtBytes = (n) => {
   return (n / 1073741824).toFixed(2) + ' GB';
 };
 const fmtDate = (ts) => ts ? new Date(ts * 1000).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' }) : '';
-const typeLabel = (s) => s.type === 'bedrock' ? 'Bedrock Dedicated Server' : 'Java (Paper)' + (s.geyser ? ' + Crossplay' : '');
+const fmtCount = (n) => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.0', '') + ' Mio.' : n >= 1e3 ? Math.round(n / 1e3) + ' Tsd.' : String(n || 0);
+/* Vier Server-Arten: Bedrock (BDS) · Java nur (Paper) · Java + Crossplay (Paper + Geyser) · Modpack (Fabric/NeoForge/Forge/Quilt). */
+const LOADER_NAMES = { fabric: 'Fabric', quilt: 'Quilt', neoforge: 'NeoForge', forge: 'Forge', paper: 'Paper' };
+const isModpack = (s) => s.type === 'java' && !!s.flavor && s.flavor !== 'paper';
+const bedrockPlayers = (s) => s.type === 'bedrock' || (s.type === 'java' && !isModpack(s) && !!s.geyser);   // kommen Konsolen/Handys drauf?
+const typeLabel = (s) => s.type === 'bedrock' ? 'Bedrock Dedicated Server'
+  : isModpack(s) ? `Modpack · ${LOADER_NAMES[s.flavor] || s.flavor}`
+  : s.geyser ? 'Java + Crossplay (Paper + Geyser)' : 'Java Edition (Paper, nur Java)';
+const typeTag = (s) => s.type === 'bedrock' ? 'BE' : isModpack(s) ? 'MP' : 'JE';
 const gb = (mb) => (mb / 1024).toFixed(mb % 1024 ? 1 : 0) + ' GB';
 const GM = { survival: 'Überleben', creative: 'Kreativ', adventure: 'Abenteuer', spectator: 'Zuschauer' };
 const DF = { peaceful: 'Friedlich', easy: 'Leicht', normal: 'Normal', hard: 'Schwer' };
@@ -150,7 +158,7 @@ function renderSidebar() {
           <span class="dot ${s.running ? 'dot-on' : (s.installed ? '' : 'dot-busy')}"></span>
           <span class="srv-name">${esc(s.name)}</span>
         </span>
-        <span class="muted small">${s.type === 'bedrock' ? 'BE' : 'JE'}</span>
+        <span class="muted small">${typeTag(s)}</span>
       </a>`).join('');
   }
   $$('.srv-item', list).forEach((el) => el.onclick = () => openServer(el.dataset.id));
@@ -255,14 +263,14 @@ function renderWelcome() {
     <div class="empty">
       <img src="logo.svg" class="logo-big" alt="">
       <h1>Willkommen beim Server Manager</h1>
-      <p class="lead">Richte in wenigen Minuten einen Minecraft-Server ein, auf den Xbox, PlayStation,
-         Switch, Handy und PC beitreten können. Alles Nötige wird automatisch geladen.</p>
+      <p class="lead">Richte in wenigen Minuten einen Minecraft-Server ein – für Xbox, PlayStation,
+         Switch, Handy und PC, nur für Java-Spieler oder als Modpack von Modrinth. Alles Nötige wird automatisch geladen.</p>
       <div class="spacer"></div>
       <button class="btn btn-primary" id="welcomeNew">+ Ersten Server anlegen</button>
     </div>
     <div class="grid3">
       <div class="card"><div class="pill pill-green">1</div><h3>Typ &amp; Version wählen</h3>
-        <p class="muted small">Bedrock für Konsolen oder Java mit Crossplay – die Versionen kommen direkt von Mojang und PaperMC.</p></div>
+        <p class="muted small">Bedrock für Konsolen, Java (nur Java oder mit Crossplay) oder ein Modpack – die Versionen kommen direkt von Mojang, PaperMC und Modrinth.</p></div>
       <div class="card"><div class="pill pill-green">2</div><h3>Einstellen</h3>
         <p class="muted small">Name, Spieleranzahl, RAM, Port, Spielmodus – alles in einem Formular, jederzeit änderbar.</p></div>
       <div class="card"><div class="pill pill-green">3</div><h3>Verbinden</h3>
@@ -276,14 +284,33 @@ function bindWelcome() { $('#welcomeNew').onclick = startWizard; }
 
 function startWizard() {
   state.wizard = {
-    step: 0, type: 'bedrock', version: '', versionMode: 'latest',
+    // kind = gewählte Kachel: bedrock | java (nur Java) | crossplay (Paper + Geyser) | modpack (Modrinth)
+    step: 0, kind: 'bedrock', type: 'bedrock', flavor: 'paper', modpack: null, version: '', versionMode: 'latest',
     name: 'Mein Server', motd: 'Willkommen auf meinem Server', port: 19132, bedrock_port: 19132,
     max_players: 10, ram_mb: 4096, gamemode: 'survival', difficulty: 'easy', view_distance: 10,
-    level_seed: '', public_address: '', auto_portmap: false, online_mode: true, allow_cheats: false, pvp: true, geyser: true, eula_accepted: false,
+    level_seed: '', public_address: '', online_mode: true, allow_cheats: false, pvp: true, geyser: true, hardcore: false, eula_accepted: false,
+    mp: { query: '', results: null, total: 0, busy: false, error: '', project: null, versions: null, versionsError: '' },
   };
   state.view = 'wizard';
   render();
   loadVersions('bedrock');
+}
+
+/* Die Kachel im ersten Schritt legt Typ, Crossplay und Modpack-Modus zusammen fest. */
+function applyWizardKind(w, kind) {
+  w.kind = kind;
+  w.type = kind === 'bedrock' ? 'bedrock' : 'java';
+  w.geyser = kind === 'crossplay';
+  w.flavor = 'paper';
+  w.modpack = null;
+  w.port = kind === 'bedrock' ? 19132 : 25565;
+  w.ram_mb = kind === 'modpack' ? 6144 : 4096;
+}
+
+/* Wizard-Daten für POST /api/servers – ohne den Suchzustand des Modpack-Schritts. */
+function wizardPayload(w) {
+  const { mp, kind, ...body } = w;
+  return body;
 }
 
 async function loadVersions(kind) {
@@ -299,7 +326,7 @@ async function loadVersions(kind) {
   if (state.view === 'wizard' && state.wizard && state.wizard.step === 1) render();
 }
 
-const STEP_NAMES = ['Server-Typ', 'Version', 'Einstellungen', 'Fertigstellen'];
+const stepNames = (w) => ['Server-Typ', w.kind === 'modpack' ? 'Modpack wählen' : 'Version', 'Einstellungen', 'Fertigstellen'];
 
 function stepBar(names, step) {
   return `<div class="steplist" style="display:flex;gap:6px;margin-top:0">${names.map((n, i) => `
@@ -315,11 +342,12 @@ function renderWizard() {
   else if (w.step === 2) body = wizardStepSettings(w);
   else body = wizardStepFinish(w);
 
+  const names = stepNames(w);
   return `
-  <div class="head"><div><h1>Neuer Server</h1><div class="head-sub">Schritt ${w.step + 1} von 4 · ${STEP_NAMES[w.step]}</div></div>
+  <div class="head"><div><h1>Neuer Server</h1><div class="head-sub">Schritt ${w.step + 1} von 4 · ${names[w.step]}</div></div>
     <button class="btn btn-sm" id="wzCancel">Abbrechen</button></div>
   <div class="page">
-    ${stepBar(STEP_NAMES, w.step)}
+    ${stepBar(names, w.step)}
     ${body}
     <div class="wizard-nav">
       <button class="btn" id="wzBack" ${w.step === 0 ? 'disabled' : ''}>← Zurück</button>
@@ -334,24 +362,115 @@ function wizardStepType(w) {
   return `
   <p class="lead">Wer soll auf den Server kommen? Das entscheidet über den Server-Typ.</p>
   <div class="grid2">
-    <button class="choice ${w.type === 'bedrock' ? 'sel' : ''}" data-type="bedrock">
+    <button class="choice ${w.kind === 'bedrock' ? 'sel' : ''}" data-kind="bedrock">
       <span class="pill pill-green">Empfohlen für Konsolen</span>
       <h3>Bedrock Dedicated Server</h3>
       <p>Offizieller Server von Mojang. Für <b>Xbox, PS4/PS5, Switch, Handy</b> und die Windows-App.
          Keine Java-Spieler.</p>
     </button>
-    <button class="choice ${w.type === 'java' ? 'sel' : ''}" data-type="java">
+    <button class="choice ${w.kind === 'java' ? 'sel' : ''}" data-kind="java">
+      <span class="pill pill-grey">Nur PC</span>
+      <h3>Java Edition (nur Java-Spieler)</h3>
+      <p>Paper-Server ohne Crossplay – für Runden, in denen <b>alle die PC-Java-Version</b> haben.
+         Plugins möglich, keine Konsolen.</p>
+    </button>
+    <button class="choice ${w.kind === 'crossplay' ? 'sel' : ''}" data-kind="crossplay">
       <span class="pill pill-blue">Crossplay</span>
-      <h3>Java + Bedrock (Crossplay)</h3>
+      <h3>Java + Crossplay (Paper + Geyser)</h3>
       <p>Paper-Server mit Geyser &amp; Floodgate. <b>Java-Spieler und Konsolen</b> spielen gemeinsam.
          Braucht etwas mehr RAM.</p>
     </button>
+    <button class="choice ${w.kind === 'modpack' ? 'sel' : ''}" data-kind="modpack">
+      <span class="pill pill-amber">Mods</span>
+      <h3>Modpack (Modrinth)</h3>
+      <p>Fertiges Modpack von <b>modrinth.com</b> mit Fabric, NeoForge, Forge oder Quilt. Nur Java-Spieler
+         mit <b>demselben Modpack</b>. Braucht viel RAM (ab 4–6 GB).</p>
+    </button>
   </div>
-  <div class="note note-info">Unsicher? Unter <b>Hilfe → Bedrock &amp; Crossplay</b> in der Seitenleiste ist der Unterschied erklärt.
+  <div class="note note-info">Unsicher? Unter <b>Hilfe → Bedrock &amp; Crossplay</b> in der Seitenleiste sind die vier Arten erklärt.
     Der Typ lässt sich später nicht ändern, alle anderen Einstellungen schon.</div>`;
 }
 
+/* ---------- Schritt „Modpack wählen“ (Modrinth-Suche → Pack-Version) */
+
+function wizardStepModpack(w) {
+  const mp = w.mp;
+  const sel = w.modpack;
+  let results = '';
+  if (mp.busy) results = '<div class="steprow active" style="padding:10px"><span class="mark"></span> Modrinth wird durchsucht …</div>';
+  else if (mp.error) results = `<div class="note note-err" style="margin:8px 0">${esc(mp.error)}</div>`;
+  else if (Array.isArray(mp.results)) {
+    results = mp.results.length ? mp.results.map((h) => `
+      <div class="mp-row ${mp.project && mp.project.project_id === h.project_id ? 'active' : ''}" data-mp-project="${esc(h.project_id)}">
+        ${h.icon_url ? `<img class="mp-icon" src="${esc(h.icon_url)}" alt="" loading="lazy">` : '<div class="mp-icon mp-icon-empty">🧩</div>'}
+        <div class="mp-body">
+          <div class="mp-title">${esc(h.title)}</div>
+          <div class="mp-desc">${esc(h.description)}</div>
+          <div class="mp-meta">⬇ ${fmtCount(h.downloads)} · ${h.loaders.map((l) => LOADER_NAMES[l] || l).join(', ') || 'Loader ?'} · MC ${esc(h.versions.slice(-3).join(', ') || '?')}</div>
+        </div>
+      </div>`).join('') : '<div class="muted small" style="padding:10px">Nichts gefunden – anderen Suchbegriff probieren.</div>';
+    if (mp.total > mp.results.length) results += `<div class="muted small" style="padding:8px 10px">${mp.total} Treffer – die beliebtesten ${mp.results.length} werden gezeigt. Suchbegriff eingrenzen, um andere zu finden.</div>`;
+  } else results = '<div class="muted small" style="padding:10px">Tippe einen Namen ein oder lass das Feld leer und drücke Enter für die beliebtesten Packs.</div>';
+
+  let versions = '';
+  if (mp.project) {
+    const vs = mp.versions;
+    if (!vs && !mp.versionsError) versions = '<div class="steprow active" style="padding:10px"><span class="mark"></span> Versionen werden geladen …</div>';
+    else if (mp.versionsError) versions = `<div class="note note-err" style="margin:8px 0">${esc(mp.versionsError)}</div>`;
+    else if (!vs.length) versions = '<div class="note note-warn" style="margin:8px 0">Dieses Pack hat keine Server-Version im .mrpack-Format – bitte ein anderes wählen.</div>';
+    else versions = vs.map((v) => `
+      <div class="mp-row mp-version ${sel && sel.version_id === v.id ? 'active' : ''}" data-mp-version="${esc(v.id)}">
+        <div class="mp-body">
+          <div class="mp-title">${esc(v.name)} ${v.type !== 'release' ? `<span class="pill pill-grey">${esc(v.type)}</span>` : ''}</div>
+          <div class="mp-meta">Minecraft <b>${esc(v.mc_version || '?')}</b> · ${v.loaders.map((l) => LOADER_NAMES[l] || l).join(', ')} · ${fmtBytes(v.size)} · ${esc(v.date)}</div>
+        </div>
+      </div>`).join('');
+  }
+
+  return `
+  <p class="lead">Suche ein Modpack auf Modrinth und wähle die Pack-Version. Der Manager installiert Loader und Mods automatisch.</p>
+  <div class="grid2" style="margin-top:0">
+    <div>
+      <div class="field"><label for="wzMpQuery">Modpack suchen</label>
+        <div class="flex"><input type="text" id="wzMpQuery" placeholder="z. B. Cobblemon, Create, Better MC …" value="${esc(mp.query)}" autocomplete="off">
+          <button class="btn btn-sm" type="button" id="wzMpSearch">Suchen</button></div>
+        <div class="hint">Nur Packs, die auf einem Server laufen; sortiert nach Downloads.</div></div>
+      <div class="mp-list" id="wzMpResults">${results}</div>
+    </div>
+    <div>
+      <div class="field"><label>Pack-Version${mp.project ? ` · ${esc(mp.project.title)}` : ''}</label>
+        <div class="mp-list" id="wzMpVersions">${mp.project ? versions : '<div class="muted small" style="padding:10px">Zuerst links ein Modpack wählen.</div>'}</div></div>
+      ${sel ? `<div class="note note-ok" style="margin:10px 0 0"><b>Gewählt:</b> ${esc(sel.title)} – ${esc(sel.version_name)}<br>
+        <span class="small">Minecraft ${esc(sel.mc_version)} · ${LOADER_NAMES[sel.loader] || esc(sel.loader)} · ${sel.url ? `<a href="${esc(sel.url)}" target="_blank" rel="noopener noreferrer">auf Modrinth ansehen</a>` : ''}</span></div>` : ''}
+    </div>
+  </div>
+  <div class="note note-warn"><b>Gut zu wissen:</b> Modpacks brauchen viel Arbeitsspeicher – empfohlen sind <b>6 GB</b>, mindestens 4 GB (nächster Schritt).
+    <b>Bedrock-Crossplay (Geyser)</b> und Bukkit-Plugins wie MCSMCompanion gibt es für Modpacks nicht – Fabric/NeoForge laden keine Bukkit-Plugins.
+    Mitspieler brauchen dasselbe Modpack in ihrem Launcher (z.&nbsp;B. Modrinth App).</div>`;
+}
+
+async function modpackSearch(w) {
+  const mp = w.mp;
+  mp.busy = true; mp.error = ''; render();
+  try {
+    const d = await api('modpacks/search?q=' + encodeURIComponent(mp.query) + '&page=0');
+    mp.results = d.hits; mp.total = d.total;
+  } catch (e) { mp.error = e.message; mp.results = null; }
+  mp.busy = false;
+  if (state.view === 'wizard' && state.wizard === w && w.step === 1) render();
+}
+
+async function modpackVersions(w, project) {
+  const mp = w.mp;
+  mp.project = project; mp.versions = null; mp.versionsError = ''; w.modpack = null; render();
+  try {
+    mp.versions = await api(`modpacks/${encodeURIComponent(project.project_id)}/versions`);
+  } catch (e) { mp.versionsError = e.message; mp.versions = []; }
+  if (state.view === 'wizard' && state.wizard === w && w.step === 1 && mp.project === project) render();
+}
+
 function wizardStepVersion(w) {
+  if (w.kind === 'modpack') return wizardStepModpack(w);
   const v = state.versions[w.type];
   if (!v) return '<div class="card"><div class="steprow active"><span class="mark"></span> Versionen werden geladen …</div></div>';
   if (v.error) return `<div class="note note-err"><b>Versionen konnten nicht geladen werden.</b><p>${esc(v.error)}</p>
@@ -381,13 +500,13 @@ function wizardStepVersion(w) {
   const list = v;
   if (!w.version) w.version = list[0] || '';
   return `
-  <p class="lead">Java-Spieler müssen die gleiche Version wie der Server haben. Bedrock-Spieler
-     (über Crossplay) kommen mit jeder aktuellen Version.</p>
+  <p class="lead">Java-Spieler müssen die gleiche Version wie der Server haben.${w.geyser ? ' Bedrock-Spieler (über Crossplay) kommen mit jeder aktuellen Version.' : ''}</p>
   <div class="field"><label>Minecraft-Version (Paper)</label>
     <select id="wzJavaVersion">${list.map((x) => `<option ${x === w.version ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
     <div class="hint">Die passende Java-Laufzeit (z.&nbsp;B. Java 25 für 26.x, Java 21 für 1.21) wird automatisch mitgeladen – nichts muss installiert werden.</div></div>
-  <div class="note note-info mb0">Für Crossplay wird die <b>neueste Version</b> empfohlen: Geyser unterstützt
-    immer die aktuellste Java-Version am besten.</div>`;
+  ${w.geyser ? `<div class="note note-info mb0">Für Crossplay wird die <b>neueste Version</b> empfohlen: Geyser unterstützt
+    immer die aktuellste Java-Version am besten.</div>`
+    : '<div class="note note-info mb0">Für einen reinen Java-Server ist die <b>neueste Version</b> meist richtig – Spieler mit älterem Launcher wählen dort einfach dieselbe Version.</div>'}`;
 }
 
 function fieldInput(id, label, value, { type = 'text', hint = '', min, max, step, placeholder = '' } = {}) {
@@ -408,6 +527,10 @@ function fieldCheck(id, title, desc, checked) {
 
 function settingsForm(s, prefix) {
   const java = s.type === 'java';
+  const modpack = isModpack(s);
+  const crossplay = java && !modpack && s.geyser !== false;
+  const ramHint = modpack ? 'Modpacks brauchen viel RAM: 6 GB empfohlen, mindestens 4 GB. Nicht mehr als die Hälfte deines PC-RAMs.'
+    : '2–4 GB reichen für kleine Runden. Für Crossplay mindestens 3 GB. Nicht mehr als die Hälfte deines PC-RAMs.';
   return `
   <div class="grid2" style="margin-top:0">
     <div>
@@ -417,7 +540,7 @@ function settingsForm(s, prefix) {
         { placeholder: 'z. B. abc123.myfritz.net', hint: 'Wird im Dashboard als Adresse für Freunde angezeigt. Leer = öffentliche IP automatisch von der FritzBox ermitteln.' })}
       ${fieldInput(prefix + 'port', java ? 'Port für Java (TCP)' : 'Port (TCP, Verbindungsaufbau)', s.port,
         { type: 'number', min: 1024, max: 65535, hint: java ? 'Standard: 25565' : 'Standard: 19132 – Konsolen erwarten diesen Port.' })}
-      ${java && s.geyser !== false ? fieldInput(prefix + 'bedrock_port', 'Port für Bedrock / Konsolen (UDP)', s.bedrock_port,
+      ${crossplay ? fieldInput(prefix + 'bedrock_port', 'Port für Bedrock / Konsolen (UDP)', s.bedrock_port,
         { type: 'number', min: 1024, max: 65535, hint: 'Standard: 19132' }) : ''}
       ${fieldInput(prefix + 'max_players', 'Maximale Spieler', s.max_players, { type: 'number', min: 1, max: 200,
         hint: java ? '' : 'Bestimmt auch die Größe des UDP-Bereichs für Spieldaten – nach einer Änderung Firewall-Regel und FritzBox-Freigabe neu anlegen (Tab „Verbinden“).' })}
@@ -427,8 +550,8 @@ function settingsForm(s, prefix) {
         <div class="hint">Bedrock (NetherNet) bietet Spielern nur die Adressen an, die es kennt – ohne öffentliche IPv4 erreichen Freunde aus dem Internet den Server trotz Portfreigabe nicht.
           Leer lassen, wenn deine FritzBox die IP per UPnP meldet; sonst hier eintragen (ändert sich die IP, neu eintragen). Bei DS-Lite gibt es keine eigene IPv4.</div></div>`}
       ${java ? `<div class="field"><label for="${prefix}ram_mb">Arbeitsspeicher: <b id="${prefix}ramLabel">${gb(s.ram_mb)}</b></label>
-        <input type="range" id="${prefix}ram_mb" min="1024" max="16384" step="512" value="${s.ram_mb}">
-        <div class="hint">2–4 GB reichen für kleine Runden. Für Crossplay mindestens 3 GB. Nicht mehr als die Hälfte deines PC-RAMs.</div></div>` : ''}
+        <input type="range" id="${prefix}ram_mb" min="${modpack ? 4096 : 1024}" max="${modpack ? 32768 : 16384}" step="512" value="${s.ram_mb}">
+        <div class="hint">${ramHint}</div></div>` : ''}
     </div>
     <div>
       ${fieldSelect(prefix + 'gamemode', 'Spielmodus', s.gamemode, [['survival', 'Überleben'], ['creative', 'Kreativ'], ['adventure', 'Abenteuer']])}
@@ -437,14 +560,18 @@ function settingsForm(s, prefix) {
         <input type="range" id="${prefix}view_distance" min="4" max="32" value="${s.view_distance}">
         <div class="hint">Höher = schöner, aber mehr Last. 8–12 ist ein guter Wert.</div></div>
       ${fieldInput(prefix + 'level_seed', 'Welt-Seed (optional)', s.level_seed, { placeholder: 'leer = zufällig', hint: 'Nur für neue Welten wirksam.' })}
-      ${fieldCheck(prefix + 'online_mode', 'Xbox-Konto erforderlich (online-mode)',
-        'Empfohlen. Spieler werden bei Xbox Live geprüft – so kann sich niemand als jemand anderes ausgeben.', s.online_mode)}
+      ${bedrockPlayers(s) ? fieldCheck(prefix + 'online_mode', 'Xbox-Konto erforderlich (online-mode)',
+        'Empfohlen. Spieler werden bei Xbox Live geprüft – so kann sich niemand als jemand anderes ausgeben.', s.online_mode)
+        : fieldCheck(prefix + 'online_mode', 'Konto-Prüfung (online-mode)',
+        'Empfohlen. Java-Spieler werden bei Mojang geprüft – nur mit gekauftem Spiel und echtem Namen.', s.online_mode)}
       ${fieldCheck(prefix + 'allow_cheats', java ? 'Befehlsblöcke erlauben' : 'Cheats erlauben',
         java ? 'Aktiviert Befehlsblöcke auf dem Server.' : 'Spieler mit Operator-Rechten dürfen Befehle wie /gamemode nutzen.', s.allow_cheats)}
       ${java ? fieldCheck(prefix + 'pvp', 'PvP', 'Spieler können sich gegenseitig verletzen.', s.pvp) : ''}
-      ${java ? fieldCheck(prefix + 'geyser', 'Bedrock-Crossplay (Geyser + Floodgate)', 'Konsolen und Handys können beitreten. Sehr empfohlen.', s.geyser) : ''}
-      ${fieldCheck(prefix + 'auto_portmap', 'Portfreigabe beim Start automatisch anfordern (FritzBox UPnP)',
-        'Legt die nötigen Freigaben bei jedem Serverstart per UPnP an. In der FritzBox muss „Selbstständige Portfreigaben“ für diesen PC erlaubt sein.', !!s.auto_portmap)}
+      ${java && !modpack ? fieldCheck(prefix + 'geyser', 'Bedrock-Crossplay (Geyser + Floodgate)',
+        'Konsolen und Handys können beitreten.' + (prefix === 'st_' ? ' Nach dem Einschalten unten „Neu installieren“ wählen – erst dann werden Geyser und Floodgate geladen.' : ''), s.geyser) : ''}
+      ${modpack ? '<div class="note note-info" style="margin:0 0 10px"><b>Kein Crossplay bei Modpacks:</b> Geyser/Floodgate und Bukkit-Plugins laufen nicht auf Fabric, NeoForge, Forge oder Quilt.</div>' : ''}
+      ${java && !modpack ? fieldCheck(prefix + 'hardcore', 'MCSM-Hardcore (1 Leben, Grab &amp; Totem)',
+        'Kein Vanilla-Hardcore: Wer stirbt, wird sofort Zuschauer an seinem Grab. Ein Mitspieler belebt ihn wieder, indem er ein Totem der Unsterblichkeit am Grab rechtsklickt oder darauf fallen lässt. Im Spiel schalten OPs mit <code>/hardcore on</code> / <code>off</code>.', !!s.hardcore) : ''}
     </div>
   </div>`;
 }
@@ -454,7 +581,7 @@ function readSettingsForm(prefix, base) {
   const out = { ...base };
   for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address']) if (get(k)) out[k] = get(k).value;
   for (const k of ['port', 'bedrock_port', 'max_players', 'ram_mb', 'view_distance']) if (get(k)) out[k] = Number(get(k).value);
-  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'auto_portmap']) if (get(k)) out[k] = get(k).checked;
+  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore']) if (get(k)) out[k] = get(k).checked;
   return out;
 }
 
@@ -476,9 +603,11 @@ function wizardStepSettings(w) {
 }
 
 function wizardStepFinish(w) {
+  const mp = w.modpack;
   const rows = [
-    ['Typ', w.type === 'bedrock' ? 'Bedrock Dedicated Server' : 'Java (Paper)' + (w.geyser ? ' + Crossplay' : '')],
-    ['Version', w.version], ['Name', w.name], ['MOTD', w.motd],
+    ['Typ', typeLabel(w)],
+    ...(mp ? [['Modpack', `${mp.title} – ${mp.version_name}`], ['Loader', `${LOADER_NAMES[mp.loader] || mp.loader} · Minecraft ${mp.mc_version}`]] : [['Version', w.version]]),
+    ['Name', w.name], ['MOTD', w.motd],
     ['Port', w.type === 'bedrock' ? `${w.port} (TCP) + UDP-Bereich für Spieldaten` : `${w.port} (TCP)` + (w.geyser ? ` · Bedrock ${w.bedrock_port} (UDP)` : '')],
     ['Spieler', w.max_players], ...(w.type === 'java' ? [['RAM', gb(w.ram_mb)]] : []),
     ['Modus', `${GM[w.gamemode] || w.gamemode} · ${DF[w.difficulty] || w.difficulty}`],
@@ -489,12 +618,13 @@ function wizardStepFinish(w) {
   <div class="spacer"></div>
   <div class="note note-warn">
     <b>Minecraft-Nutzungsbedingungen</b>
-    <p>Der Server wird direkt von Mojang bzw. PaperMC heruntergeladen. Dafür musst du die
+    <p>Der Server wird direkt von ${mp ? 'Mojang, den Loader-Projekten und Modrinth' : 'Mojang bzw. PaperMC'} heruntergeladen. Dafür musst du die
        <a href="${EULA_URL}" target="_blank" rel="noopener noreferrer">Minecraft-EULA</a> und die
        <a href="${PRIVACY_URL}" target="_blank" rel="noopener noreferrer">Datenschutzbestimmungen von Microsoft</a> akzeptieren.</p>
     ${fieldCheck('wz_eula', 'Ich akzeptiere die Minecraft-EULA', 'Ohne diese Zustimmung darf der Server nicht betrieben werden.', w.eula_accepted)}
   </div>
-  <div class="note note-info mb0">Es werden je nach Typ <b>40–150 MB</b> heruntergeladen. Der Server startet danach
+  <div class="note note-info mb0">${mp ? 'Modpack, Mod-Loader und alle Mods werden geladen – je nach Pack <b>einige hundert MB</b>, das dauert ein paar Minuten.'
+    : 'Es werden je nach Typ <b>40–150 MB</b> heruntergeladen.'} Der Server startet danach
      noch nicht automatisch – du startest ihn selbst auf der Übersichtsseite.</div>`;
 }
 
@@ -505,7 +635,13 @@ function bindWizard() {
   const next = $('#wzNext');
   if (next) next.onclick = () => {
     if (!collectWizard()) return;
-    if (w.step === 0) { w.port = w.type === 'bedrock' ? 19132 : 25565; w.version = ''; w.versionMode = 'latest'; loadVersions(w.type); }
+    if (w.step === 0) {
+      // Ein bereits gewähltes Modpack behält seine Minecraft-Version – sonst blockiert „Weiter“ nach „Zurück“.
+      w.version = (w.kind === 'modpack' && w.modpack) ? w.modpack.mc_version : ''; w.versionMode = 'latest';
+      if (w.kind === 'modpack') { if (w.mp.results === null && !w.mp.busy) modpackSearch(w); }
+      else loadVersions(w.type);
+    }
+    if (w.step === 1 && w.kind === 'modpack' && !w.modpack) { toast('Bitte ein Modpack und eine Pack-Version wählen.', true); return; }
     if (w.step === 1 && !w.version) { toast('Bitte eine Version wählen.', true); return; }
     w.step++; render();
   };
@@ -515,7 +651,7 @@ function bindWizard() {
     if (!w.eula_accepted) { toast('Bitte zuerst die Minecraft-EULA bestätigen.', true); return; }
     install.disabled = true;
     try {
-      const data = await api('servers', { method: 'POST', body: w });
+      const data = await api('servers', { method: 'POST', body: wizardPayload(w) });
       state.install = { serverId: data.server.id, jobId: data.job_id, job: null, after: 'overview' };
       state.activeId = data.server.id;
       state.view = 'install';
@@ -525,7 +661,28 @@ function bindWizard() {
     } catch (e) { toast(e.message, true); install.disabled = false; }
   };
 
-  $$('[data-type]').forEach((el) => el.onclick = () => { w.type = el.dataset.type; w.geyser = true; render(); });
+  $$('[data-kind]').forEach((el) => el.onclick = () => { if (el.dataset.kind !== w.kind) applyWizardKind(w, el.dataset.kind); render(); });
+
+  // Modpack-Schritt: Suche auf Enter/Klick (Modrinth erlaubt 300 Anfragen/Minute – keine Suche bei jedem Tastendruck).
+  const mq = $('#wzMpQuery');
+  if (mq) {
+    mq.oninput = () => { w.mp.query = mq.value; };
+    mq.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); w.mp.query = mq.value.trim(); modpackSearch(w); } };
+    $('#wzMpSearch').onclick = () => { w.mp.query = mq.value.trim(); modpackSearch(w); };
+    if (document.activeElement !== mq && !w.mp.project) { mq.focus(); mq.setSelectionRange(mq.value.length, mq.value.length); }
+  }
+  $$('[data-mp-project]').forEach((el) => el.onclick = () => {
+    const hit = (w.mp.results || []).find((h) => h.project_id === el.dataset.mpProject);
+    if (hit) modpackVersions(w, hit);
+  });
+  $$('[data-mp-version]').forEach((el) => el.onclick = () => {
+    const v = (w.mp.versions || []).find((x) => x.id === el.dataset.mpVersion), p = w.mp.project;
+    if (!v || !p) return;
+    w.modpack = { project_id: p.project_id, title: p.title, version_id: v.id, version_name: v.name, mc_version: v.mc_version,
+      loader: v.loaders[0], loader_version: '', icon_url: p.icon_url || '', url: p.url || '' };
+    w.flavor = v.loaders[0]; w.version = v.mc_version; w.geyser = false;
+    render();
+  });
   $$('[data-vmode]').forEach((el) => el.onclick = (ev) => {
     if (ev.target.tagName === 'INPUT') return;
     w.versionMode = el.dataset.vmode;
@@ -547,9 +704,11 @@ function collectWizard() {
   const w = state.wizard;
   if (w.step === 2) {
     Object.assign(w, readSettingsForm('wz_', w));
+    if (w.kind === 'modpack') w.geyser = false;
     if (!w.name.trim()) { toast('Bitte einen Namen eingeben.', true); return false; }
     if (w.type === 'java' && w.geyser && w.port === w.bedrock_port) { toast('Java-Port und Bedrock-Port müssen sich unterscheiden.', true); return false; }
   }
+  if (w.step === 1 && w.kind === 'modpack') { const mq = $('#wzMpQuery'); if (mq) w.mp.query = mq.value; }
   if (w.step === 1 && w.type === 'bedrock' && w.versionMode === 'custom') w.version = ($('#wzCustomVersion')?.value || '').trim();
   return true;
 }
@@ -675,11 +834,11 @@ function tabOverview(s) {
       <div class="stat"><div class="k">Spieler</div><div class="v">max. ${s.max_players}</div></div>
       <div class="stat"><div class="k">${s.type === 'java' ? 'Arbeitsspeicher' : 'Sichtweite'}</div><div class="v">${s.type === 'java' ? gb(s.ram_mb) : s.view_distance + ' Chunks'}</div></div>
       <div class="stat"><div class="k">Spielmodus</div><div class="v sm">${GM[s.gamemode] || s.gamemode} · ${DF[s.difficulty] || s.difficulty}</div></div>
-      <div class="stat"><div class="k">Xbox-Konto nötig</div><div class="v sm">${s.online_mode ? 'Ja (empfohlen)' : 'Nein'}</div></div>
+      <div class="stat"><div class="k">${bedrockPlayers(s) ? 'Xbox-Konto nötig' : 'Konto-Prüfung'}</div><div class="v sm">${s.online_mode ? 'Ja (empfohlen)' : 'Nein'}</div></div>
     </div>
 
     <div class="grid2" style="margin:0">
-      <div class="card" id="xboxCard">${xboxCard(s)}</div>
+      ${bedrockPlayers(s) ? `<div class="card" id="xboxCard">${xboxCard(s)}</div>` : `<div class="card">${isModpack(s) ? modpackCard(s) : javaOnlyCard(s)}</div>`}
       <div class="card">
         <div class="card-head"><h3>🌍 Welten &amp; Backups</h3>
           <button class="btn btn-sm" id="btnBackup" ${s.running ? 'disabled title="Server zuerst stoppen"' : ''}>🗜️ Backup erstellen</button></div>
@@ -687,19 +846,23 @@ function tabOverview(s) {
       </div>
     </div>
 
+    ${s.companion && s.companion.applies ? `<div class="card" id="companionCard">${companionCard(s)}</div>` : ''}
+
     <div class="grid2" style="margin:0">
       <div class="card">
         <h3 style="margin-top:0">So geht es weiter</h3>
         <ul class="checklist">
           <li><span class="ck ${s.installed ? 'on' : ''}">${s.installed ? '✓' : ''}</span><span><b>Server eingerichtet</b></span></li>
-          <li><span class="ck ${s.running ? 'on' : ''}">${s.running ? '✓' : ''}</span><span><b>Server starten</b> – oben rechts. Der erste Start erzeugt die Welt (20–90 s).</span></li>
-          <li><span class="ck"></span><span><b>Im Heimnetz beitreten:</b> Handy/Windows-App → <b>Server → Server hinzufügen</b> mit
+          <li><span class="ck ${s.running ? 'on' : ''}">${s.running ? '✓' : ''}</span><span><b>Server starten</b> – oben rechts. Der erste Start erzeugt die Welt (${isModpack(s) ? '1–5 Minuten bei Modpacks' : '20–90 s'}).</span></li>
+          ${bedrockPlayers(s) ? `<li><span class="ck"></span><span><b>Im Heimnetz beitreten:</b> Handy/Windows-App → <b>Server → Server hinzufügen</b> mit
               <code>${esc(ip)}</code> und Port <code>${s.type === 'java' && s.geyser ? s.bedrock_port : s.port}</code>${s.type === 'java' ? `, Java-Spieler <code>${esc(ip)}:${s.port}</code>` : ''}.</span></li>
-          <li><span class="ck ${s.xbox && s.xbox.state === 'online' ? 'on' : ''}">${s.xbox && s.xbox.state === 'online' ? '✓' : ''}</span><span><b>Xbox / PS5 / Switch:</b> am einfachsten über den <b>Xbox-Freunde-Modus</b> links – oder über den DNS-Weg (Hilfe).</span></li>
+          <li><span class="ck ${s.xbox && s.xbox.state === 'online' ? 'on' : ''}">${s.xbox && s.xbox.state === 'online' ? '✓' : ''}</span><span><b>Xbox / PS5 / Switch:</b> am einfachsten über den <b>Xbox-Freunde-Modus</b> links – oder über den DNS-Weg (Hilfe).</span></li>`
+            : `<li><span class="ck"></span><span><b>Im Heimnetz beitreten:</b> Java-Launcher → <b>Mehrspieler → Server hinzufügen</b> mit <code>${esc(ip)}:${s.port}</code>.</span></li>
+          ${isModpack(s) ? '<li><span class="ck"></span><span><b>Mitspieler brauchen dasselbe Modpack</b> in ihrem Launcher (Modrinth App, Prism o. ä.) – gleiche Pack-Version wie der Server.</span></li>' : ''}`}
           <li><span class="ck"></span><span><b>Freunde von außerhalb:</b> Port in FritzBox und Windows-Firewall freigeben – siehe <a href="#" data-tab-go="connect">Verbinden</a>.</span></li>
         </ul>
-        <div class="note note-warn" style="margin:14px 0 0"><b>Alle Bedrock-Spieler brauchen ein Microsoft-/Xbox-Konto</b> im Spiel –
-          sonst „Verbindung zur Welt nicht möglich“. <a href="#" data-gohelp="xbox">Hilfe → Xbox-Konto verbinden</a>.</div>
+        ${bedrockPlayers(s) ? `<div class="note note-warn" style="margin:14px 0 0"><b>Alle Bedrock-Spieler brauchen ein Microsoft-/Xbox-Konto</b> im Spiel –
+          sonst „Verbindung zur Welt nicht möglich“. <a href="#" data-gohelp="xbox">Hilfe → Xbox-Konto verbinden</a>.</div>` : ''}
       </div>
       <div class="card">
         <div class="card-head"><h3>🖥 Konsole – letzte Zeilen</h3><button class="btn btn-sm" data-tab-go="console">Öffnen</button></div>
@@ -707,6 +870,82 @@ function tabOverview(s) {
       </div>
     </div>
   </div>`;
+}
+
+/* Karte für Modpack-Server: Pack, Version, Loader, Link – anstelle des Xbox-Freunde-Modus (kein Bedrock). */
+function modpackCard(s) {
+  const mp = s.modpack || {};
+  return `<div class="card-head"><h3>🧩 Modpack</h3><span class="pill pill-amber">${esc(LOADER_NAMES[s.flavor] || s.flavor)}</span></div>
+    <div class="mp-row" style="cursor:default;padding:0">
+      ${mp.icon_url ? `<img class="mp-icon" src="${esc(mp.icon_url)}" alt="">` : '<div class="mp-icon mp-icon-empty">🧩</div>'}
+      <div class="mp-body"><div class="mp-title">${esc(mp.title || 'Modpack')}</div>
+        <div class="mp-meta">Version <b>${esc(mp.version_name || '?')}</b> · Minecraft ${esc(mp.mc_version || s.version)} · ${esc(LOADER_NAMES[s.flavor] || s.flavor)} ${esc(mp.loader_version || '')}</div></div>
+    </div>
+    <p class="small" style="margin-top:10px">Mitspieler installieren <b>dasselbe Modpack in derselben Version</b> in ihrem Launcher (z.&nbsp;B. Modrinth App)
+       und verbinden sich dann ganz normal über Mehrspieler. Bedrock/Konsolen können nicht beitreten.</p>
+    <div class="btn-row">${mp.url ? `<a class="btn btn-sm" href="${esc(mp.url)}" target="_blank" rel="noopener noreferrer">Auf Modrinth ansehen</a>` : ''}
+      <button class="btn btn-sm" data-tab-go="settings">Pack-Version ändern</button>
+      <button class="btn btn-sm" data-tab-go="files">Mods &amp; Konfiguration</button></div>`;
+}
+
+/* Karte für reine Java-Server (Paper ohne Geyser). */
+function javaOnlyCard(s) {
+  return `<div class="card-head"><h3>☕ Java Edition</h3><span class="pill pill-grey">nur Java</span></div>
+    <p class="small">Dieser Server ist ein Paper-Server <b>ohne Crossplay</b> – nur Spieler mit der PC-Java-Version (${esc(s.version)}) kommen drauf.
+       Plugins gehören in den Ordner <code>plugins</code> (Tab „Dateien“).</p>
+    <p class="small mb0">Sollen später auch Konsolen und Handys mitspielen: unter <a href="#" data-tab-go="settings">Einstellungen</a>
+       „Bedrock-Crossplay“ einschalten und <b>Neu installieren</b> – Geyser und Floodgate werden dann nachgeladen.</p>`;
+}
+
+/* Karte des Begleit-Plugins MCSMCompanion (nur Paper): Status aus plugins/MCSMCompanion/status.json. */
+function companionLive(s) {
+  const c = s.companion || {};
+  return s.running && c.age !== null && c.age !== undefined && c.age < 180;   // status.json ist frisch
+}
+function companionHardcoreOn(s) {
+  const st = (s.companion || {}).status || {};
+  return companionLive(s) ? !!(st.hardcore || {}).enabled : !!s.hardcore;
+}
+
+function companionCard(s) {
+  const c = s.companion || {};
+  const st = c.status || {};
+  const hc = st.hardcore || {};
+  const live = companionLive(s);
+  const hcOn = companionHardcoreOn(s);
+  const dead = hc.dead || [];
+  const sus = c.suspicious || [];
+  const pill = !c.available ? '<span class="pill pill-grey">Datei fehlt</span>'
+    : live ? `<span class="pill pill-green">aktiv · v${esc(st.plugin_version || '?')}</span>`
+    : c.installed ? '<span class="pill pill-grey">bereit</span>' : '<span class="pill pill-blue">wird beim Start eingerichtet</span>';
+  return `<div class="card-head"><h3>🧩 Begleit-Plugin MCSMCompanion</h3>${pill}</div>
+    <p class="small">Schöner Chat mit Farbcodes, Join-/Leave- und Todesmeldungen, Tablist mit „Sponsored by Novelnia“ sowie
+       <code>/tpa</code> <code>/tp</code> <code>/gm</code> <code>/sethome</code> <code>/home</code> <code>/spawn</code>.
+       Der Manager legt das Plugin <b>vor jedem Start neu</b> in <code>plugins</code> – löschen bringt nichts, es kommt wieder.</p>
+    <div class="stats" style="margin:8px 0">
+      <div class="stat"><div class="k">MCSM-Hardcore</div><div class="v sm">${hcOn ? '🔥 an' : 'aus'}</div></div>
+      ${live ? `<div class="stat"><div class="k">Spieler online</div><div class="v sm">${Number(st.online || 0)} / ${Number(st.max_players || s.max_players)}</div></div>` : ''}
+    </div>
+    ${hcOn ? `<div class="note note-warn" style="margin:0 0 10px"><b>Hardcore aktiv:</b> Wer stirbt, wird Zuschauer an seinem Grab („R.I.P Name“ mit Datum) und meldet sich im Chat ab.
+       Ein Mitspieler belebt ihn mit einem <b>Totem der Unsterblichkeit</b> am Grab wieder – er spawnt dann dort in Überleben.
+       ${dead.length ? `<br>Gerade tot: <b>${esc(dead.join(', '))}</b>` : ''}</div>` : ''}
+    ${sus.length ? `<div class="note note-err" style="margin:0 0 10px"><b>⚠️ Verdächtige Plugins:</b> ${esc(sus.join(', '))} – ${esc(c.hint || '')}</div>` : ''}
+    <div class="btn-row">
+      <button class="btn btn-sm" id="btnHardcore">${hcOn ? 'Hardcore ausschalten' : '🔥 Hardcore einschalten'}</button>
+      ${s.running ? '<span class="muted small">Gilt sofort – im Spiel auch per <code>/hardcore on|off</code>.</span>' : ''}
+    </div>`;
+}
+
+function bindCompanionCard(s) {
+  const card = $('#companionCard'); if (!card) return;
+  const btn = $('#btnHardcore'); if (btn) btn.onclick = async () => {
+    const on = companionHardcoreOn(s);
+    if (on && !confirm('Hardcore ausschalten? Alle Toten werden wieder in den Überlebensmodus gesetzt.')) return;
+    btn.disabled = true;
+    try { await api(`servers/${s.id}/hardcore`, { method: 'POST', body: { enabled: !on } }); toast(on ? 'Hardcore ausgeschaltet.' : 'Hardcore eingeschaltet.'); await refresh(); render(); }
+    catch (e) { toast(e.message, true); btn.disabled = false; }
+  };
+  $$('[data-tab-go]', card).forEach((el) => el.onclick = (e) => { e.preventDefault(); state.tab = el.dataset.tabGo; render(); });
 }
 
 function xboxCard(s) {
@@ -820,7 +1059,7 @@ function tabConnect(s) {
      die Portfreigabe allein reicht nicht. Der Manager fragt die IP bei jedem Start automatisch von der FritzBox ab (UPnP) und trägt sie ein; klappt das nicht
      (Konsole meldet es), die IP unter <a href="#" data-tab-go="settings">Einstellungen</a> eintragen. Bei DS-Lite (keine eigene IPv4) ist ein Beitritt aus dem Internet nicht möglich.</div>` : ''}
 
-  <h2>5 · Xbox, PlayStation und Switch</h2>
+  ${bedrockPlayers(s) ? `<h2>5 · Xbox, PlayStation und Switch</h2>
   <p>Konsolen haben keinen „Server hinzufügen“-Knopf. Drei Wege:</p>
   <ul>
     <li><b>Xbox-Freunde-Modus (empfohlen):</b> Ein Bot-Konto zeigt den Server in der Freundesliste – Einrichtung auf der <a href="#" data-tab-go="overview">Übersicht</a>.</li>
@@ -828,7 +1067,11 @@ function tabConnect(s) {
     <li><b>Per DNS-Trick (BedrockConnect):</b> Auf der Konsole den DNS ändern, dann lässt sich die Adresse eingeben.</li>
   </ul>
   <p>Schritt für Schritt: <a href="#" data-gohelp="friends">Hilfe → Xbox-Freunde-Modus</a> · <a href="#" data-gohelp="console">Hilfe → Xbox &amp; PS5 verbinden</a> ·
-     Anmeldeprobleme: <a href="#" data-gohelp="xbox">Hilfe → Xbox-Konto verbinden</a></p>
+     Anmeldeprobleme: <a href="#" data-gohelp="xbox">Hilfe → Xbox-Konto verbinden</a></p>`
+    : `<h2>5 · Nur Java-Spieler</h2>
+  <p>${isModpack(s) ? 'Ein Modpack-Server ist nur für die Java Edition mit demselben Modpack erreichbar – Konsolen und Handys (Bedrock) können nicht beitreten.'
+    : 'Dieser Server läuft ohne Crossplay – nur die Java Edition (PC) kann beitreten. Konsolen und Handys brauchen „Bedrock-Crossplay“ in den Einstellungen (danach „Neu installieren“).'}
+     Spieler tragen die Adresse im Launcher unter <b>Mehrspieler → Server hinzufügen</b> ein.</p>`}
   </div>
   <div>
   <h2 style="margin-top:0">3 · Windows-Firewall öffnen</h2>
@@ -1057,6 +1300,7 @@ function tabSettings(s) {
       <button class="btn" data-tab-go="files">Alle Optionen (server.properties) →</button></div>
   </fieldset>
 
+  ${isModpack(s) ? settingsModpack(s, busy) : `
   <h2>Version ändern / neu installieren</h2>
   <p class="muted">Lädt die Server-Software erneut. Welt und Einstellungen bleiben erhalten.
      ${s.type === 'bedrock' ? 'Bedrock-Version exakt eingeben (z. B. <code>' + esc(s.version) + '</code>).' : 'Bei Java: gleiche oder neuere Version wählen – ein Downgrade kann die Welt beschädigen.'}</p>
@@ -1067,11 +1311,72 @@ function tabSettings(s) {
         : `<div class="field"><label for="st_version">Paper-Version</label><select id="st_version"><option>${esc(s.version)}</option></select></div>`}
       <div class="field"><label>&nbsp;</label><button class="btn" id="btnReinstall">⟳ Neu installieren</button></div>
     </div>
-  </fieldset>
+  </fieldset>`}
 
   <h2>Server löschen</h2>
   <p class="muted">Entfernt den Server <b>samt Welt</b> von diesem PC. Das lässt sich nicht rückgängig machen.</p>
   <button class="btn btn-danger" id="btnDelete" ${busy ? 'disabled' : ''}>Server endgültig löschen</button>`;
+}
+
+/* Einstellungen → Abschnitt „Modpack“: aktuelle Pack-Version, Versionsliste von Modrinth, Update / Neuinstallation. */
+function settingsModpack(s, busy) {
+  const mp = s.modpack || {};
+  return `
+  <h2>Modpack</h2>
+  <div class="card" style="margin-bottom:14px">
+    <div class="mp-row" style="cursor:default;padding:0">
+      ${mp.icon_url ? `<img class="mp-icon" src="${esc(mp.icon_url)}" alt="">` : '<div class="mp-icon mp-icon-empty">🧩</div>'}
+      <div class="mp-body"><div class="mp-title">${esc(mp.title || 'Modpack')}</div>
+        <div class="mp-meta">Installiert: <b>${esc(mp.version_name || '?')}</b> · Minecraft ${esc(mp.mc_version || s.version)} · ${esc(LOADER_NAMES[s.flavor] || s.flavor)} ${esc(mp.loader_version || '')}
+          ${mp.url ? ` · <a href="${esc(mp.url)}" target="_blank" rel="noopener noreferrer">Modrinth</a>` : ''}</div></div>
+    </div>
+  </div>
+  <p class="muted">Eine andere Pack-Version installieren: Die Mods der bisherigen Version werden entfernt und die der neuen geladen.
+     <b>Welt und eigene Einstellungen bleiben erhalten</b> – ein Backup vorher ist trotzdem eine gute Idee (Übersicht).
+     Ein Downgrade kann die Welt beschädigen.</p>
+  <fieldset style="border:0;padding:0;margin:0" ${busy ? 'disabled' : ''}>
+    <div class="grid2" style="margin-top:0">
+      <div class="field"><label for="st_mpversion">Pack-Version</label>
+        <select id="st_mpversion"><option value="${esc(mp.version_id || '')}">${esc(mp.version_name || s.version)} (installiert)</option></select>
+        <div class="hint" id="st_mpHint">Versionen werden von Modrinth geladen …</div></div>
+      <div class="field"><label>&nbsp;</label>
+        <div class="btn-row"><button class="btn btn-primary" id="btnMpUpdate">⬆ Modpack-Version aktualisieren</button>
+          <button class="btn" id="btnReinstall" title="Gleiche Version erneut einrichten (fehlende Mods/Loader nachladen)">⟳ Neu installieren</button></div></div>
+    </div>
+  </fieldset>`;
+}
+
+function bindSettingsModpack(s) {
+  const mp = s.modpack || {};
+  const sel = $('#st_mpversion'), hint = $('#st_mpHint');
+  let versions = [];
+  api(`modpacks/${encodeURIComponent(mp.project_id || '')}/versions`).then((vs) => {
+    versions = vs;
+    if (!sel) return;
+    sel.innerHTML = vs.map((v) => `<option value="${esc(v.id)}" ${v.id === mp.version_id ? 'selected' : ''}>${esc(v.name)} · MC ${esc(v.mc_version)} · ${v.loaders.map((l) => LOADER_NAMES[l] || l).join('/')}${v.id === mp.version_id ? ' (installiert)' : ''}</option>`).join('')
+      || `<option value="${esc(mp.version_id || '')}">${esc(mp.version_name || '?')} (installiert)</option>`;
+    if (hint) hint.textContent = vs.length ? `${vs.length} Server-Versionen auf Modrinth, neueste zuerst.` : 'Modrinth listet keine weiteren Server-Versionen.';
+  }).catch((e) => { if (hint) hint.textContent = 'Versionen konnten nicht geladen werden: ' + e.message; });
+
+  const reinstall = async (v) => {
+    const body = { modpack: { project_id: mp.project_id, title: mp.title, version_id: v.id, version_name: v.name, mc_version: v.mc_version,
+      loader: v.loaders[0], loader_version: '', icon_url: mp.icon_url || '', url: mp.url || '' } };
+    try {
+      const d = await api(`servers/${s.id}/reinstall`, { method: 'POST', body });
+      state.install = { serverId: s.id, jobId: d.job_id, job: null, after: 'overview' }; state.view = 'install'; render(); pollJob();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('#btnMpUpdate').onclick = () => {
+    const v = versions.find((x) => x.id === sel.value);
+    if (!v) { toast('Bitte warten, bis die Versionsliste geladen ist, und eine Version wählen.', true); return; }
+    if (v.id === mp.version_id) { toast('Diese Version ist bereits installiert – für ein erneutes Einrichten „Neu installieren“ wählen.'); return; }
+    if (!confirm(`„${s.name}“ auf ${v.name} (Minecraft ${v.mc_version}) umstellen? Die Mods der aktuellen Version werden ersetzt.`)) return;
+    reinstall(v);
+  };
+  $('#btnReinstall').onclick = () => {
+    if (!confirm(`Modpack „${mp.title || ''}“ ${mp.version_name || ''} für "${s.name}" erneut einrichten?`)) return;
+    reinstall(versions.find((x) => x.id === mp.version_id) || { id: mp.version_id, name: mp.version_name, mc_version: mp.mc_version, loaders: [s.flavor] });
+  };
 }
 
 /* ---------- Bindings der Server-Ansicht */
@@ -1101,7 +1406,8 @@ function bindServer() {
   if (state.tab === 'overview') {
     $('#btnFolder').onclick = () => api(`servers/${s.id}/folder`, { method: 'POST' }).catch((e) => toast(e.message, true));
     $('#btnBackup').onclick = () => doBackup(s).then(() => loadOverviewExtras(s));
-    bindXboxCard(s);
+    if ($('#xboxCard')) bindXboxCard(s);            // nur Bedrock/Crossplay – Java-only und Modpacks zeigen eine andere Karte
+    bindCompanionCard(s);
     state.xboxSig = JSON.stringify(s.xbox || {});
     loadOverviewExtras(s);
     if (!publicAddr(s)) ensurePublicIp();
@@ -1153,10 +1459,13 @@ function bindServer() {
         const body = readSettingsForm('st_', {});
         if (s.type === 'java' && body.geyser && body.port === body.bedrock_port) { toast('Java-Port und Bedrock-Port müssen sich unterscheiden.', true); return; }
         await api(`servers/${s.id}/settings`, { method: 'POST', body });
+        const crossplayOn = s.type === 'java' && body.geyser && !s.geyser;
         toast('Einstellungen gespeichert.'); await refresh(); render();
+        if (crossplayOn) toast('Crossplay eingeschaltet – jetzt „Neu installieren“ klicken, damit Geyser und Floodgate geladen werden.', true);
       } catch (e) { toast(e.message, true); }
     };
-    $('#btnReinstall').onclick = async () => {
+    if (isModpack(s)) bindSettingsModpack(s);
+    else $('#btnReinstall').onclick = async () => {
       const version = $('#st_version').value.trim();
       if (!confirm(`Server-Software für "${s.name}" jetzt als Version ${version} neu laden?`)) return;
       try {
@@ -1169,7 +1478,7 @@ function bindServer() {
       try { await api(`servers/${s.id}`, { method: 'DELETE' }); toast('Server gelöscht.'); await refresh(); state.activeId = state.servers[0]?.id || null; state.view = state.activeId ? 'server' : 'welcome'; render(); }
       catch (e) { toast(e.message, true); }
     };
-    if (s.type === 'java') {
+    if (s.type === 'java' && !isModpack(s)) {
       loadVersions('java').then(() => {
         const sel = $('#st_version'); const list = state.versions.java;
         if (sel && Array.isArray(list)) sel.innerHTML = list.map((v) => `<option ${v === s.version ? 'selected' : ''}>${esc(v)}</option>`).join('');
@@ -1198,6 +1507,8 @@ function patchStatus() {
   if (state.tab === 'overview') {
     const sig = JSON.stringify(s.xbox || {});
     if (sig !== state.xboxSig) { state.xboxSig = sig; const card = $('#xboxCard'); if (card) { card.innerHTML = xboxCard(s); bindXboxCard(s); } }
+    const csig = JSON.stringify([s.running, s.hardcore, s.companion || {}]);
+    if (csig !== state.companionSig) { state.companionSig = csig; const card = $('#companionCard'); if (card) { card.innerHTML = companionCard(s); bindCompanionCard(s); } }
     const bk = $('#btnBackup'); if (bk && bk.textContent.indexOf('läuft') < 0) bk.disabled = s.running;
     if (s.running) loadMiniLog(s);
   }

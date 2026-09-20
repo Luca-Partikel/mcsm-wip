@@ -1,4 +1,5 @@
-"""Download-Quellen: Paper (Java), Bedrock Dedicated Server, Java-Runtime, Geyser."""
+"""Download-Quellen: Paper (Java), Bedrock Dedicated Server, Java-Runtime, Geyser, Modrinth-Modpacks
+und die Mod-Loader (Fabric, Quilt, NeoForge, Forge)."""
 from __future__ import annotations
 
 import hashlib
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 UA = "MinecraftServerManager/1.0 (lokales Setup-Tool)"
@@ -410,3 +412,186 @@ def xbox_broadcast_download() -> tuple[str, str]:
         if asset.get("name") == XBOX_BROADCAST_ASSET and asset.get("browser_download_url"):
             return asset["browser_download_url"], tag
     raise SourceError(f"{XBOX_BROADCAST_ASSET} wurde im aktuellen Release nicht gefunden.")
+
+
+# --------------------------------------------------------------------------- Modpacks (Modrinth)
+# Modrinth verlangt einen User-Agent (UA oben) und erlaubt 300 Anfragen pro Minute – die Oberfläche
+# fragt deshalb nur auf Eingabe/Klick, nie in Schleifen.
+
+MODRINTH_API = "https://api.modrinth.com/v2"
+MODRINTH_SITE = "https://modrinth.com"
+MODRINTH_CDN = "https://cdn.modrinth.com/"
+MODPACK_LOADERS = ("fabric", "neoforge", "forge", "quilt")
+_MODRINTH_ID_RE = re.compile(r"^[A-Za-z0-9]{1,32}$")
+
+
+def _modrinth_id(value: str, what: str) -> str:
+    value = str(value or "").strip()
+    if not _MODRINTH_ID_RE.fullmatch(value):
+        raise SourceError(f"Ungültige Modrinth-{what}: {value!r}")
+    return value
+
+
+def modrinth_search(query: str, page: int = 0, limit: int = 20) -> dict:
+    """Modpacks auf Modrinth suchen (nur solche, die serverseitig laufen), nach Downloads sortiert.
+    Liefert {'hits': [...], 'total': n, 'page': page}."""
+    page = max(0, int(page or 0))
+    limit = max(1, min(50, int(limit or 20)))
+    facets = json.dumps([["project_type:modpack"], ["server_side:required", "server_side:optional"]])
+    params = {"query": str(query or "").strip()[:100], "facets": facets, "index": "downloads",
+              "limit": limit, "offset": page * limit}
+    data = fetch_json(f"{MODRINTH_API}/search?{urllib.parse.urlencode(params)}")
+    hits = []
+    for h in data.get("hits") or []:
+        loaders = [c for c in (h.get("categories") or []) if c in MODPACK_LOADERS]
+        hits.append({
+            "project_id": str(h.get("project_id") or ""),
+            "slug": str(h.get("slug") or ""),
+            "title": str(h.get("title") or ""),
+            "description": str(h.get("description") or "")[:200],
+            "downloads": int(h.get("downloads") or 0),
+            "icon_url": str(h.get("icon_url") or ""),
+            "loaders": loaders,
+            "versions": [str(v) for v in (h.get("versions") or [])][-12:],
+            "url": f"{MODRINTH_SITE}/modpack/{h.get('slug') or h.get('project_id')}",
+        })
+    return {"hits": hits, "total": int(data.get("total_hits") or 0), "page": page}
+
+
+def _mrpack_file(version: dict) -> dict | None:
+    """Die .mrpack-Datei einer Modrinth-Version (bevorzugt die als primary markierte)."""
+    files = [f for f in (version.get("files") or []) if str(f.get("filename") or "").lower().endswith(".mrpack")]
+    if not files:
+        return None
+    primary = [f for f in files if f.get("primary")]
+    return (primary or files)[0]
+
+
+def _version_entry(v: dict) -> dict | None:
+    f = _mrpack_file(v)
+    loaders = [str(x) for x in (v.get("loaders") or []) if str(x) in MODPACK_LOADERS]
+    if not f or not loaders or not f.get("url"):
+        return None
+    games = [str(g) for g in (v.get("game_versions") or [])]
+    hashes = f.get("hashes") or {}
+    return {
+        "id": str(v.get("id") or ""),
+        "project_id": str(v.get("project_id") or ""),
+        "name": str(v.get("name") or v.get("version_number") or ""),
+        "version_number": str(v.get("version_number") or ""),
+        "mc_version": games[-1] if games else "",
+        "loaders": loaders,
+        "type": str(v.get("version_type") or "release"),
+        "size": int(f.get("size") or 0),
+        "date": str(v.get("date_published") or "")[:10],
+        "filename": str(f.get("filename") or "pack.mrpack"),
+        "url": str(f.get("url") or ""),
+        "sha1": str(hashes.get("sha1") or ""),
+        "sha512": str(hashes.get("sha512") or ""),
+    }
+
+
+def modrinth_versions(project_id: str) -> list[dict]:
+    """Alle serverfähigen .mrpack-Versionen eines Modpacks, neueste zuerst."""
+    pid = _modrinth_id(project_id, "Projekt-ID")
+    data = fetch_json(f"{MODRINTH_API}/project/{pid}/version")
+    out = []
+    for v in data if isinstance(data, list) else []:
+        entry = _version_entry(v)
+        if entry:
+            out.append(entry)
+    return out
+
+
+def modrinth_version(version_id: str) -> dict:
+    """Eine einzelne Modpack-Version samt Download-URL und Prüfsummen der .mrpack-Datei."""
+    vid = _modrinth_id(version_id, "Versions-ID")
+    entry = _version_entry(fetch_json(f"{MODRINTH_API}/version/{vid}"))
+    if not entry:
+        raise SourceError("Diese Modpack-Version enthält keine .mrpack-Datei für Server.")
+    return entry
+
+
+def modrinth_project(project_id: str) -> dict:
+    """Titel, Symbol und Link eines Modrinth-Projekts."""
+    pid = _modrinth_id(project_id, "Projekt-ID")
+    data = fetch_json(f"{MODRINTH_API}/project/{pid}")
+    slug = str(data.get("slug") or pid)
+    return {"project_id": str(data.get("id") or pid), "title": str(data.get("title") or slug),
+            "icon_url": str(data.get("icon_url") or ""), "url": f"{MODRINTH_SITE}/modpack/{slug}"}
+
+
+# --------------------------------------------------------------------------- Mod-Loader
+# Fabric: meta.fabricmc.net liefert einen fertigen Server-Launcher als JAR (lädt den Vanilla-Server
+#   beim ersten Start selbst nach .fabric/server/ – geprüft mit Installer 1.1.2).
+# Quilt: meta.quiltmc.org hat keinen /server/jar-Endpunkt (404) – der Quilt-Installer legt mit
+#   `install server <mc> <loader> --download-server` quilt-server-launch.jar + server.jar an.
+# NeoForge/Forge: Installer-JAR von Maven, `--installServer` erzeugt libraries/ und die Argument-Dateien.
+
+FABRIC_META = "https://meta.fabricmc.net/v2"
+QUILT_META = "https://meta.quiltmc.org/v3"
+NEOFORGE_INSTALLER = "https://maven.neoforged.net/releases/net/neoforged/neoforge/{v}/neoforge-{v}-installer.jar"
+FORGE_INSTALLER = "https://maven.minecraftforge.net/net/minecraftforge/forge/{mc}-{v}/forge-{mc}-{v}-installer.jar"
+_LOADER_VERSION_RE = re.compile(r"^[0-9A-Za-z.\-+_]{1,40}$")
+
+
+def _check_version(value: str, what: str) -> str:
+    value = str(value or "").strip()
+    if not _LOADER_VERSION_RE.fullmatch(value):
+        raise SourceError(f"Ungültige {what}: {value!r}")
+    return value
+
+
+def fabric_installer_version() -> str:
+    data = fetch_json(f"{FABRIC_META}/versions/installer")
+    stable = [d for d in data if d.get("stable")] or list(data)
+    if not stable:
+        raise SourceError("Fabric-Meta lieferte keine Installer-Version.")
+    return _check_version(stable[0].get("version"), "Fabric-Installer-Version")
+
+
+def fabric_loader_version(mc_version: str) -> str:
+    """Neuester stabiler Fabric-Loader für eine Minecraft-Version (falls das Modpack keinen nennt)."""
+    data = fetch_json(f"{FABRIC_META}/versions/loader/{_check_version(mc_version, 'Minecraft-Version')}")
+    stable = [d for d in data if (d.get("loader") or {}).get("stable")] or list(data)
+    if not stable:
+        raise SourceError(f"Fabric unterstützt Minecraft {mc_version} nicht.")
+    return _check_version((stable[0].get("loader") or {}).get("version"), "Fabric-Loader-Version")
+
+
+def fabric_server_jar_url(mc_version: str, loader_version: str) -> str:
+    mc = _check_version(mc_version, "Minecraft-Version")
+    loader = _check_version(loader_version, "Fabric-Loader-Version")
+    return f"{FABRIC_META}/versions/loader/{mc}/{loader}/{fabric_installer_version()}/server/jar"
+
+
+def quilt_installer() -> tuple[str, str, str]:
+    """(url, version, sha256) des aktuellen Quilt-Installers."""
+    data = fetch_json(f"{QUILT_META}/versions/installer")
+    if not data:
+        raise SourceError("Quilt-Meta lieferte keine Installer-Version.")
+    entry = data[0]
+    version = _check_version(entry.get("version"), "Quilt-Installer-Version")
+    url = str(entry.get("url") or "")
+    if not url.startswith("https://maven.quiltmc.org/"):
+        raise SourceError("Quilt-Meta lieferte keine gültige Installer-URL.")
+    return url, version, str((entry.get("hashes") or {}).get("sha256") or "")
+
+
+def quilt_loader_version(mc_version: str) -> str:
+    data = fetch_json(f"{QUILT_META}/versions/loader/{_check_version(mc_version, 'Minecraft-Version')}")
+    releases = [d for d in data
+                if not re.search(r"(beta|alpha|rc|pre)", str((d.get("loader") or {}).get("version") or ""), re.I)]
+    pick = releases or list(data)
+    if not pick:
+        raise SourceError(f"Quilt unterstützt Minecraft {mc_version} nicht.")
+    return _check_version((pick[0].get("loader") or {}).get("version"), "Quilt-Loader-Version")
+
+
+def neoforge_installer_url(version: str) -> str:
+    return NEOFORGE_INSTALLER.format(v=_check_version(version, "NeoForge-Version"))
+
+
+def forge_installer_url(mc_version: str, version: str) -> str:
+    return FORGE_INSTALLER.format(mc=_check_version(mc_version, "Minecraft-Version"),
+                                  v=_check_version(version, "Forge-Version"))

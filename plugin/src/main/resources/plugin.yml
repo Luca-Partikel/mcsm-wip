@@ -1,0 +1,101 @@
+name: MCSMCompanion
+version: 1.0.0
+main: de.mcsm.companion.CompanionPlugin
+api-version: "1.21"
+description: Begleit-Plugin des Minecraft Server Managers (Chat, Join/Leave, Tod, Tablist, TPA, Homes, Hardcore, Admin)
+author: Minecraft Server Manager
+load: POSTWORLD
+
+commands:
+  tpa:
+    description: Teleport-Anfrage an einen Spieler senden
+    usage: /tpa <Spieler>
+    permission: mcsm.tpa
+  tpaccept:
+    description: Teleport-Anfrage annehmen
+    usage: /tpaccept [Spieler]
+    permission: mcsm.tpa
+  tpdeny:
+    description: Teleport-Anfrage ablehnen
+    usage: /tpdeny [Spieler]
+    permission: mcsm.tpa
+  tp:
+    description: Zu einem Spieler teleportieren oder einen Spieler zu einem anderen bringen (Koordinaten/Selektoren wie Vanilla)
+    usage: /tp <Spieler> [Spieler2]  (oder Vanilla-Syntax mit Koordinaten/Selektoren)
+    permission: mcsm.tp
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  gm:
+    description: Spielmodus wechseln
+    usage: /gm <0|1|2|3|survival|creative|adventure|spectator> [Spieler]
+    permission: mcsm.gm
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  sethome:
+    description: Home setzen
+    usage: /sethome [Name]
+    permission: mcsm.home
+  home:
+    description: Zu einem Home teleportieren
+    usage: /home [Name]
+    permission: mcsm.home
+  delhome:
+    description: Home löschen
+    usage: /delhome [Name]
+    permission: mcsm.home
+  homes:
+    description: Eigene Homes anzeigen
+    usage: /homes
+    permission: mcsm.home
+  spawn:
+    description: Zum Spawn teleportieren
+    usage: /spawn
+    permission: mcsm.spawn
+  admin:
+    description: Wartungsbefehle des Manager-Plugins
+    usage: /admin <join|vanish|status|reload>
+  hardcore:
+    description: MCSM-Hardcore-Modus schalten (Tote werden Zuschauer, bis ein Totem am Grab sie wiederbelebt)
+    usage: /hardcore <on|off|status>
+    permission: mcsm.hardcore
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+
+permissions:
+  mcsm.tpa:
+    description: /tpa, /tpaccept und /tpdeny benutzen
+    default: true
+  mcsm.tp:
+    description: /tp benutzen
+    default: op
+  mcsm.gm:
+    description: /gm benutzen
+    default: op
+  mcsm.home:
+    description: Homes benutzen
+    default: true
+  mcsm.home.unlimited:
+    description: Unbegrenzt viele Homes
+    default: op
+  mcsm.spawn:
+    description: /spawn benutzen
+    default: true
+  mcsm.chat.color:
+    description: Farbcodes (&a, &l, ...) im Chat verwenden
+    default: op
+  mcsm.admin:
+    description: /admin benutzen
+    default: op
+  mcsm.hardcore:
+    description: /hardcore benutzen (Hardcore-Modus ein-/ausschalten, Status)
+    default: op
+  mcsm.*:
+    description: Alle Rechte des Plugins
+    default: op
+    children:
+      mcsm.tpa: true
+      mcsm.tp: true
+      mcsm.gm: true
+      mcsm.home: true
+      mcsm.home.unlimited: true
+      mcsm.spawn: true
+      mcsm.chat.color: true
+      mcsm.admin: true
+      mcsm.hardcore: true

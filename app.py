@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import manager, sources, store, tray, updater  # noqa: E402
+from core import companion, manager, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -71,6 +71,7 @@ def _server_view(cfg: dict) -> dict:
     view["firewall_cmds"] = manager.firewall_command(cfg)
     view["ports"] = manager.port_list(cfg)
     view["xbox"] = manager.xbox_status(cfg)
+    view["companion"] = companion.status(cfg)
     return view
 
 
@@ -152,6 +153,20 @@ def api_versions(_body, query) -> dict:
     return {"bedrock": sources.bedrock_versions()}
 
 
+def api_modpack_search(_body, query) -> dict:
+    """Modpacks auf Modrinth suchen: GET /api/modpacks/search?q=…&page=0 → {hits:[…], total, page}."""
+    try:
+        page = int(_q(query, "page", "0"))
+    except ValueError:
+        page = 0
+    return sources.modrinth_search(_q(query, "q"), page)
+
+
+def api_modpack_versions(_body, _query, project_id: str = "") -> list:
+    """Serverfähige .mrpack-Versionen eines Modpacks: GET /api/modpacks/<project_id>/versions."""
+    return sources.modrinth_versions(project_id)
+
+
 def _sanitize(body, existing=None) -> dict:
     """store.sanitize mit verständlicher Fehlermeldung (400 statt „Unerwarteter Fehler“)."""
     try:
@@ -164,11 +179,13 @@ def api_create(body, _query) -> dict:
     cfg = _sanitize(body)
     if not cfg.get("eula_accepted"):
         raise ApiError("Bitte zuerst die Minecraft-EULA bestätigen.")
+    if body.get("modpack") and not store.is_modpack(cfg):
+        raise ApiError("Bitte ein Modpack und eine Pack-Version auswählen.")
     if not cfg["version"]:
         raise ApiError("Bitte eine Version auswählen.")
     store.save(cfg)
     job = manager.install_async(cfg)
-    log.info("Server angelegt: %s (%s %s)", cfg["name"], cfg["type"], cfg["version"])
+    log.info("Server angelegt: %s (%s %s %s)", cfg["name"], cfg["type"], cfg.get("flavor", "paper"), cfg["version"])
     return {"server": _server_view(cfg), "job_id": job["id"]}
 
 
@@ -215,8 +232,8 @@ def api_start(_body, _query, server_id: str = "") -> dict:
     except RuntimeError as exc:
         raise ApiError(str(exc)) from exc
     manager.start_broadcaster_if_enabled(cfg)
-    if cfg.get("auto_portmap"):
-        threading.Thread(target=manager.request_port_mappings, args=(cfg,), daemon=True).start()
+    # Portfreigabe immer still anfordern (FritzBox UPnP) – ohne Freigabe oder bei DS-Lite bleibt es beim Hinweis im Log.
+    threading.Thread(target=manager.request_port_mappings, args=(cfg,), daemon=True).start()
     log.info("Server gestartet: %s", cfg["name"])
     return {"ok": True}
 
@@ -227,6 +244,25 @@ def api_stop(_body, _query, server_id: str = "") -> dict:
     threading.Thread(target=manager.stop_broadcaster, args=(cfg,), daemon=True).start()
     log.info("Server wird gestoppt: %s", cfg["name"])
     return {"ok": True}
+
+
+def api_hardcore(body, _query, server_id: str = "") -> dict:
+    """MCSM-Hardcore des Begleit-Plugins schalten – läuft der Server, sofort per Konsolenbefehl."""
+    cfg = _require(store.get(server_id))
+    if not companion.applies(cfg):
+        raise ApiError("Der Hardcore-Modus gibt es nur auf Java-Servern mit Paper (Begleit-Plugin).")
+    enabled = bool(body.get("enabled"))
+    updated = store.sanitize({"hardcore": enabled}, existing=cfg)
+    store.save(updated)
+    if manager.is_running(server_id):
+        try:
+            manager.instance(updated).send("hardcore on" if enabled else "hardcore off")
+        except RuntimeError as exc:
+            raise ApiError(str(exc)) from exc
+    elif (store.server_dir(server_id) / "plugins").exists():
+        companion.write_config(updated)
+    log.info("Hardcore %s: %s", "an" if enabled else "aus", cfg["name"])
+    return {"server": _server_view(updated)}
 
 
 # -- Xbox-Freunde-Modus
@@ -451,13 +487,33 @@ def api_shutdown(_body, _query) -> dict:
 
 # --------------------------------------------------------------------- Tray-Symbol
 
+SHUTDOWN_BLOCK_TEXT = ("Minecraft-Server laufen noch! Bitte im Server Manager alle Server stoppen, "
+                       "bevor du den PC herunterfährst – sonst gehen ungespeicherte Welt-Änderungen verloren.")
+
+
+def shutdown_block_reason() -> str | None:
+    """Grund für die Windows-Sperre gegen Herunterfahren – nur solange mindestens ein Server läuft."""
+    n = sum(1 for c in store.all_servers() if manager.is_running(c["id"]))
+    if not n:
+        return None
+    servers = "1 Minecraft-Server läuft noch" if n == 1 else f"{n} Minecraft-Server laufen noch"
+    return servers + "! Bitte im Server Manager stoppen, bevor du den PC herunterfährst – sonst gehen ungespeicherte Welt-Änderungen verloren."
+
+
+def _on_end_session() -> None:
+    """Windows fährt trotzdem herunter: Server in den verbleibenden Sekunden sauber stoppen."""
+    log.info("Windows beendet die Sitzung – Server werden gestoppt …")
+    manager.emergency_stop_all(4.0)
+
+
 def start_tray(url: str):
     """Symbol neben der Uhr: Klick öffnet die Oberfläche, Menü stoppt/beendet. Nie Pflicht."""
     if not tray.available or os.environ.get("MCSM_NO_TRAY"):
         return None
     try:
         icon = tray.Tray(BASE / "app.ico", APP_NAME, on_open=lambda: open_ui(url),
-                         on_stop_all=manager.stop_all, on_quit=request_shutdown)
+                         on_stop_all=manager.stop_all, on_quit=request_shutdown,
+                         on_query_end=shutdown_block_reason, on_end_session=_on_end_session)
         if not icon.start():
             return None
     except Exception:                                 # noqa: BLE001
@@ -471,6 +527,7 @@ def start_tray(url: str):
             text = f"{APP_NAME}\n" + ("Kein Server läuft" if n == 0 else "1 Server läuft" if n == 1 else f"{n} Server laufen")
             if text != last:
                 icon.set_tip(text)
+                icon.set_shutdown_block(SHUTDOWN_BLOCK_TEXT if n else None)
                 last = text
             time.sleep(5)
 
@@ -482,6 +539,7 @@ ROUTES = {
     ("GET", "ping"): api_ping,
     ("GET", "bootstrap"): api_bootstrap,
     ("GET", "versions"): api_versions,
+    ("GET", "modpacks/search"): api_modpack_search,
     ("GET", "publicip"): api_public_ip,
     ("POST", "servers"): api_create,
     ("POST", "shutdown"): api_shutdown,
@@ -512,6 +570,7 @@ SERVER_ROUTES = {
     ("POST", "xbox/stop"): api_xbox_stop,
     ("POST", "xbox/disable"): api_xbox_disable,
     ("POST", "portmap"): api_portmap,
+    ("POST", "hardcore"): api_hardcore,
     ("POST", "portmap/remove"): api_portmap_remove,
     ("POST", "xbox/reset"): api_xbox_reset,
     ("GET", "xbox/console"): api_xbox_console,
@@ -608,6 +667,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 2 and parts[0] == "job":
                 self._json(200, api_job(body, query, parts[1]))
+                return
+            if len(parts) == 3 and parts[0] == "modpacks" and parts[2] == "versions" and method == "GET":
+                self._json(200, api_modpack_versions(body, query, parts[1]))
                 return
             handler = ROUTES.get((method, "/".join(parts))) or ROUTES.get((method, parts[0] if parts else ""))
             if handler is None:

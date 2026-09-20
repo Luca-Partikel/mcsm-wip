@@ -36,6 +36,8 @@ if available:
     WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_CONTEXTMENU = 0x0202, 0x0203, 0x0205, 0x007B
     NIN_SELECT, NIN_KEYSELECT = 0x0400, 0x0401
     WM_TRAY = 0x0400 + 1
+    WM_BLOCK = 0x0400 + 2                        # intern: Herunterfahr-Sperre setzen/lösen (im Fenster-Thread)
+    WM_QUERYENDSESSION, WM_ENDSESSION = 0x0011, 0x0016
     NIM_ADD, NIM_MODIFY, NIM_DELETE, NIM_SETVERSION = 0, 1, 2, 4
     NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO, NIF_SHOWTIP = 0x1, 0x2, 0x4, 0x10, 0x80
     NIIF_INFO, NIIF_USER, NIIF_LARGE_ICON = 0x1, 0x4, 0x20
@@ -99,6 +101,10 @@ if available:
     user32.UnregisterClassW.restype = wt.BOOL
     user32.RegisterWindowMessageW.argtypes = [wt.LPCWSTR]
     user32.RegisterWindowMessageW.restype = wt.UINT
+    user32.ShutdownBlockReasonCreate.argtypes = [wt.HWND, wt.LPCWSTR]
+    user32.ShutdownBlockReasonCreate.restype = wt.BOOL
+    user32.ShutdownBlockReasonDestroy.argtypes = [wt.HWND]
+    user32.ShutdownBlockReasonDestroy.restype = wt.BOOL
     shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
     shell32.Shell_NotifyIconW.restype = wt.BOOL
     kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
@@ -110,10 +116,17 @@ if available:
 class Tray:
     """Tray-Symbol mit eigener Nachrichtenschleife in einem Hintergrund-Thread."""
 
-    def __init__(self, icon: pathlib.Path, tip: str, on_open, on_stop_all, on_quit) -> None:
+    def __init__(self, icon: pathlib.Path, tip: str, on_open, on_stop_all, on_quit,
+                 on_query_end=None, on_end_session=None) -> None:
         self.icon_path = pathlib.Path(icon)
         self.tip = tip
         self.on_open, self.on_stop_all, self.on_quit = on_open, on_stop_all, on_quit
+        # Herunterfahren/Abmelden: on_query_end() liefert einen Grund (Text), solange Server laufen ->
+        # Windows zeigt „Diese App verhindert das Herunterfahren“ mit diesem Text. on_end_session() läuft,
+        # wenn der Benutzer trotzdem herunterfährt (Server noch schnell sauber stoppen).
+        self.on_query_end, self.on_end_session = on_query_end, on_end_session
+        self._block_reason: str | None = None
+        self._blocking = False
         self.hwnd = None
         self.nid = None
         self.hicon_small = None
@@ -153,6 +166,25 @@ class Tray:
             nid = NOTIFYICONDATAW.from_buffer_copy(self.nid)
             nid.uFlags = NIF_TIP | NIF_SHOWTIP
             shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
+
+    def set_shutdown_block(self, reason: str | None) -> None:
+        """Sperre gegen Herunterfahren an-/abmelden (Text erscheint im Windows-Dialog). Thread-sicher."""
+        if not (available and self.ok and self.hwnd):
+            return
+        self._block_reason = (reason or "").strip()[:255] or None
+        user32.PostMessageW(self.hwnd, WM_BLOCK, 0, 0)
+
+    def _apply_block(self) -> None:
+        """Nur im Fenster-Thread: ShutdownBlockReasonCreate/-Destroy passend zum gewünschten Zustand."""
+        want = bool(self._block_reason)
+        if want:
+            if user32.ShutdownBlockReasonCreate(self.hwnd, self._block_reason):   # setzt den Text auch neu
+                self._blocking = True
+            else:
+                log.warning("Herunterfahr-Sperre nicht gesetzt (%s)", ctypes.get_last_error())
+        elif self._blocking:
+            user32.ShutdownBlockReasonDestroy(self.hwnd)
+            self._blocking = False
 
     def notify(self, title: str, text: str) -> None:
         """Sprechblase neben dem Symbol."""
@@ -315,6 +347,33 @@ class Tray:
             return 0
         if msg == WM_COMMAND:
             self._dispatch(wparam & 0xFFFF)
+            return 0
+        if msg == WM_BLOCK:
+            self._apply_block()
+            return 0
+        if msg == WM_QUERYENDSESSION:
+            # Windows fragt vor dem Herunterfahren/Abmelden. Laufen Server, antworten wir mit FALSE:
+            # Windows bricht ab und zeigt unseren Grund („Server stoppen, bevor du den PC herunterfährst“).
+            reason = None
+            if self.on_query_end:
+                try:
+                    reason = self.on_query_end()
+                except Exception:                 # noqa: BLE001
+                    log.exception("Herunterfahr-Prüfung fehlgeschlagen")
+            self._block_reason = (reason or "").strip()[:255] or None
+            self._apply_block()
+            if self._block_reason:
+                log.info("Herunterfahren blockiert: %s", self._block_reason)
+                return 0
+            return 1
+        if msg == WM_ENDSESSION:
+            # wParam TRUE: die Sitzung endet wirklich (oder „Trotzdem herunterfahren“). Danach wird der
+            # Prozess beendet – hier bleiben nur wenige Sekunden, um die Server sauber zu stoppen.
+            if wparam and self.on_end_session:
+                try:
+                    self.on_end_session()
+                except Exception:                 # noqa: BLE001
+                    log.exception("Notstopp beim Herunterfahren fehlgeschlagen")
             return 0
         if WM_TASKBARCREATED and msg == WM_TASKBARCREATED and self.nid is not None:
             # Explorer wurde neu gestartet (Absturz, „Windows-Explorer neu starten“, DPI-Wechsel): alle

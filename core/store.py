@@ -30,7 +30,10 @@ def server_dir(server_id: str) -> pathlib.Path:
 
 DEFAULTS = {
     "name": "Mein Server",
-    "type": "bedrock",          # "bedrock" (BDS) oder "java" (Paper + Geyser)
+    "type": "bedrock",          # "bedrock" (BDS) oder "java" (Paper, optional + Geyser; oder Modpack)
+    "flavor": "paper",          # nur Java: "paper" oder der Mod-Loader eines Modpacks (fabric/neoforge/forge/quilt)
+    "modpack": {},              # nur Modpack: project_id, title, version_id, version_name, mc_version, loader,
+                                #   loader_version, icon_url, url (alles von Modrinth)
     "version": "",
     "port": 19132,
     "bedrock_port": 19132,      # nur bei type=java (Geyser)
@@ -46,7 +49,8 @@ DEFAULTS = {
     "level_seed": "",
     "public_ip": "",            # nur Bedrock: öffentliche IPv4 für NetherNet (leer = vom Router abfragen)
     "public_address": "",       # Anzeige für Freunde: MyFRITZ!-Name oder feste IP (leer = automatisch ermitteln)
-    "auto_portmap": False,      # Portfreigabe beim Serverstart per UPnP in der FritzBox anfordern
+    "auto_portmap": True,       # Portfreigabe beim Serverstart per UPnP anfordern (immer an, nicht in der Oberfläche)
+    "hardcore": False,          # nur Paper: MCSM-Hardcore des Companion-Plugins (1 Leben, Grab, Totem)
     "geyser": True,             # nur Java: Bedrock-Crossplay aktivieren
     "autostart": False,
     "installed": False,
@@ -59,8 +63,45 @@ DEFAULTS = {
 }
 
 VALID_TYPES = ("bedrock", "java")
+VALID_FLAVORS = ("paper", "fabric", "neoforge", "forge", "quilt")
 VALID_GAMEMODES = ("survival", "creative", "adventure")
 VALID_DIFFICULTIES = ("peaceful", "easy", "normal", "hard")
+MODPACK_RAM_MIN = 4096
+MODPACK_RAM_DEFAULT = 6144
+_VERSION_RE = r"[0-9][0-9A-Za-z.\-_]{0,31}"
+_MODRINTH_ID_RE = r"[A-Za-z0-9]{1,32}"
+
+
+def is_modpack(cfg: dict) -> bool:
+    return cfg.get("type") == "java" and str(cfg.get("flavor") or "paper") != "paper"
+
+
+def sanitize_modpack(raw) -> dict:
+    """Modpack-Angaben aus der Oberfläche prüfen (alles stammt aus der Modrinth-API und wird bei der
+    Installation ohnehin noch einmal von dort geholt). Leeres dict = kein gültiges Modpack."""
+    if not isinstance(raw, dict):
+        return {}
+    pid = str(raw.get("project_id") or "").strip()
+    vid = str(raw.get("version_id") or "").strip()
+    if not (re.fullmatch(_MODRINTH_ID_RE, pid) and re.fullmatch(_MODRINTH_ID_RE, vid)):
+        return {}
+    loader = str(raw.get("loader") or "").lower()
+    mc = str(raw.get("mc_version") or "").strip()
+    loader_version = str(raw.get("loader_version") or "").strip()
+    icon = str(raw.get("icon_url") or "").strip()
+    url = str(raw.get("url") or "").strip()
+    clean = lambda s, n: re.sub(r"[\x00-\x1f]", "", str(s or "")).strip()[:n]     # noqa: E731
+    return {
+        "project_id": pid,
+        "version_id": vid,
+        "title": clean(raw.get("title"), 80),
+        "version_name": clean(raw.get("version_name"), 64),
+        "mc_version": mc if re.fullmatch(_VERSION_RE, mc) else "",
+        "loader": loader if loader in VALID_FLAVORS and loader != "paper" else "",
+        "loader_version": loader_version if re.fullmatch(r"[0-9A-Za-z.\-+_]{1,40}", loader_version) else "",
+        "icon_url": icon if icon.startswith("https://cdn.modrinth.com/") and len(icon) < 300 else "",
+        "url": url if re.fullmatch(r"https://modrinth\.com/[A-Za-z0-9/_\-]{1,120}", url) else "",
+    }
 
 
 def new_id() -> str:
@@ -141,16 +182,36 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     if existing is None:
         stype = str(raw.get("type", "bedrock")).lower()
         cfg["type"] = stype if stype in VALID_TYPES else "bedrock"
+        cfg["flavor"] = "paper"
+        cfg["modpack"] = {}
+
+    # Modpack: beim Anlegen oder – bei einem bestehenden Modpack-Server – beim Versionswechsel.
+    # Der Loader kommt aus der gewählten Pack-Version (ein Pack kann z. B. von Forge auf NeoForge wechseln);
+    # Paper-/Bedrock-Server bleiben, was sie sind.
+    if cfg["type"] == "java" and "modpack" in raw and (existing is None or is_modpack(cfg)):
+        mp = sanitize_modpack(raw.get("modpack"))
+        if mp and mp["loader"]:
+            cfg["modpack"] = mp
+            cfg["flavor"] = mp["loader"]
+            cfg["geyser"] = False                      # Bukkit-Plugins laufen nicht auf Fabric/NeoForge
+        elif existing is not None:
+            raise ValueError("Ungültige Modpack-Angaben – bitte die Version erneut auswählen.")
+    modpack = is_modpack(cfg)
 
     version = str(raw.get("version", cfg.get("version", ""))).strip()
-    if re.fullmatch(r"[0-9][0-9A-Za-z.\-_]{0,31}", version or ""):
+    if modpack:
+        version = cfg["modpack"].get("mc_version") or version
+    if re.fullmatch(_VERSION_RE, version or ""):
         cfg["version"] = version
 
     cfg["port"] = _clamp(raw.get("port", cfg["port"]), 1024, 65535,
                          19132 if cfg["type"] == "bedrock" else 25565)
     cfg["bedrock_port"] = _clamp(raw.get("bedrock_port", cfg["bedrock_port"]), 1024, 65535, 19132)
     cfg["max_players"] = _clamp(raw.get("max_players", cfg["max_players"]), 1, 200, 10)
-    cfg["ram_mb"] = _clamp(raw.get("ram_mb", cfg["ram_mb"]), 1024, 65536, 4096)
+    if modpack:
+        cfg["ram_mb"] = _clamp(raw.get("ram_mb", cfg["ram_mb"]), MODPACK_RAM_MIN, 65536, MODPACK_RAM_DEFAULT)
+    else:
+        cfg["ram_mb"] = _clamp(raw.get("ram_mb", cfg["ram_mb"]), 1024, 65536, 4096)
     cfg["view_distance"] = _clamp(raw.get("view_distance", cfg["view_distance"]), 4, 32, 10)
 
     motd = str(raw.get("motd", cfg["motd"])).strip() or "Ein Minecraft Server"
@@ -179,9 +240,12 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     cfg["difficulty"] = df if df in VALID_DIFFICULTIES else "easy"
 
     for flag in ("online_mode", "allow_cheats", "pvp", "geyser", "autostart", "eula_accepted",
-                 "xbox_enabled", "xbox_autostart", "auto_portmap"):
+                 "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore"):
         if flag in raw:
             cfg[flag] = bool(raw[flag])
+    if modpack:
+        cfg["geyser"] = False                          # kein Crossplay auf Mod-Loadern (s. o.)
+
 
     # Xbox-Freunde-Modus: Adresse = IP oder Hostname, Anzeigename ohne YAML-Sonderzeichen.
     if "xbox_address" in raw:

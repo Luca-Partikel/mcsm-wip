@@ -26,7 +26,7 @@ SETUP_NAME = "MinecraftServerManager-Setup.exe"
 # Dateien, die zum Programm gehören (keine Downloads, keine Welten, keine Logs).
 INCLUDE = [
     "app.py", "Start.bat", "Start-Debug.bat", "Start.vbs", "Install.bat", "README.md", "app.ico",
-    "core/__init__.py", "core/store.py", "core/sources.py", "core/manager.py", "core/tray.py", "core/version.py", "core/updater.py",
+    "core/__init__.py", "core/store.py", "core/sources.py", "core/manager.py", "core/tray.py", "core/version.py", "core/updater.py", "core/companion.py", "core/modpacks.py", "assets/MCSMCompanion.jar",
     "web/index.html", "web/style.css", "web/app.js", "web/logo.svg", "web/favicon.png",
     "web/icon-192.png", "web/icon-512.png", "web/manifest.webmanifest", "tools/make_icons.py",
     "tools/shortcuts.ps1", "tools/stop-instance.ps1", "tools/build_installer.py", "tools/Build-Installer.bat",

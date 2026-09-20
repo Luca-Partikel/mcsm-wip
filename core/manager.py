@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from . import sources, store
+from . import companion, modpacks, sources, store
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 MAX_LOG_LINES = 4000
@@ -415,11 +415,14 @@ def apply_config(cfg: dict, initial: bool = False) -> None:
     if initial:
         updates.update(_INITIAL_PROPS[cfg["type"]])
     patch_properties(props, updates)
-    if cfg["type"] == "java":
+    if cfg["type"] == "java" and not modpacks.is_modpack(cfg):
+        # Modpacks (Fabric/NeoForge …) bekommen weder Geyser-Konfiguration noch Plugin-Ordner-Pflege.
         if cfg.get("geyser"):
             write_geyser_config(cfg)
         else:
             remove_crossplay_plugins(sdir)
+        if companion.applies(cfg) and (sdir / "plugins").exists():
+            companion.write_config(cfg)
 
 
 CROSSPLAY_JARS = ("Geyser-Spigot.jar", "floodgate-spigot.jar", "ViaVersion.jar", "ViaBackwards.jar")
@@ -648,6 +651,8 @@ _HIDDEN_NAMES = {
 }
 _HIDDEN_EXT = {".exe", ".dll", ".pdb", ".jar", ".lock", ".dat_old", ".bak"}
 _WORLD_DIRS = {"worlds", "world", "world_nether", "world_the_end"}
+# Technik der Mod-Loader (Startskripte, Argument-Dateien, Launcher-Einstellungen) – nur mit „Alle Dateien“.
+_TECH_NAMES = set(modpacks.TECH_FILES)
 
 
 def safe_path(cfg: dict, rel: str) -> tuple[pathlib.Path, pathlib.Path]:
@@ -684,8 +689,10 @@ def _kind(entry: pathlib.Path, rel: str) -> str:
         return "log"
     if ext == ".zip" and parts[0] == "backups":
         return "backup"
-    if ext == ".jar" and "plugins" in parts:
-        return "plugin"
+    if ext == ".jar" and ("plugins" in parts or "mods" in parts):
+        return "plugin"                                # Mods eines Modpacks zählen wie Plugins
+    if entry.name in _TECH_NAMES and len(parts) == 1:
+        return "other"                                 # Loader-Technik im Server-Ordner (run.bat, user_jvm_args.txt …)
     if ext in TEXT_EXT:
         return "config"
     return "other"
@@ -694,7 +701,8 @@ def _kind(entry: pathlib.Path, rel: str) -> str:
 def _hidden(entry: pathlib.Path, kind: str) -> bool:
     if kind in ("world", "plugins", "config", "backup", "log", "plugin"):
         return False
-    return entry.name in _HIDDEN_NAMES or entry.suffix.lower() in _HIDDEN_EXT or entry.name.startswith(".")
+    return (entry.name in _HIDDEN_NAMES or entry.name in _TECH_NAMES or entry.suffix.lower() in _HIDDEN_EXT
+            or entry.name.startswith("."))
 
 
 def _dir_size(path: pathlib.Path) -> int:
@@ -1163,6 +1171,16 @@ def install(cfg: dict, job: dict) -> None:
 
         _step(job, 3, "Einstellungen werden geschrieben …")
         apply_config(cfg, initial=fresh)
+    elif modpacks.is_modpack(cfg):
+        # Versionswechsel: bis zum Erfolg als „nicht installiert“ führen – schlägt der Loader fehl, darf
+        # kein Start mit der halb umgestellten Installation möglich sein.
+        prev_vid = modpacks.installed_index(sdir).get("version_id")
+        if prev_vid and prev_vid != (cfg.get("modpack") or {}).get("version_id"):
+            current = store.get(cfg["id"])
+            if current:
+                current["installed"] = False
+                store.save(current)
+        _install_modpack(cfg, job, fresh)
     else:
         info = sources.paper_java_info(cfg["version"])
         cfg["java_major"] = info["major"]
@@ -1207,6 +1225,8 @@ def install(cfg: dict, job: dict) -> None:
             "# Mojang EULA wurde im Minecraft Server Manager bestätigt.\neula=true\n",
             encoding="utf-8")
         apply_config(cfg, initial=fresh)
+        if companion.applies(cfg):
+            companion.prepare(cfg)
 
     # Gespeicherte Konfiguration neu lesen: wurde der Server inzwischen gelöscht, nicht wiederbeleben;
     # zwischenzeitlich gespeicherte Einstellungen nicht überschreiben.
@@ -1214,16 +1234,86 @@ def install(cfg: dict, job: dict) -> None:
     if current is None:
         return
     current["installed"] = True
-    for key in ("java_major", "java_flags"):
+    keys = ("java_major", "java_flags")
+    if modpacks.is_modpack(cfg):
+        keys += ("modpack", "flavor", "version")      # aus dem Pack gelesen (Loader, Minecraft-Version)
+    for key in keys:
         if key in cfg:
             current[key] = cfg[key]
     cfg.update(current)
     store.save(current)
 
 
+def _install_modpack(cfg: dict, job: dict, fresh: bool) -> None:
+    """Modpack von Modrinth: Pack laden, Mod-Loader-Server einrichten, Mods laden, konfigurieren.
+    Schritte: Java bereitstellen · Modpack laden · Loader installieren · Mods laden · Konfigurieren."""
+    sdir = store.server_dir(cfg["id"])
+    mp = dict(cfg.get("modpack") or {})
+    if not mp.get("version_id"):
+        raise sources.SourceError("Für diesen Server ist keine Modpack-Version hinterlegt.")
+
+    _step(job, 0, "Modpack-Version wird bei Modrinth nachgeschlagen …")
+    version = sources.modrinth_version(mp["version_id"])
+    if mp.get("project_id") and version["project_id"] and version["project_id"] != mp["project_id"]:
+        raise sources.SourceError("Die Modpack-Version gehört zu einem anderen Projekt.")
+    if not mp.get("title") or not mp.get("url"):
+        try:
+            mp.update({k: v for k, v in sources.modrinth_project(version["project_id"]).items() if v})
+        except sources.SourceError:
+            pass
+    # Java-Version richtet sich nach der Minecraft-Version des Packs (1.20.5+ → 21, 26.x → 25, 1.17–1.20.4 → 17).
+    mc_guess = version["mc_version"] or mp.get("mc_version") or cfg.get("version") or ""
+    major = sources.java_major_for(mc_guess)
+    java = ensure_java(major, job, 0)
+
+    _step(job, 1, "Modpack wird geladen …")
+    mrpack = modpacks.download_pack(version, _progress_cb(job, "Modpack"), _status_cb(job))
+    index = modpacks.read_index(mrpack)
+    mp.update({"project_id": version["project_id"] or mp.get("project_id", ""), "version_id": version["id"],
+               "version_name": version["name"] or index["version"], "mc_version": index["mc_version"],
+               "loader": index["loader"], "loader_version": index["loader_version"]})
+    cfg["modpack"] = mp
+    cfg["flavor"] = index["loader"]
+    cfg["version"] = index["mc_version"]
+    cfg["geyser"] = False
+    if index["mc_version"] != mc_guess:               # Pack nennt eine andere Minecraft-Version als Modrinth
+        major = sources.java_major_for(index["mc_version"])
+        java = ensure_java(major, job, 1)
+    cfg["java_major"] = major
+    cfg["java_flags"] = []
+
+    # Loader zuerst – schlägt er fehl, bleibt die bisherige Installation samt Mods unangetastet.
+    _step(job, 2, f"{modpacks.LOADER_NAMES.get(index['loader'], index['loader'])} wird installiert …")
+    mp["loader_version"] = modpacks.install_loader(sdir, index, java, _status_cb(job), _progress_cb(job, "Loader"))
+
+    _step(job, 3, "Mods werden geladen …")
+    # Vorherige Pack-Version: nur entfernen, was das neue Pack nicht mehr liefert (Welt, eigene Konfiguration bleiben);
+    # weiterhin gelieferte Dateien prüft install_files per Prüfsumme und lädt sie nur bei Bedarf neu.
+    wanted = {f["path"] for f in index["files"] if f["server"] != "unsupported"}
+    removed = modpacks.remove_installed(sdir, keep=wanted)
+    if removed:
+        job["detail"] = f"{removed} Dateien der vorherigen Pack-Version entfernt"
+    total = len(wanted)
+
+    def mod_progress(n: int, m: int, name: str) -> None:
+        job["detail"] = f"Mods laden {n}/{m} – {name}"
+        job["pct"] = int((3 + (n / max(1, m))) / len(job["steps"]) * 100)
+
+    modpacks.install_files(sdir, mrpack, index, mp, mod_progress, _status_cb(job))
+    job["detail"] = f"{total} Dateien des Packs sind vorhanden"
+
+    _step(job, 4, "Einstellungen werden geschrieben …")
+    # Die Mojang-EULA wurde in der GUI ausdrücklich bestätigt.
+    (sdir / "eula.txt").write_text(
+        "# Mojang EULA wurde im Minecraft Server Manager bestätigt.\neula=true\n", encoding="utf-8")
+    apply_config(cfg, initial=fresh)
+
+
 def install_async(cfg: dict) -> dict:
     if cfg["type"] == "bedrock":
         steps = ["Systemvoraussetzungen prüfen", "Bedrock Server herunterladen", "Entpacken", "Konfigurieren"]
+    elif modpacks.is_modpack(cfg):
+        steps = ["Java bereitstellen", "Modpack laden", "Loader installieren", "Mods laden", "Konfigurieren"]
     else:
         steps = ["Java-Runtime bereitstellen", "Paper herunterladen",
                  "Geyser + Floodgate installieren", "Konfigurieren"]
@@ -1323,12 +1413,28 @@ class Instance:
                 raise RuntimeError(f"Java {major} wurde nicht gefunden. Bitte den Server erneut starten – "
                                    "die Laufzeit wird dann automatisch geladen.")
             ram = cfg["ram_mb"]
-            flags = [f for f in cfg.get("java_flags") or [] if isinstance(f, str) and f.startswith(("-XX:", "-D"))]
-            # Seit JDK 19 gelten für System.out/err eigene Encoding-Eigenschaften – ohne sie
-            # kämen Umlaute in der Konsole als Cp1252 an. Ältere JDKs ignorieren unbekannte -D.
-            cmd = [str(java), f"-Xms{max(512, ram // 2)}M", f"-Xmx{ram}M",
-                   "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
-                   "-Dstdin.encoding=UTF-8", *flags, "-jar", "server.jar", "nogui"]
+            if modpacks.is_modpack(cfg):
+                # Fabric/Quilt: Launcher-JAR; NeoForge/Forge: Argument-Dateien des Installers.
+                cmd = modpacks.start_command(cfg, java, ram)
+                mp = cfg.get("modpack") or {}
+                notes.append(f"[Manager] Modpack „{mp.get('title') or '?'}“ {mp.get('version_name') or ''} · "
+                             f"{modpacks.LOADER_NAMES.get(cfg.get('flavor'), cfg.get('flavor'))} "
+                             f"{mp.get('loader_version') or ''} · Minecraft {cfg['version']}. "
+                             "Spieler brauchen dasselbe Modpack im Launcher (Modrinth App / Prism).")
+            else:
+                flags = [f for f in cfg.get("java_flags") or [] if isinstance(f, str) and f.startswith(("-XX:", "-D"))]
+                # Seit JDK 19 gelten für System.out/err eigene Encoding-Eigenschaften – ohne sie
+                # kämen Umlaute in der Konsole als Cp1252 an. Ältere JDKs ignorieren unbekannte -D.
+                cmd = [str(java), f"-Xms{max(512, ram // 2)}M", f"-Xmx{ram}M",
+                       "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
+                       "-Dstdin.encoding=UTF-8", *flags, "-jar", "server.jar", "nogui"]
+                if companion.applies(cfg):
+                    # Begleit-Plugin vor jedem Start neu bereitstellen – auch wenn es gelöscht wurde.
+                    try:
+                        if companion.prepare(cfg):
+                            notes.append("[Manager] Begleit-Plugin MCSMCompanion bereitgestellt.")
+                    except OSError as exc:
+                        notes.append(f"[Manager] Begleit-Plugin konnte nicht kopiert werden: {exc}")
 
         self.lines.clear()
         self.offset = 0
@@ -1367,6 +1473,8 @@ class Instance:
                 self._apply_gamerules()
         code = proc.wait()
         self.log(f"[Manager] Server beendet (Code {code}).")
+        # /hardcore on|off im Spiel in die Einstellungen übernehmen.
+        threading.Thread(target=companion.sync_after_stop, args=(self.cfg,), daemon=True).start()
         # Ohne Server gibt es nichts mehr zu bewerben – Bot mit beenden.
         threading.Thread(target=stop_broadcaster, args=(self.cfg,), daemon=True).start()
 

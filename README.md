@@ -1,8 +1,9 @@
 # Minecraft Server Manager (Windows, lokal)
 
-Richtet Minecraft-Server auf diesem PC ein und verwaltet sie über eine Oberfläche –
-**Bedrock Dedicated Server** (Xbox, PS4/PS5, Switch, Handy, Windows-App) oder
-**Java (Paper) mit Crossplay** über Geyser + Floodgate (+ ViaVersion).
+Richtet Minecraft-Server auf diesem PC ein und verwaltet sie über eine Oberfläche – vier Server-Arten:
+**Bedrock Dedicated Server** (Xbox, PS4/PS5, Switch, Handy, Windows-App), **Java Edition (nur Java, Paper)**,
+**Java + Crossplay** (Paper + Geyser + Floodgate + ViaVersion) oder ein **Modpack von Modrinth**
+(Fabric, NeoForge, Forge oder Quilt – Loader und Mods werden automatisch installiert).
 
 ## Installieren / Starten
 
@@ -24,7 +25,9 @@ Keine Abhängigkeiten außer Python-Standardbibliothek – kein `pip install`.
 | Bedrock Dedicated Server | minecraft.net (offiziell) | beim Anlegen eines Bedrock-Servers |
 | Visual C++ Laufzeit | Microsoft (nur falls sie fehlt, UAC-Abfrage) | vor dem ersten Bedrock-Start |
 | Paper + Geyser + Floodgate + ViaVersion/ViaBackwards | PaperMC, GeyserMC, Hangar | beim Anlegen eines Java-Servers |
-| Java-Laufzeit (Temurin 8/17/21/25, je nach Paper-Version) | api.adoptium.net | automatisch, auch nachträglich beim Start |
+| Modpack (.mrpack) + Mods | Modrinth (api.modrinth.com, cdn.modrinth.com) | beim Anlegen / Versionswechsel eines Modpack-Servers |
+| Mod-Loader-Server (Fabric-Launcher, Quilt-Installer, NeoForge-/Forge-Installer) | meta.fabricmc.net, meta.quiltmc.org, maven.neoforged.net, maven.minecraftforge.net | beim Anlegen eines Modpack-Servers |
+| Java-Laufzeit (Temurin 8/17/21/25, je nach Minecraft-Version) | api.adoptium.net | automatisch, auch nachträglich beim Start |
 | MCXboxBroadcast (Xbox-Freunde-Modus) | GitHub-Release | beim Einrichten des Freunde-Modus |
 | Python (nur bei der Weitergabe) | winget bzw. python.org | beim ersten Start von `Start.bat` |
 
@@ -47,13 +50,37 @@ Ordner: `servers/<id>/` (Server + Welt), `cache/` (Downloads), `runtime/` (Java)
   `max-players`). LAN-Suche: UDP 7551. Für Freunde aus dem Internet muss der Server zusätzlich seine
   **öffentliche IPv4** kennen (`server-udp-ports` mit `IP:extern:intern`), sonst bietet er nur die LAN-Adresse an –
   der Manager fragt sie bei jedem Start per UPnP von der FritzBox ab, alternativ unter Einstellungen eintragen.
-- Java: **TCP** (Standard 25565); bei Crossplay zusätzlich **UDP** für Geyser (Standard 19132).
+- Java: **TCP** (Standard 25565); bei Crossplay zusätzlich **UDP** für Geyser (Standard 19132). Modpack-Server: nur TCP.
+
+## Modpacks
+
+`servers/<id>/` enthält je nach Loader `server.jar` (Fabric-Launcher), `quilt-server-launch.jar` + `server.jar` (Quilt)
+oder `libraries/` + `user_jvm_args.txt` + `win_args.txt` (NeoForge/Forge, gestartet über `@`-Argumentdateien).
+Die vom Pack installierten Dateien stehen in `modpack-index.json`; ein Versionswechsel (Einstellungen → Modpack)
+entfernt genau diese und lädt die neue Version – Welt und eigene Konfiguration bleiben. Kein Geyser/Crossplay und
+keine Bukkit-Plugins auf Mod-Loadern. API: `GET /api/modpacks/search?q=…&page=0`, `GET /api/modpacks/<project_id>/versions`.
 
 ## Xbox-Freunde-Modus
 
 Ein Bot-Konto (empfohlen: Zweitkonto) meldet sich per MCXboxBroadcast bei Xbox Live an; alle Freunde dieses Kontos
 sehen den Server unter **Freunde** und treten ohne DNS-Umstellung bei. Einrichtung komplett geführt in der
 Oberfläche (Code-Anmeldung auf microsoft.com/link). Freunde außerhalb des Heimnetzes brauchen weiterhin die Portfreigabe.
+
+## Begleit-Plugin MCSMCompanion (Paper)
+
+Auf jedem Paper-Server (Java-only und Crossplay) legt der Manager vor **jedem Start** `plugins/MCSMCompanion.jar`
+aus `assets/` neu ab und schreibt die verwalteten Schlüssel in `plugins/MCSMCompanion/config.yml`
+(Servername, Manager-Version, Sponsor-Zeile, Hardcore). Wird das Jar gelöscht, ist es beim nächsten
+Start wieder da. Es bringt Chat-Format mit Farbcodes, Join-/Leave-/Todesmeldungen, Tablist „Sponsored by Novelnia“,
+`/tpa` `/tp` `/gm` `/sethome` `/home` `/spawn` und meldet über `status.json`
+verdächtige Plugins (gefälschte Spielerzahlen). Quelltext und Details: `plugin/README.md`, Bauen: `tools/build_plugin.py`.
+
+**MCSM-Hardcore** (kein Vanilla-Hardcore, beim Erstellen oder in den Einstellungen wählbar, im Dashboard schaltbar,
+im Spiel `/hardcore on|off` für OPs): Wer stirbt, wird ohne Todesbildschirm sofort Zuschauer an seinem Grab
+(„R.I.P Name“ + Datum), im Chat steht „Name ist von uns gegangen (Koordinaten: …)“. Ein Mitspieler belebt ihn wieder,
+indem er ein Totem der Unsterblichkeit am Grab rechtsklickt oder ablegt – der Tote spawnt dann dort im Überlebensmodus
+(oder beim nächsten Login). Ein Wechsel per Befehl im Spiel wird nach dem Stopp in die Einstellungen übernommen.
+API: `POST /api/servers/<id>/hardcore {"enabled": true|false}`.
 
 ## Updates
 

@@ -22,7 +22,7 @@
       <img class="brand-logo" src="logo.svg" alt="" width="38" height="38">
       <div>
         <div class="brand-title">Server Manager</div>
-        <div class="brand-sub">Bedrock &amp; Java · lokal</div>
+        <div class="brand-sub">Bedrock · Java · Modpacks</div>
       </div>
     </div>
 
@@ -62,8 +62,9 @@
 <!-- ======================= Vorlagen für Hilfeseiten ======================= -->
 <template id="help-bedrock">
   <div class="page">
-    <h1>Bedrock, Crossplay und die beiden Server-Arten</h1>
-    <p class="lead">Minecraft gibt es in zwei Ausführungen. Davon hängt ab, wer auf deinen Server kommt.</p>
+    <h1>Bedrock, Crossplay und die vier Server-Arten</h1>
+    <p class="lead">Minecraft gibt es in zwei Ausführungen. Davon hängt ab, wer auf deinen Server kommt – und der Manager
+       bietet dafür vier Server-Arten an.</p>
 
     <div class="grid2">
       <div class="card">
@@ -93,12 +94,39 @@
           <td><b>Konsolen-Runden.</b> Einfachste und stabilste Wahl, wenn alle auf Konsole oder Handy spielen.</td>
         </tr>
         <tr>
+          <td><b>Java Edition (nur Java)</b><br><span class="muted small">Paper ohne Geyser</span></td>
+          <td>Nur Java-Spieler (PC)<br><span class="muted small">Konsolen und Handys können <b>nicht</b> beitreten</span></td>
+          <td><b>Reine PC-Runden.</b> Schlank, Plugins möglich, ein einziger Port (TCP). Crossplay lässt sich später in den
+              Einstellungen nachrüsten.</td>
+        </tr>
+        <tr>
           <td><b>Java + Crossplay</b><br><span class="muted small">Paper&nbsp;+&nbsp;Geyser&nbsp;+&nbsp;Floodgate</span></td>
           <td>Java-Spieler <b>und</b> Bedrock-Spieler (auch Konsolen)</td>
           <td><b>Gemischte Gruppen.</b> Wenn jemand die PC-Java-Version hat und trotzdem alle zusammen spielen sollen.</td>
         </tr>
+        <tr>
+          <td><b>Modpack (Modrinth)</b><br><span class="muted small">Fabric, NeoForge, Forge oder Quilt</span></td>
+          <td>Nur Java-Spieler mit <b>demselben Modpack</b><br><span class="muted small">kein Bedrock, keine Bukkit-Plugins</span></td>
+          <td><b>Mod-Runden.</b> Ein fertiges Pack von modrinth.com – der Manager installiert Loader und Mods. Braucht viel RAM
+              (ab 4–6 GB) und beim ersten Start etwas Geduld.</td>
+        </tr>
       </tbody>
     </table>
+
+    <div class="note note-info">
+      <b>Modpacks im Detail</b>
+      <ul>
+        <li>Beim Anlegen suchst du das Pack auf <b>Modrinth</b> (nur Packs, die auf einem Server laufen) und wählst eine
+            Pack-Version. Der Manager lädt das <code>.mrpack</code>, richtet den passenden Mod-Loader-Server ein
+            (Fabric, NeoForge, Forge oder Quilt), lädt alle serverseitigen Mods und übernimmt die Konfiguration des Packs.</li>
+        <li>Mitspieler brauchen <b>dasselbe Modpack in derselben Version</b> in ihrem Launcher (z.&nbsp;B. Modrinth App oder
+            Prism Launcher) und verbinden sich dann ganz normal über <b>Mehrspieler</b>.</li>
+        <li><b>Kein Crossplay:</b> Geyser/Floodgate und Bukkit-Plugins (auch das MCSMCompanion-Plugin) laufen nicht auf
+            Mod-Loadern. Konsolen und Handys können einem Modpack-Server nicht beitreten.</li>
+        <li>Eine andere Pack-Version gibt es unter <b>Einstellungen → Modpack</b>: Die Mods der alten Version werden ersetzt,
+            Welt und eigene Einstellungen bleiben. Mods und Konfiguration liegen im Tab <b>Dateien</b> unter <code>mods</code> und <code>config</code>.</li>
+      </ul>
+    </div>
 
     <div class="note note-info">
       <b>Wie funktioniert Crossplay beim Java-Server?</b>

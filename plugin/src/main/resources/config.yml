@@ -1,0 +1,43 @@
+# MCSMCompanion – Konfiguration
+# Diese Datei schreibt der Minecraft Server Manager vor jedem Start neu.
+# Fehlt sie, arbeitet das Plugin mit den hier gezeigten Standardwerten.
+
+# Anzeigename des Servers (Tablist-Kopfzeile)
+server_name: "Minecraft Server"
+# Version des Managers, der diesen Server steuert
+manager_version: "unbekannt"
+# "local" (eigener PC) oder "hosted" (Paid-/Root-Server)
+mode: "local"
+# Sponsor-Zeile (MiniMessage erlaubt)
+sponsor_text: "Sponsored by Novelnia"
+
+# Formate (MiniMessage). Platzhalter: <name>, <message>
+chat_format: "<gray>[</gray><green>Spieler</green><gray>]</gray> <white><name></white> <dark_gray>»</dark_gray> <gray><message></gray>"
+join_format: "<green>+</green> <white><name></white> <gray>ist beigetreten</gray>"
+leave_format: "<red>-</red> <white><name></white> <gray>hat den Server verlassen</gray>"
+first_join_format: "<gold>★</gold> <white><name></white> <gray>ist zum ersten Mal hier – willkommen!</gray>"
+death_prefix: "<red>☠</red> "
+
+# Tablist. Platzhalter: <server_name>, <online>, <max>, <sponsor>, <manager_version>, <mode>
+tablist_header: "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>\n<gray>Online <white><online></white>/<white><max></white></gray>"
+tablist_footer: "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MinecraftManager</gray>"
+
+# Optional: eigene MOTD-Zeile (MiniMessage). Leer = MOTD des Servers unverändert lassen.
+motd_line: ""
+
+# Maximale Homes für Spieler ohne OP bzw. ohne mcsm.home.unlimited
+max_homes: 3
+
+# MCSM-Hardcore-Modus (kein Vanilla-Hardcore): Wer stirbt, bekommt ein Grab und bleibt Zuschauer,
+# bis ein Mitspieler ihn dort mit einem Totem der Unsterblichkeit wiederbelebt. Der Wert wird nur
+# übernommen, wenn er sich seit dem letzten Start geändert hat; dazwischen gilt /hardcore on|off.
+hardcore: false
+
+features:
+  chat: true
+  join_leave: true
+  death: true
+  tablist: true
+  tpa: true
+  homes: true
+  gamemode: true

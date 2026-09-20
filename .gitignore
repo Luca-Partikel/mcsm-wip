@@ -4,6 +4,7 @@ servers/
 cache/
 runtime/
 dist/
+build/
 
 # Python
 __pycache__/
