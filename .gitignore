@@ -1,0 +1,17 @@
+# Laufzeitdaten des Managers (nie ins Repository)
+data/
+servers/
+cache/
+runtime/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs und Zwischendateien
+*.log
+*.part
+*.tmp
+*.new
+*.bak

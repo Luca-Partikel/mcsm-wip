@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft Server Manager</title>
+<meta name="theme-color" content="#0d1117">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============================ Seitenleiste ============================ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="logo.svg" alt="" width="38" height="38">
+      <div>
+        <div class="brand-title">Server Manager</div>
+        <div class="brand-sub">Bedrock &amp; Java · lokal</div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary btn-block" id="btnNew">
+      <span class="ico">+</span> Neuer Server
+    </button>
+
+    <div class="side-label">Meine Server</div>
+    <nav class="server-list" id="serverList"></nav>
+
+    <div class="side-label">Hilfe</div>
+    <nav class="nav">
+      <a class="nav-item" data-help="bedrock"><span class="ico">🎮</span> Bedrock &amp; Crossplay</a>
+      <a class="nav-item" data-help="friends"><span class="ico">👥</span> Xbox-Freunde-Modus</a>
+      <a class="nav-item" data-help="xbox"><span class="ico">🔗</span> Xbox-Konto verbinden</a>
+      <a class="nav-item" data-help="console"><span class="ico">🕹️</span> Xbox &amp; PS5 verbinden</a>
+      <a class="nav-item" data-help="fritzbox"><span class="ico">📶</span> FritzBox-Portfreigabe</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="dot-row"><span class="dot dot-on"></span> Läuft lokal auf diesem PC</div>
+      <div class="muted small" id="sysInfo"></div>
+      <div id="updateBox"></div>
+      <button class="btn btn-sm btn-block" id="btnQuit" title="Stoppt alle Server und beendet das Programm">⏻ Manager beenden</button>
+      <div class="muted small">Fenster schließen lässt Server weiterlaufen – das Symbol neben der Uhr öffnet es wieder.</div>
+    </div>
+  </aside>
+
+  <!-- ============================ Hauptbereich ============================ -->
+  <main class="main" id="main">
+    <div id="view"></div>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<!-- ======================= Vorlagen für Hilfeseiten ======================= -->
+<template id="help-bedrock">
+  <div class="page">
+    <h1>Bedrock, Crossplay und die beiden Server-Arten</h1>
+    <p class="lead">Minecraft gibt es in zwei Ausführungen. Davon hängt ab, wer auf deinen Server kommt.</p>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="pill pill-green">Bedrock Edition</div>
+        <h3>Konsolen, Handy, Windows-App</h3>
+        <p>Das ist die Version auf <b>Xbox, PlayStation 4/5, Nintendo Switch, Android, iPhone/iPad</b>
+           und die <b>„Minecraft“-App aus dem Microsoft Store</b> unter Windows.</p>
+        <p>Diese Spieler nennen ihre Version oft einfach nur „Minecraft“. Im Startbildschirm steht
+           unten die Versionsnummer, z.&nbsp;B. <code>1.26.51</code> – <b>drei bis vier Zahlen</b> sind typisch für Bedrock.</p>
+      </div>
+      <div class="card">
+        <div class="pill pill-blue">Java Edition</div>
+        <h3>Nur PC (Windows, macOS, Linux)</h3>
+        <p>Die klassische PC-Version mit dem eigenen Launcher. Läuft <b>nicht</b> auf Konsolen.</p>
+        <p>Versionsnummern sehen aus wie <code>1.21.8</code> und der Launcher heißt
+           „Minecraft: Java Edition“.</p>
+      </div>
+    </div>
+
+    <h2>Welchen Server-Typ soll ich nehmen?</h2>
+    <table class="table">
+      <thead><tr><th>Server-Typ</th><th>Wer kann beitreten?</th><th>Empfohlen für</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>Bedrock Dedicated Server</b><br><span class="muted small">offiziell von Mojang</span></td>
+          <td>Xbox, PS4/PS5, Switch, Handy, Windows-App<br><span class="muted small">Java-Spieler können <b>nicht</b> beitreten</span></td>
+          <td><b>Konsolen-Runden.</b> Einfachste und stabilste Wahl, wenn alle auf Konsole oder Handy spielen.</td>
+        </tr>
+        <tr>
+          <td><b>Java + Crossplay</b><br><span class="muted small">Paper&nbsp;+&nbsp;Geyser&nbsp;+&nbsp;Floodgate</span></td>
+          <td>Java-Spieler <b>und</b> Bedrock-Spieler (auch Konsolen)</td>
+          <td><b>Gemischte Gruppen.</b> Wenn jemand die PC-Java-Version hat und trotzdem alle zusammen spielen sollen.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note note-info">
+      <b>Wie funktioniert Crossplay beim Java-Server?</b>
+      <p>Der Manager installiert automatisch zwei Erweiterungen:</p>
+      <ul>
+        <li><b>Geyser</b> übersetzt zwischen Bedrock und Java. Es öffnet zusätzlich einen
+            Bedrock-Port (Standard <code>19132</code>, UDP), auf den Konsolen und Handys verbinden.</li>
+        <li><b>Floodgate</b> sorgt dafür, dass Bedrock-Spieler <b>ohne Java-Konto</b> beitreten dürfen.
+            Ihr Name bekommt dabei ein Punkt-Präfix, z.&nbsp;B. <code>.MeinName</code>.</li>
+      </ul>
+      <p class="mb0">Du brauchst dafür <b>zwei</b> Portfreigaben: TCP für Java, UDP für Bedrock.</p>
+    </div>
+
+    <div class="note note-warn">
+      <b>Wichtig bei Java + Crossplay</b>
+      <p class="mb0">Geyser kann nicht alles 1:1 übersetzen. Sehr neue Blöcke, manche Redstone-Feinheiten
+      und viele Plugins verhalten sich für Bedrock-Spieler leicht anders. Wenn <i>alle</i> auf
+      Konsole spielen, ist der reine Bedrock-Server die bessere Wahl.</p>
+    </div>
+  </div>
+</template>
+
+<template id="help-friends">
+  <div class="page">
+    <h1>Xbox-Freunde-Modus</h1>
+    <p class="lead">So, wie ihr es von einer gehosteten Welt kennt: Ein Konto ist „online in Minecraft“, alle Freunde
+       sehen es in der Freundesliste und treten mit einem Klick bei – ohne DNS-Umstellung an der Konsole.</p>
+
+    <h2>Wie es funktioniert</h2>
+    <p>Der Manager lädt das quelloffene Werkzeug <b>MCXboxBroadcast</b> (<code>github.com/MCXboxBroadcast/Broadcaster</code>).
+       Es meldet sich mit einem <b>Bot-Konto</b> bei Xbox Live an und kündigt deinen Server als beitretbare Welt an.
+       Tritt ein Freund bei, wird er zur eigentlichen Server-Adresse weitergeleitet.</p>
+    <ol class="steps">
+      <li>Auf der Übersicht eines Servers <b>Xbox-Freunde-Modus → Jetzt einrichten</b> wählen. Der Assistent fragt alles Nötige ab.</li>
+      <li>Der Manager lädt MCXboxBroadcast (und Java, falls noch nicht vorhanden) und startet den Bot.</li>
+      <li>Es erscheint ein <b>Anmelde-Code</b>. Auf <code>microsoft.com/link</code> den Code eingeben und mit dem <b>Bot-Konto</b> anmelden.
+          Die Anmeldung wird gespeichert – beim nächsten Start ist kein Code mehr nötig.</li>
+      <li>Freunde fügen den <b>Gamertag des Bot-Kontos</b> als Freund hinzu (der Bot nimmt automatisch an) und finden den Server
+          danach im Spiel unter <b>Freunde</b>.</li>
+    </ol>
+
+    <div class="note note-warn">
+      <b>Bitte ein Zweitkonto verwenden.</b>
+      <p class="mb0">MCXboxBroadcast ahmt einen Minecraft-Spieler nach. Das Projekt selbst empfiehlt ein separates Microsoft-Konto,
+      weil Microsoft ein solches Konto theoretisch sperren könnte. Ein Konto ist kostenlos unter <code>account.microsoft.com</code>
+      angelegt; beim ersten Besuch von <code>xbox.com</code> bekommt es einen Gamertag.</p>
+    </div>
+
+    <h2>Heimnetz oder Internet?</h2>
+    <p>Im Assistenten wählst du, wohin Freunde geleitet werden:</p>
+    <ul>
+      <li><b>Heimnetz:</b> die lokale IP dieses PCs. Reicht, wenn alle im selben WLAN sind. Keine Freigaben nötig.</li>
+      <li><b>Internet:</b> deine öffentliche IP oder MyFRITZ!-Adresse. Freunde außerhalb brauchen zusätzlich die
+          <b>Portfreigabe in der FritzBox</b> und die <b>Windows-Firewall-Regel</b> (Tab „Verbinden“). Der Freunde-Modus
+          ersetzt nur den DNS-Trick, nicht die Portfreigabe.</li>
+    </ul>
+
+    <h2>Wenn etwas hakt</h2>
+    <ul>
+      <li><b>Kein Code erscheint:</b> Auf der Übersicht den Bot stoppen und erneut starten; in seltenen Fällen „Neu anmelden“ wählen.</li>
+      <li><b>Freund sieht den Server nicht:</b> Folgt er dem Bot-Konto? Ist beim Freund „Du kannst mit Personen außerhalb von Xbox spielen“
+          erlaubt (Hilfe → Xbox-Konto verbinden)? Läuft der Server? Der Bot stoppt automatisch mit dem Server.</li>
+      <li><b>Beitritt schlägt fehl:</b> Der Freund ist außerhalb deines Netzes und die Portfreigabe fehlt – oder es wurde „Heimnetz“ gewählt.</li>
+      <li><b>Anderes Konto verwenden:</b> Übersicht → Xbox-Freunde-Modus → <b>Neu anmelden</b>.</li>
+    </ul>
+  </div>
+</template>
+
+<template id="help-xbox">
+  <div class="page">
+    <h1>Xbox-Konto verbinden</h1>
+    <p class="lead">Bedrock-Minecraft verlangt immer eine Anmeldung mit einem Microsoft-/Xbox-Konto –
+       auch dann, wenn ihr nur im Heimnetz spielt.</p>
+
+    <div class="note note-warn">
+      <b>Das ist der häufigste Grund, warum ein Beitritt scheitert.</b>
+      <p class="mb0">Wenn im Spiel „Du musst angemeldet sein, um auf Multiplayer-Servern zu spielen“
+      oder „Verbindung zur Welt nicht möglich“ erscheint, liegt es fast immer an einem der Punkte unten.</p>
+    </div>
+
+    <h2>1 · Windows (Minecraft-App aus dem Microsoft Store)</h2>
+    <ol class="steps">
+      <li>Minecraft starten. Steht oben rechts im Hauptmenü dein <b>Gamertag</b>? Dann bist du angemeldet.</li>
+      <li>Steht dort <b>„Anmelden“</b>, darauf klicken und mit deinem Microsoft-Konto anmelden.</li>
+      <li>Klappt es dort nicht: die <b>Xbox-App</b> von Windows öffnen, dort anmelden,
+          danach Minecraft neu starten. Beide Apps teilen sich dieselbe Anmeldung.</li>
+      <li>Bei „Anmeldung fehlgeschlagen“: in Windows unter
+          <b>Einstellungen → Konten → E-Mail &amp; Konten</b> das Microsoft-Konto entfernen und neu hinzufügen.</li>
+    </ol>
+
+    <h2>2 · PlayStation und Switch</h2>
+    <ol class="steps">
+      <li>Auf der Konsole Minecraft starten.</li>
+      <li>Auf dem Titelbildschirm <b>„Mit Microsoft-Konto anmelden“</b> wählen. Es wird ein Code
+          (und ein QR-Code) angezeigt.</li>
+      <li>Den QR-Code scannen oder am Handy/PC <code>microsoft.com/link</code> (auch
+          <code>aka.ms/remoteconnect</code>) öffnen, den angezeigten Code eingeben und mit dem
+          Microsoft-Konto anmelden.</li>
+      <li>Auf der PlayStation lässt sich die Verknüpfung nur im Spiel prüfen:
+          <b>Einstellungen → Allgemein → Konto/Profil</b> zeigt das verknüpfte Microsoft-Konto
+          (dort auch „Abmelden“, um ein anderes Konto zu verknüpfen). Eine PSN-ID kann nur mit
+          <b>einem</b> Microsoft-Konto verknüpft sein.</li>
+    </ol>
+    <p><b>Xbox:</b> Hier ist kein Code nötig – Minecraft nutzt automatisch das Xbox-Profil, mit dem
+       die Konsole angemeldet ist.</p>
+
+    <h2>3 · Voraussetzungen für Mehrspieler</h2>
+    <ul>
+      <li><b>Xbox / PlayStation / Switch:</b> ein aktives Online-Abo (Xbox Game Pass Essential – früher
+          „Core“ –, PS Plus bzw. Nintendo Switch Online) ist für Server im Internet normalerweise nötig.</li>
+      <li><b>Jugendschutz:</b> bei Kinderkonten muss unter
+          <code>account.xbox.com/settings</code> → <b>Datenschutz &amp; Online-Sicherheit</b> →
+          <b>Xbox-Datenschutz</b> → <b>Details anzeigen &amp; anpassen</b> → <b>Kommunikation &amp; Multiplayer</b>
+          sowohl <b>„Du kannst Multiplayer-Spielen beitreten“</b> als auch
+          <b>„Du kannst mit Personen außerhalb von Xbox spielen“</b> (netzwerkübergreifendes Spielen)
+          auf <i>Zulassen</i> stehen. Das ist bei neuen Kinderkonten oft gesperrt.</li>
+    </ul>
+
+    <h2>4 · Muss ich als Betreiber etwas eintragen?</h2>
+    <div class="note note-ok">
+      <b>Nein.</b> Weder beim Bedrock Dedicated Server noch bei Java + Crossplay musst du Microsoft-Zugangsdaten
+      in eine Konfiguration schreiben. Jeder Spieler meldet sich auf <i>seinem</i> Gerät bei Xbox Live an; der
+      Server prüft nur, dass diese Anmeldung echt ist. Bei Crossplay übernimmt das <b>Floodgate</b>
+      (<code>auth-type: floodgate</code>) – Bedrock-Spieler brauchen dafür <b>kein</b> Java-Konto.
+      Zugangsdaten wären nur bei <code>auth-type: online</code> nötig, das der Manager bewusst nicht verwendet.
+    </div>
+
+    <h2>5 · Einstellung im Server selbst</h2>
+    <p>Im Manager gibt es bei jedem Server den Schalter <b>„Xbox-Konto erforderlich (online-mode)“</b>:</p>
+    <ul>
+      <li><b>Ein (empfohlen):</b> Jeder Spieler wird gegen Xbox Live geprüft. Niemand kann sich als
+          jemand anderes ausgeben. Konsolenspieler müssen angemeldet sein.</li>
+      <li><b>Aus:</b> Nur sinnvoll, wenn die Anmeldung partout nicht funktioniert und ihr rein im
+          Heimnetz spielt. Der Server ist damit ungeschützt – bei offenem Port bitte nicht verwenden.</li>
+    </ul>
+  </div>
+</template>
+
+<template id="help-console">
+  <div class="page">
+    <h1>Xbox und PS5 mit dem Server verbinden</h1>
+    <p class="lead">Konsolen haben in Minecraft keinen Knopf „Server hinzufügen“. Mit einem
+       kleinen Umweg funktioniert es trotzdem – hier beide gängigen Wege.</p>
+
+    <div class="note note-info">
+      <b>Handy und die Windows-App</b> haben den Knopf dagegen schon:
+      <b>Spielen → Server → Server hinzufügen</b>, dort IP und Port eintragen. Fertig.
+      Der folgende Umweg ist für <b>Xbox</b>, <b>PlayStation</b> und <b>Nintendo Switch</b> nötig.
+    </div>
+
+    <h2>Weg A · Über einen Freund (am einfachsten, ohne Einstellungen)</h2>
+    <ol class="steps">
+      <li>Ein Mitspieler geht mit <b>Handy oder der Windows-App</b> auf deinen Server
+          (dort lässt sich die IP direkt eintragen).</li>
+      <li>Er muss in seinen Xbox-Datenschutzeinstellungen (<code>account.xbox.com/settings</code> →
+          <b>Datenschutz &amp; Online-Sicherheit</b>) erlauben, dass andere sehen dürfen, ob er online ist
+          und was er gerade spielt; unter <b>Kommunikation &amp; Multiplayer</b> müssen
+          „Du kannst Multiplayer-Spielen beitreten“ und das netzwerkübergreifende Spielen auf
+          <i>Zulassen</i> stehen.</li>
+      <li>Auf der Konsole ist dieser Spieler nun unter <b>Freunde</b> zu sehen –
+          mit <b>Beitreten</b> landest du auf demselben Server.</li>
+      <li>Voraussetzung: Ihr müsst euch auf Xbox Live gegenseitig als Freunde hinzugefügt haben.</li>
+    </ol>
+
+    <h2>Weg B · Über eine DNS-Adresse (Konsole allein, dauerhaft)</h2>
+    <p>Dabei wird auf der Konsole der DNS-Server umgestellt. Dadurch erscheint beim Antippen eines
+       „Empfohlenen Servers“ stattdessen eine Liste, in der du deine eigene IP eintragen kannst.
+       Das Verfahren ist unter dem Namen <b>BedrockConnect</b> bekannt.</p>
+
+    <h3>Auf der Xbox</h3>
+    <ol class="steps">
+      <li><b>Einstellungen → Allgemein → Netzwerkeinstellungen → Erweiterte Einstellungen → DNS-Einstellungen → Manuell</b></li>
+      <li>Als <b>primären DNS</b> eine BedrockConnect-Adresse eintragen, als sekundären
+          <code>8.8.8.8</code>.</li>
+      <li>Bestätigen, Minecraft starten, auf <b>Server</b> gehen und einen der
+          <b>„Empfohlenen Server“</b> (z.&nbsp;B. „The Hive“) antippen.</li>
+      <li>Es öffnet sich eine Liste. Dort <b>„Connect to a server“</b> wählen und deine IP
+          sowie den Port eintragen.</li>
+    </ol>
+
+    <h3>Auf der PS5 / PS4</h3>
+    <ol class="steps">
+      <li><b>Einstellungen → Netzwerk → Einstellungen → Internetverbindung einrichten</b></li>
+      <li>Die vorhandene Verbindung wählen → <b>Erweiterte Einstellungen</b> → <b>DNS-Einstellungen: Manuell</b></li>
+      <li>Primären DNS wie oben eintragen, sekundär <code>8.8.8.8</code>, speichern.</li>
+      <li>In Minecraft unter <b>Server</b> einen empfohlenen Server antippen und im erscheinenden
+          Menü deine IP und den Port eintragen.</li>
+    </ol>
+
+    <h3>Auf der Nintendo Switch</h3>
+    <ol class="steps">
+      <li><b>Systemeinstellungen → Internet → Interneteinstellungen</b> → aktuelles Netzwerk wählen
+          → <b>Einstellungen ändern</b> → <b>DNS-Einstellungen: Manuell</b></li>
+      <li>Primären DNS wie oben eintragen, sekundär <code>8.8.8.8</code>, speichern.</li>
+      <li>In Minecraft unter <b>Server</b> einen empfohlenen Server antippen und im erscheinenden
+          Menü deine IP und den Port eintragen.</li>
+    </ol>
+
+    <div class="note note-warn">
+      <b>Bitte bewusst entscheiden.</b>
+      <p>Ein DNS-Server sieht, welche Adressen deine Konsole aufruft. BedrockConnect ist ein
+      quelloffenes Community-Projekt, das viele dafür nutzen – es gehört aber <b>nicht</b> zu Mojang
+      oder Microsoft, und die öffentlichen Adressen betreibt jemand anderes. Aktuelle Adressen und
+      der Quellcode stehen auf der Projektseite auf GitHub
+      (<code>github.com/Pugmatt/BedrockConnect</code>).</p>
+      <p class="mb0">Wer das nicht möchte: Der Server lässt sich dort auch <b>selbst im Heimnetz</b>
+      betreiben, oder ihr nehmt einfach <b>Weg A</b> über einen Freund.</p>
+    </div>
+
+    <h3>DNS wieder zurückstellen</h3>
+    <p>Dieselben Menüs öffnen und DNS wieder auf <b>Automatisch</b> stellen. Falls Internetseiten
+       oder Streaming auf der Konsole plötzlich nicht mehr gehen, ist das meist der erste Schritt.</p>
+  </div>
+</template>
+
+<template id="help-fritzbox">
+  <div class="page">
+    <h1>Portfreigabe in der FritzBox</h1>
+    <p class="lead">Solange ihr alle im selben WLAN seid, braucht ihr das nicht. Sollen Freunde
+       von außerhalb beitreten, muss der Port in der FritzBox freigegeben werden.</p>
+
+    <div class="note note-info" id="fbPortNote">
+      <b>Welcher Port?</b> Öffne einen Server im Manager und gehe auf <b>Verbinden</b> –
+      dort stehen deine IP, der Port und das passende Protokoll (TCP oder UDP) fertig ausgefüllt.
+    </div>
+
+    <h2>Automatisch per UPnP (empfohlen)</h2>
+    <p>Die FritzBox kann Freigaben von einem Programm anlegen lassen. Dann klickst du im Manager unter
+       <b>Verbinden → Schritt 4</b> nur auf <b>„Portfreigabe jetzt anlegen“</b> – oder aktivierst in den Einstellungen
+       des Servers <b>„Portfreigabe beim Start automatisch anfordern“</b>.</p>
+    <ol class="steps">
+      <li><code>http://fritz.box</code> → <b>Heimnetz → Netzwerk → Netzwerkverbindungen</b></li>
+      <li>Diesen PC in der Liste suchen und auf den <b>Stift</b> (Bearbeiten) klicken.</li>
+      <li>Haken bei <b>„Selbstständige Portfreigaben für dieses Gerät erlauben“</b> setzen → <b>OK</b>.</li>
+      <li>Im Manager: <b>Verbinden → Portfreigabe jetzt anlegen</b>. Die Einträge erscheinen in der FritzBox unter
+          <b>Internet → Freigaben → Portfreigaben</b> mit der Bezeichnung „MCSM …“ und lassen sich dort auch löschen
+          (oder im Manager mit „Freigaben entfernen“).</li>
+    </ol>
+    <p class="muted small">Meldet der Manager „Nicht erlaubt“, fehlt genau dieser Haken. Bei DS-Lite (keine öffentliche IPv4)
+       legt die FritzBox die Freigabe zwar an, sie ist aus dem Internet aber nicht erreichbar – siehe unten.</p>
+
+    <h2>Schritt 1 · Feste IP für diesen PC</h2>
+    <p>Sonst zeigt die Freigabe nach einem Neustart eventuell auf ein anderes Gerät.</p>
+    <ol class="steps">
+      <li>Im Browser <code>http://fritz.box</code> öffnen und anmelden.</li>
+      <li><b>Heimnetz → Netzwerk → Netzwerkverbindungen</b></li>
+      <li>Diesen PC in der Liste suchen und auf den <b>Stift</b> (Bearbeiten) klicken.</li>
+      <li>Haken setzen bei <b>„Diesem Netzwerkgerät immer die gleiche IPv4-Adresse zuweisen“</b>.</li>
+      <li>Mit <b>OK</b> speichern.</li>
+    </ol>
+
+    <h2>Schritt 2 · Port freigeben</h2>
+    <ol class="steps">
+      <li><b>Internet → Freigaben → Portfreigaben</b></li>
+      <li>Unten auf <b>„Gerät für Freigaben hinzufügen“</b> klicken.</li>
+      <li>Oben bei <b>Gerät</b> diesen PC auswählen.</li>
+      <li>Auf <b>„Neue Freigabe“</b> klicken und <b>Portfreigabe</b> wählen.</li>
+      <li>Ausfüllen:
+        <ul>
+          <li><b>Anwendung:</b> <code>Andere Anwendung</code></li>
+          <li><b>Bezeichnung:</b> <code>Minecraft</code></li>
+          <li><b>Protokoll und Ports:</b> genau so, wie sie im Manager unter <b>Verbinden → Schritt 4</b> stehen –
+              der Manager zeigt für jeden Eintrag Protokoll, „Port an Gerät“, „bis Port“ und „extern gewünscht“.</li>
+        </ul>
+      </li>
+      <li><b>OK</b> und danach <b>Übernehmen</b> klicken. Fertig.</li>
+    </ol>
+
+    <div class="note note-info">
+      <b>Warum mehrere Einträge?</b>
+      <ul class="mb0">
+        <li><b>Bedrock Dedicated Server</b> (ab 1.26.51, NetherNet): ein <b>TCP</b>-Port für die Verbindung
+            (Standard 19132) <i>und</i> ein kleiner <b>UDP</b>-Bereich für die Spieldaten (z.&nbsp;B. 19142–19159, wächst mit
+            der Spieleranzahl). Beide Einträge sind nötig, sonst hängt der Beitritt. Außerdem muss der Server seine
+            <b>öffentliche IPv4</b> kennen, weil er Spielern nur bekannte Adressen anbietet – der Manager fragt sie beim Start
+            von der FritzBox ab (UPnP); sonst unter <b>Einstellungen</b> eintragen. Bei DS-Lite geht kein Beitritt aus dem Internet.</li>
+        <li><b>Java-Server:</b> nur <b>TCP</b> (Standard 25565).</li>
+        <li><b>Java mit Crossplay:</b> zusätzlich <b>UDP</b> für den Bedrock-Port von Geyser (Standard 19132).</li>
+      </ul>
+    </div>
+
+    <h2>Schritt 3 · Windows-Firewall</h2>
+    <p>Die FritzBox lässt den Port herein, Windows blockt ihn aber weiterhin.
+       Im Manager gibt es dafür auf der Seite <b>Verbinden</b> den Knopf
+       <b>„Windows-Firewall freigeben“</b> – Windows fragt dann einmal nach Administratorrechten.</p>
+
+    <h2>Schritt 4 · Adresse für die Freunde</h2>
+    <p>Deine öffentliche IP ändert sich bei den meisten Anschlüssen regelmäßig. Damit eure Adresse
+       gleich bleibt, richte <b>MyFRITZ!</b> ein:</p>
+    <ol class="steps">
+      <li><b>Internet → MyFRITZ!-Konto</b> und mit einer E-Mail-Adresse registrieren.</li>
+      <li>Ihr bekommt eine feste Adresse wie <code>xxxxx.myfritz.net</code>.</li>
+      <li>Diese Adresse geben deine Freunde zusammen mit dem Port im Spiel ein.</li>
+    </ol>
+
+    <div class="note note-warn">
+      <b>Wenn die Freigabe trotz allem nicht funktioniert: DS-Lite</b>
+      <p>Viele Anschlüsse – vor allem bei <b>Kabelanbietern</b> und in günstigen Tarifen – haben
+      <b>keine eigene öffentliche IPv4-Adresse</b> mehr. Portfreigaben für IPv4 laufen dann ins Leere.</p>
+      <p><b>So erkennst du es:</b> In der FritzBox unter <b>Internet → Online-Monitor</b> steht bei
+      „Verbindung“ etwas wie <b>DS-Lite</b>, oder unter <b>Übersicht</b> ist keine IPv4-Adresse zu sehen.</p>
+      <p class="mb0"><b>Möglichkeiten:</b> beim Anbieter eine öffentliche IPv4-Adresse anfragen (oft kostenlos
+      auf Nachfrage), den Zugriff über <b>IPv6</b> einrichten (in der FritzBox-Freigabe die IPv6-Option
+      aktivieren; der Bedrock-Server nimmt IPv6-Verbindungen auf Port <i>Port+1</i> an, Java auf demselben
+      Port – beide Seiten brauchen IPv6) oder ein gemietetes Server-Angebot nutzen.
+      <b>Weg A (Freundesliste) hilft hier nicht</b>, denn auch der Freund muss den Server aus dem
+      Internet erreichen können. Der Manager kann daran nichts ändern.</p>
+    </div>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

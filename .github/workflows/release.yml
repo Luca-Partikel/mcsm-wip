@@ -1,0 +1,40 @@
+name: Release
+
+# Baut bei jedem Tag "vX.Y.Z" das ZIP, die Setup.exe (IExpress) und SHA256SUMS.txt und legt das
+# GitHub-Release an. Installierte Manager finden das Update über die Release-API.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pakete bauen
+        run: python tools/build_installer.py
+
+      - name: Prüfsummen
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.zip, dist/*.exe | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Release anlegen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/MinecraftServerManager.zip
+            dist/MinecraftServerManager-Setup.exe
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
