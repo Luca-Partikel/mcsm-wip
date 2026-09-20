@@ -36,6 +36,7 @@ APP_NAME = "Minecraft Server Manager"
 INSTANCE_FILE = store.DATA_DIR / "instance.json"
 LOG_FILE = store.DATA_DIR / "manager.log"
 HTTPD: ThreadingHTTPServer | None = None
+TRAY: tray.Tray | None = None                         # Tray-Symbol, damit der Konsolen-Handler es entfernen kann
 log = logging.getLogger("mcsm")
 
 # Feste Typen für die eigenen Dateien: mimetypes liest unter Windows die Registry, wo .js auf
@@ -151,8 +152,16 @@ def api_versions(_body, query) -> dict:
     return {"bedrock": sources.bedrock_versions()}
 
 
+def _sanitize(body, existing=None) -> dict:
+    """store.sanitize mit verständlicher Fehlermeldung (400 statt „Unerwarteter Fehler“)."""
+    try:
+        return store.sanitize(body, existing=existing)
+    except ValueError as exc:
+        raise ApiError(str(exc)) from exc
+
+
 def api_create(body, _query) -> dict:
-    cfg = store.sanitize(body)
+    cfg = _sanitize(body)
     if not cfg.get("eula_accepted"):
         raise ApiError("Bitte zuerst die Minecraft-EULA bestätigen.")
     if not cfg["version"]:
@@ -168,7 +177,7 @@ def api_settings(body, _query, server_id: str = "") -> dict:
     _no_job(server_id)
     if manager.is_running(server_id):
         raise ApiError("Bitte den Server zuerst stoppen, um Einstellungen zu ändern.")
-    updated = store.sanitize(body, existing=cfg)
+    updated = _sanitize(body, existing=cfg)
     store.save(updated)
     manager.apply_config(updated)
     return {"server": _server_view(updated)}
@@ -179,7 +188,7 @@ def api_reinstall(body, _query, server_id: str = "") -> dict:
     _no_job(server_id)
     if manager.is_running(server_id):
         raise ApiError("Bitte den Server zuerst stoppen.")
-    updated = store.sanitize(body, existing=cfg)
+    updated = _sanitize(body, existing=cfg)
     store.save(updated)
     job = manager.install_async(updated)
     return {"job_id": job["id"]}
@@ -688,13 +697,15 @@ if sys.platform == "win32":
         # wird der Prozess beendet – was dann noch läuft, beendet das Job-Objekt (core/manager.py).
         # Ohne diesen Handler würde Python sofort beendet und der finally-Block liefe nie.
         if ctrl_type in (2, 5, 6):
+            if TRAY:                                  # sonst bleibt ein „Geister-Symbol“ neben der Uhr zurück
+                TRAY.stop(0.5)
             manager.emergency_stop_all(4.0)
             return True
         return False          # Strg+C / Strg+Untbr: normal an Python weiterreichen (KeyboardInterrupt -> finally)
 
 
 def main() -> int:
-    global HTTPD
+    global HTTPD, TRAY
     setup_logging()
 
     existing = running_instance()
@@ -716,7 +727,7 @@ def main() -> int:
     if sys.stdout is not None:
         print("Zum Beenden: Knopf „Manager beenden“ in der Oberfläche oder Strg+C.", flush=True)
 
-    tray_icon = start_tray(url)
+    tray_icon = TRAY = start_tray(url)
 
     def update_checks() -> None:                      # kurz nach dem Start, danach alle 6 Stunden
         time.sleep(6)

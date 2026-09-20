@@ -3,7 +3,7 @@
   "short_name": "MC Server",
   "description": "Bedrock- und Java-Server lokal einrichten und verwalten",
   "start_url": "./",
-  "display": "standalone",
+  "display": "browser",
   "background_color": "#0d1117",
   "theme_color": "#0d1117",
   "icons": [

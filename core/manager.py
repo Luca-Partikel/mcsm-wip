@@ -258,7 +258,12 @@ _UPNP_HINTS = {
     "729": "Konflikt mit einer bestehenden Freigabe in der FritzBox.",
     "725": "Router erlaubt nur dauerhafte Freigaben.",
     "402": "Ungültige Angaben (Port/Protokoll).",
+    "403": "Die FritzBox lehnt die Freigabe ab (403). Meist fehlt eine öffentliche IPv4-Adresse (DS-Lite/CGNAT) – "
+           "oder „Selbstständige Portfreigaben“ ist für diesen PC nicht erlaubt.",
 }
+NO_IPV4_HINT = ("Die FritzBox meldet keine öffentliche IPv4-Adresse (DS-Lite/CGNAT). IPv4-Portfreigaben sind an diesem "
+                "Anschluss wirkungslos – Freunde aus dem Internet erreichen den Server nur per IPv6 (beide Seiten), über "
+                "eine vom Anbieter freigeschaltete IPv4 oder über einen Tunnel-Dienst wie playit.gg.")
 
 
 def _upnp_hosts() -> list[str]:
@@ -312,8 +317,10 @@ def request_port_mappings(cfg: dict) -> dict:
         results.append({"proto": proto, "port": port, "ok": ok, "error": "" if ok else text})
         if not ok and "Nicht erlaubt" in text:
             break                                     # weitere Versuche wären sinnlos
+    ext = fritz_external_ip()
+    hint = "" if ext else NO_IPV4_HINT
     return {"ok": bool(results) and all(r["ok"] for r in results), "results": results,
-            "internal_ip": ip, "external_ip": fritz_external_ip()}
+            "internal_ip": ip, "external_ip": ext, "hint": hint}
 
 
 def remove_port_mappings(cfg: dict) -> dict:

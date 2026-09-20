@@ -164,8 +164,14 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
         ip = str(raw.get("public_ip") or "").strip()
         cfg["public_ip"] = ip if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) else ""
     if "public_address" in raw:
+        # Typische Eingaben von der MyFRITZ!-Seite normalisieren (URL, Pfad, Port), dann laut ablehnen
+        # statt stillschweigend zu leeren – die Oberfläche meldet sonst „gespeichert“ bei leerem Feld.
         addr = str(raw.get("public_address") or "").strip().lower()
-        cfg["public_address"] = addr[:96] if re.fullmatch(r"[a-z0-9.\-]{1,96}", addr) else ""
+        addr = re.sub(r"^[a-z][a-z0-9+.\-]*://", "", addr).split("/", 1)[0]   # URL -> Host
+        addr = re.sub(r":\d{1,5}$", "", addr)                                   # host:port -> host
+        if addr and not re.fullmatch(r"[a-z0-9](?:[a-z0-9.\-]{0,94}[a-z0-9])?", addr):
+            raise ValueError("Öffentliche Adresse: nur Hostname oder IPv4 eintragen, z. B. abc123.myfritz.net")
+        cfg["public_address"] = addr
 
     gm = str(raw.get("gamemode", cfg["gamemode"])).lower()
     cfg["gamemode"] = gm if gm in VALID_GAMEMODES else "survival"

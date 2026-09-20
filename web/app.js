@@ -25,6 +25,8 @@ const state = {
   versions: { java: null, bedrock: null },
   consoleNext: 0,
   publicIp: null,
+  publicIpAt: 0,            // Zeitpunkt der letzten Router-Abfrage (0 = noch nie)
+  publicIpBusy: false,
   timers: { status: null, console: null, job: null, xbox: null, xboxJob: null },
   xboxSig: '',
 };
@@ -96,17 +98,42 @@ function portsOf(s) {
 const addrPorts = (s) => portsOf(s).filter((p) => !p.range);
 const publicAddr = (s) => s.public_address || state.publicIp || '';
 
-/* Öffentliche IP einmalig vom Router holen (UPnP, kein Fremddienst) und im Dashboard eintragen. */
-async function ensurePublicIp() {
-  if (state.publicIp || state.publicIpTried) return;
-  state.publicIpTried = true;
-  try { const d = await api('publicip?auto=1'); state.publicIp = d.ip; }
-  catch { state.publicIpError = true; }
+/* Platzhalter, solange keine Adresse bekannt ist – nach einem gescheiterten Versuch mit Hinweis statt „wird ermittelt“. */
+const pubPlaceholder = () => state.publicIpAt && !state.publicIp ? 'unbekannt – unter „Verbinden“ ermitteln' : '… wird ermittelt';
+
+/* Erklärungszeile unter der Adresse im Dashboard – je nachdem, woher die Adresse stammt. */
+function pubNote(s) {
+  const settings = '<a href="#" data-tab-go="settings">Einstellungen</a>';
+  const src = s.public_address ? `Feste Adresse aus den ${settings}.`
+    : state.publicIp ? `Öffentliche IP von der FritzBox ermittelt – für eine feste MyFRITZ!-Adresse: ${settings}.`
+    : state.publicIpAt ? `Die FritzBox hat keine öffentliche IPv4 gemeldet – MyFRITZ!-Adresse in den ${settings} eintragen.`
+    : `Öffentliche IP wird von der FritzBox abgefragt – für eine feste MyFRITZ!-Adresse: ${settings}.`;
+  return `${src} Portfreigabe nötig: <a href="#" data-tab-go="connect">Verbinden</a>.`;
+}
+
+/* Alle Adresszeilen (Dashboard und Verbinden) mit der aktuellen öffentlichen Adresse füllen. */
+function patchPublicAddr() {
   const s = server();
   if (!s) return;
   $$('[data-pub-port]').forEach((el) => {
-    el.textContent = publicAddr(s) ? `${publicAddr(s)} : ${el.dataset.pubPort}` : 'unbekannt – unter „Verbinden“ ermitteln';
+    el.textContent = publicAddr(s) ? `${publicAddr(s)} : ${el.dataset.pubPort}` : (el.dataset.pubEmpty || pubPlaceholder());
   });
+  $$('[data-pub-note]').forEach((el) => {
+    el.innerHTML = pubNote(s);
+    $$('[data-tab-go]', el).forEach((a) => a.onclick = (e) => { e.preventDefault(); state.tab = a.dataset.tabGo; render(); });
+  });
+}
+
+/* Öffentliche IP vom Router holen (UPnP, kein Fremddienst) und im Dashboard eintragen.
+   Bei Misserfolg höchstens einmal pro Minute erneut fragen – die FritzBox kann später erreichbar sein. */
+async function ensurePublicIp() {
+  if (state.publicIp || state.publicIpBusy) return;
+  if (Date.now() - state.publicIpAt < 60000) { patchPublicAddr(); return; }
+  state.publicIpBusy = true;
+  try { state.publicIp = (await api('publicip?auto=1')).ip; }
+  catch { /* Router antwortet nicht */ }
+  finally { state.publicIpAt = Date.now(); state.publicIpBusy = false; }
+  patchPublicAddr();
 }
 const rangeNote = (s) => portsOf(s).filter((p) => p.range).map((p) => `<div class="muted small">Zusätzlich nutzt der Server <b>${p.proto} ${p.from}–${p.to}</b> (${esc(p.label)}) – wichtig für Firewall und Portfreigabe, nicht zum Eintippen.</div>`).join('');
 
@@ -199,6 +226,7 @@ function pmHtml(d, removed = false) {
     ? `<div class="note note-ok" style="margin:0">${removed ? 'Alle Freigaben entfernt.' : `Alle ${total} Freigaben aktiv${d.external_ip ? ' – öffentliche IP <b>' + esc(d.external_ip) + '</b>' : ''}.`}</div>`
     : `<div class="note note-err" style="margin:0"><b>${ok} von ${total} ${removed ? 'entfernt' : 'angelegt'}.</b> ${errors.map((e) => esc(e)).join('<br>')}</div>`;
   html += `<div class="muted small" style="margin-top:6px">${d.results.map((r) => `${r.ok ? '✓' : '✗'} ${r.proto} ${r.port}`).join(' · ')}</div>`;
+  if (d.hint) html += `<div class="note note-warn" style="margin:10px 0 0"><b>Kein öffentliches IPv4:</b> ${esc(d.hint)}</div>`;
   return html;
 }
 
@@ -637,11 +665,8 @@ function tabOverview(s) {
       </div>
       <div class="h-addr">
         ${addrPorts(s).map((p) => `<div class="addr addr-pub"><div><div class="a-k">Für Freunde · ${p.label}</div>
-          <div class="a-v" data-pub-port="${p.port}">${publicAddr(s) ? esc(publicAddr(s)) + ' : ' + p.port : '… wird ermittelt'}</div></div><span class="pill pill-green">${p.proto}</span></div>`).join('')}
-        <div class="muted small">${s.public_address
-          ? 'Feste Adresse aus den <a href="#" data-tab-go="settings">Einstellungen</a>.'
-          : 'Öffentliche IP von der FritzBox ermittelt – für eine feste MyFRITZ!-Adresse: <a href="#" data-tab-go="settings">Einstellungen</a>.'}
-          Portfreigabe nötig: <a href="#" data-tab-go="connect">Verbinden</a>.</div>
+          <div class="a-v" data-pub-port="${p.port}">${publicAddr(s) ? esc(publicAddr(s)) + ' : ' + p.port : pubPlaceholder()}</div></div><span class="pill pill-green">${p.proto}</span></div>`).join('')}
+        <div class="muted small" data-pub-note>${pubNote(s)}</div>
         <div class="lan-line muted small">Im Heimnetz: ${addrPorts(s).map((p) => `<code>${esc(ip)}:${p.port}</code>`).join(' · ')}</div>
       </div>
     </div>
@@ -787,9 +812,9 @@ function tabConnect(s) {
   <h2>2 · Über das Internet</h2>
   <p>Freunde außerhalb deines Netzes brauchen deine <b>öffentliche IP</b> (oder deine MyFRITZ!-Adresse) plus den Port.
      Damit das klappt, sind die Schritte 3 und 4 nötig.</p>
-  <div class="addr"><div><div class="a-k">Öffentliche Adresse</div>
-    <div class="a-v" id="pubAddr">${pub ? esc(pub) + ' : ' + addrPorts(s)[0].port : '– noch nicht ermittelt –'}</div></div>
-    <button class="btn btn-sm" id="btnPublicIp">Öffentliche IP ermitteln</button></div>
+  ${addrPorts(s).map((p) => `<div class="addr"><div><div class="a-k">Öffentliche Adresse · ${p.label}</div>
+    <div class="a-v" data-pub-port="${p.port}" data-pub-empty="– noch nicht ermittelt –">${pub ? esc(pub) + ' : ' + p.port : '– noch nicht ermittelt –'}</div></div><span class="pill pill-green">${p.proto}</span></div>`).join('')}
+  <div class="btn-row"><button class="btn btn-sm" id="btnPublicIp">Öffentliche IP ermitteln</button></div>
   <p class="muted small">Die Abfrage fragt zuerst deine FritzBox (UPnP), sonst einmalig den Dienst <code>api.ipify.org</code> – nur wenn du den Knopf drückst.</p>
   ${s.type === 'bedrock' ? `<div class="note note-info"><b>Bedrock (NetherNet) muss seine öffentliche IPv4 kennen.</b> Der Server bietet Spielern nur Adressen an, die er kennt –
      die Portfreigabe allein reicht nicht. Der Manager fragt die IP bei jedem Start automatisch von der FritzBox ab (UPnP) und trägt sie ein; klappt das nicht
@@ -1085,7 +1110,7 @@ function bindServer() {
   if (state.tab === 'connect') {
     $('#btnPublicIp').onclick = async () => {
       const b = $('#btnPublicIp'); b.disabled = true;
-      try { const d = await api('publicip'); state.publicIp = d.ip; $('#pubAddr').textContent = `${d.ip} : ${addrPorts(s)[0].port}`; }
+      try { const d = await api('publicip'); state.publicIp = d.ip; patchPublicAddr(); }
       catch (e) { toast(e.message, true); } finally { b.disabled = false; }
     };
     $('#btnFirewall').onclick = async () => {

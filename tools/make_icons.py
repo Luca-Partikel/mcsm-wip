@@ -4,7 +4,8 @@
 Ein Motiv, überall dasselbe: ein leuchtender Grasblock (isometrischer Würfel) auf dunkler,
 abgerundeter Kachel. Erzeugt
   web/logo.svg            – Vektorlogo (Seitenleiste, Startseite, Browser-Tab)
-  web/icon-192.png, web/icon-512.png, web/favicon.png – für App-Fenster/Taskleiste (Edge) und Tab
+  web/favicon.png         – Favicon: daraus nimmt Edge das Symbol für App-Fenster und Taskleiste
+  web/icon-192.png, web/icon-512.png – große Tab-/Touch-Icons und Manifest (Edge --app nutzt sie nicht)
   app.ico                 – Windows-Icon 16…256 px (Verknüpfung, Explorer, Tray, Setup)
 
 Aufruf: python tools\\make_icons.py  (wird auch von tools\\build_installer.py benutzt)

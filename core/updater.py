@@ -158,15 +158,31 @@ def _extract(archive: pathlib.Path, job: dict) -> int:
 
 
 def _schedule_restart() -> None:
-    """Wartet (unsichtbar) auf das Ende dieses Prozesses und startet den Manager neu."""
+    """Wartet (unsichtbar) auf das Ende dieses Prozesses und startet den Manager über Start.vbs neu.
+    Bewusst eine kleine Batch-Datei statt PowerShell – keine Anführungszeichen-Akrobatik."""
     vbs = store.BASE / "Start.vbs"
     if sys.platform != "win32" or not vbs.exists():
         return
-    script = (f"$p = {os.getpid()}; while (Get-Process -Id $p -ErrorAction SilentlyContinue) "
-              f"{{ Start-Sleep -Milliseconds 500 }}; "
-              f"Start-Process -FilePath wscript.exe -ArgumentList '//B', '\"{vbs}\"'")
-    subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
-                     creationflags=manager.CREATE_NO_WINDOW | 0x00000008 | 0x00000200,   # DETACHED, NEW_PROCESS_GROUP
+    pid = os.getpid()
+    helper = store.DATA_DIR / "restart.cmd"
+    # Absolute Pfade: im PATH könnte ein anderes `find` (z. B. aus Git) vor dem Windows-Werkzeug liegen.
+    sys32 = "%SystemRoot%\\System32"
+    lines = [
+        "@echo off",
+        ":warten",
+        f'"{sys32}\\tasklist.exe" /FI "PID eq {pid}" 2>nul | "{sys32}\\findstr.exe" /C:" {pid} " >nul',
+        "if not errorlevel 1 (",
+        f'  "{sys32}\\ping.exe" -n 2 127.0.0.1 >nul',
+        "  goto warten",
+        ")",
+        f'"{sys32}\\ping.exe" -n 2 127.0.0.1 >nul',
+        f'start "" "{sys32}\\wscript.exe" //B "{vbs}"',
+    ]
+    helper.write_text("\r\n".join(lines) + "\r\n", encoding="cp1252")
+    # Versteckte eigene Konsole (CREATE_NO_WINDOW), aber NICHT DETACHED_PROCESS: ohne Konsole scheitern
+    # die Pipes in der Batch-Datei. Eigene Prozessgruppe, damit das Ende des Managers ihn nicht mitreißt.
+    subprocess.Popen(["cmd.exe", "/c", str(helper)], cwd=str(store.BASE),
+                     creationflags=manager.CREATE_NO_WINDOW | 0x00000200,                # CREATE_NEW_PROCESS_GROUP
                      close_fds=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
