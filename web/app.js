@@ -919,9 +919,6 @@ function companionCard(s) {
     : live ? `<span class="pill pill-green">aktiv · v${esc(st.plugin_version || '?')}</span>`
     : c.installed ? '<span class="pill pill-grey">bereit</span>' : '<span class="pill pill-blue">wird beim Start eingerichtet</span>';
   return `<div class="card-head"><h3>🧩 Begleit-Plugin MCSMCompanion</h3>${pill}</div>
-    <p class="small">Schöner Chat mit Farbcodes, Join-/Leave- und Todesmeldungen, Tablist mit „Sponsored by Novelnia“ sowie
-       <code>/tpa</code> <code>/tp</code> <code>/gm</code> <code>/sethome</code> <code>/home</code> <code>/spawn</code>.
-       Der Manager legt das Plugin <b>vor jedem Start neu</b> in <code>plugins</code> – löschen bringt nichts, es kommt wieder.</p>
     <div class="stats" style="margin:8px 0">
       <div class="stat"><div class="k">MCSM-Hardcore</div><div class="v sm">${hcOn ? '🔥 an' : 'aus'}</div></div>
       ${live ? `<div class="stat"><div class="k">Spieler online</div><div class="v sm">${Number(st.online || 0)} / ${Number(st.max_players || s.max_players)}</div></div>` : ''}
