@@ -11,7 +11,6 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.entity.Player;
-import org.bukkit.event.player.PlayerTeleportEvent;
 
 /** /sethome, /home, /delhome, /homes – Recht mcsm.home (Standard: alle). */
 public final class HomeCommands implements TabExecutor {
@@ -82,14 +81,9 @@ public final class HomeCommands implements TabExecutor {
             Msg.error(p, "Die Welt dieses Homes existiert nicht mehr.");
             return true;
         }
-        final String shown = name;
-        p.teleportAsync(loc, PlayerTeleportEvent.TeleportCause.COMMAND).thenAccept(ok -> {
-            if (Boolean.TRUE.equals(ok)) {
-                Msg.send(p, "<gray>Willkommen zu Hause (<white><n></white>).</gray>", Msg.text("n", shown));
-            } else {
-                Msg.error(p, "Teleport fehlgeschlagen.");
-            }
-        });
+        // Home-Namen sind auf [a-z0-9_-] begrenzt und können keine MiniMessage-Tags einschleusen.
+        plugin.teleports().request(p, loc, "home",
+                "<gray>Willkommen zu Hause (<white>" + name + "</white>).</gray>");
         return true;
     }
 

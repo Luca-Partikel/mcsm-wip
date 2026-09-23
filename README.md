@@ -38,6 +38,8 @@ Ordner: `servers/<id>/` (Server + Welt), `cache/` (Downloads), `runtime/` (Java)
 - **Übersicht:** Status, Adressen, Kennzahlen, Welten mit Backup-Knopf, Xbox-Freunde-Modus, letzte Konsolenzeilen.
 - **Verbinden:** Heimnetz-Adresse, öffentliche IP, Windows-Firewall-Regel per Knopf (UAC), FritzBox-Anleitung mit den
   konkreten Ports des Servers, Wege für Xbox/PS5/Switch.
+- **Spieler:** Freigabeliste (Whitelist), gesperrte Spieler und wer gerade online ist – mit Hinzufügen,
+  Entfernen, Sperren, Entsperren und Hinauswerfen. Nur auf Bedrock-Servern und Java-Servern mit Paper.
 - **Konsole:** Live-Ausgabe und Befehle.
 - **Dateien:** Server-Ordner (nur Welten, Einstellungen, Plugins, Logs, Backups – Technik ausgeblendet);
   `server.properties` als Formular mit deutschen Erklärungen, YAML/JSON/TXT direkt editierbar (mit `.bak`-Sicherung).
@@ -60,6 +62,27 @@ Die vom Pack installierten Dateien stehen in `modpack-index.json`; ein Versionsw
 entfernt genau diese und lädt die neue Version – Welt und eigene Konfiguration bleiben. Kein Geyser/Crossplay und
 keine Bukkit-Plugins auf Mod-Loadern. API: `GET /api/modpacks/search?q=…&page=0`, `GET /api/modpacks/<project_id>/versions`.
 
+## Spielerverwaltung (Tab „Spieler“)
+
+Drei Karten: **Freigabeliste** (Schalter an/aus, Namen hinzufügen und entfernen), **Gesperrte Spieler**
+(mit Grund, wer gesperrt hat und Ablauf) und **Gerade online** (Hinauswerfen, Sperren). Den Tab gibt es auf
+Java-Servern mit Paper und auf Bedrock-Servern (dort heißt die Liste `allowlist.json`; Bedrock kennt keine
+eigene Sperrliste – wer nicht mehr mitspielen soll, wird aus der Erlaubnisliste genommen). Modpack-Server
+haben den Tab nicht.
+
+- **Server läuft:** Alles geht als Konsolenbefehl an den Server (`whitelist`/`allowlist on|off|add|remove|reload`,
+  `ban`, `pardon`, `kick`), greift also sofort; danach liest der Manager die Dateien neu. Den Namen schlägt
+  der Server selbst nach.
+- **Server gestoppt:** Der Manager schreibt `whitelist.json`, `banned-players.json` bzw. `allowlist.json`
+  direkt – gültiges JSON, UTF-8, atomar über `.tmp` + Umbenennen, im Vanilla-Format (Zeiten als
+  `yyyy-MM-dd HH:mm:ss Z`). Die UUID zu einem neuen Namen kommt aus `usercache.json` oder von
+  `api.mojang.com`; nur bei gestopptem Server sind auch **Sperren auf Zeit** (1h bis 30d) möglich.
+- **Wer online ist** liest der Manager aus `plugins/MCSMCompanion/status.json`, wenn dort eine Spielerliste
+  steht; sonst schickt er `list` an die Konsole und wertet die Antwort aus.
+- API: `GET /api/servers/<id>/players` und `POST /api/servers/<id>/players`
+  mit `{"action": "whitelist_on|whitelist_off|whitelist_add|whitelist_remove|ban|unban|kick",
+  "name": "…", "reason": "…", "duration": "1h|6h|1d|7d|30d"}`.
+
 ## Xbox-Freunde-Modus
 
 Ein Bot-Konto (empfohlen: Zweitkonto) meldet sich per MCXboxBroadcast bei Xbox Live an; alle Freunde dieses Kontos
@@ -74,6 +97,11 @@ aus `assets/` neu ab und schreibt die verwalteten Schlüssel in `plugins/MCSMCom
 Start wieder da. Es bringt Chat-Format mit Farbcodes, Join-/Leave-/Todesmeldungen, Tablist „Sponsored by Novelnia“,
 `/tpa` `/tp` `/gm` `/sethome` `/home` `/spawn` und meldet über `status.json`
 verdächtige Plugins (gefälschte Spielerzahlen). Quelltext und Details: `plugin/README.md`, Bauen: `tools/build_plugin.py`.
+
+**Angekündigter Stopp:** Auf Paper-Servern schickt der Knopf **„Stoppen“** zuerst `mcsmstop 10` – das Plugin
+zählt im Spiel herunter (und überspringt den Countdown, wenn niemand online ist) und stoppt den Server dann
+selbst. Antwortet der Server innerhalb von 15 Sekunden nicht (z. B. weil das Plugin fehlt und er
+„Unknown command“ meldet), geht wie bisher `stop` hinterher. Bedrock und Modpacks stoppen unverändert.
 
 **MCSM-Hardcore** (kein Vanilla-Hardcore, beim Erstellen oder in den Einstellungen wählbar, im Dashboard schaltbar,
 im Spiel `/hardcore on|off` für OPs): Wer stirbt, wird ohne Todesbildschirm sofort Zuschauer an seinem Grab

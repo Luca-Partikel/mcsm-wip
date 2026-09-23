@@ -37,6 +37,9 @@ public final class TablistTask implements Runnable {
 
     /** Aktualisierung im nächsten Tick (nach Join/Quit ist die Spielerliste dann aktuell). */
     public void refreshLater() {
+        if (!plugin.isEnabled()) {
+            return;       // beim Plugin-Ende (Abschieds-Kick in onDisable) gibt es keinen nächsten Tick mehr
+        }
         Bukkit.getScheduler().runTask(plugin, this);
     }
 

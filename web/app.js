@@ -22,6 +22,7 @@ const state = {
   install: null,            // { serverId, jobId, job, after }
   xbox: null,               // Assistent für den Xbox-Freunde-Modus
   files: { path: '', showAll: false, open: null, mode: 'form', props: null, content: '', dirty: false },
+  players: { data: null, running: null },   // Spielerverwaltung: zuletzt geladenes Bild + Serverzustand dazu
   versions: { java: null, bedrock: null },
   consoleNext: 0,
   publicIp: null,
@@ -83,6 +84,8 @@ const fmtCount = (n) => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.0', '') + ' Mi
 const LOADER_NAMES = { fabric: 'Fabric', quilt: 'Quilt', neoforge: 'NeoForge', forge: 'Forge', paper: 'Paper' };
 const isModpack = (s) => s.type === 'java' && !!s.flavor && s.flavor !== 'paper';
 const bedrockPlayers = (s) => s.type === 'bedrock' || (s.type === 'java' && !isModpack(s) && !!s.geyser);   // kommen Konsolen/Handys drauf?
+/* Spielerverwaltung: Bedrock (allowlist.json) und Java mit Paper (whitelist.json) – Modpacks haben keine solche Liste. */
+const playersApply = (s) => s.type === 'bedrock' || (s.type === 'java' && !isModpack(s));
 const typeLabel = (s) => s.type === 'bedrock' ? 'Bedrock Dedicated Server'
   : isModpack(s) ? `Modpack · ${LOADER_NAMES[s.flavor] || s.flavor}`
   : s.geyser ? 'Java + Crossplay (Paper + Geyser)' : 'Java Edition (Paper, nur Java)';
@@ -779,10 +782,14 @@ window.openServer = openServer;
 function renderServer() {
   const s = server();
   if (!s) return renderWelcome();
-  const tabs = [['overview', 'Übersicht'], ['connect', 'Verbinden'], ['console', 'Konsole'], ['files', 'Dateien'], ['settings', 'Einstellungen']];
+  if (state.tab === 'players' && !playersApply(s)) state.tab = 'overview';   // Modpack-Server haben den Tab nicht
+  const tabs = [['overview', 'Übersicht'], ['connect', 'Verbinden'],
+    ...(playersApply(s) ? [['players', 'Spieler']] : []),
+    ['console', 'Konsole'], ['files', 'Dateien'], ['settings', 'Einstellungen']];
   let body = '';
   if (state.tab === 'overview') body = tabOverview(s);
   else if (state.tab === 'connect') body = tabConnect(s);
+  else if (state.tab === 'players') body = tabPlayers(s);
   else if (state.tab === 'console') body = tabConsole(s);
   else if (state.tab === 'files') body = tabFiles(s);
   else body = tabSettings(s);
@@ -1099,6 +1106,169 @@ function tabConnect(s) {
   <p>Ausführlich mit allen Fallstricken (feste IP, DS-Lite): <a href="#" data-gohelp="fritzbox">Hilfe → FritzBox-Portfreigabe</a></p>
   </div>
   </div>`;
+}
+
+/* ---------- Spieler (Freigabeliste, Sperrliste, wer gerade online ist) */
+
+const BAN_DURATIONS = [['', 'dauerhaft'], ['1h', '1 Stunde'], ['6h', '6 Stunden'], ['1d', '1 Tag'], ['7d', '7 Tage'], ['30d', '30 Tage']];
+/* Minecraft schreibt Zeiten als „2026-09-30 02:00:35 +0200“ – für die Anzeige reicht Tag und Uhrzeit. */
+const fmtBanTime = (t) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(t || '');
+  return m ? `${m[3]}.${m[2]}.${m[1]} um ${m[4]}:${m[5]} Uhr` : t;
+};
+
+function tabPlayers(s) {
+  const be = s.type === 'bedrock';
+  return `
+  <div class="note note-info" style="margin-top:0">
+    <b>${be ? 'Erlaubnisliste' : 'Freigabeliste'}:</b> Ist sie eingeschaltet, kommen nur Spieler auf den Server, die darauf stehen –
+    alle anderen werden beim Beitreten abgewiesen. ${be
+      ? 'Der Bedrock-Server führt keine eigene Sperrliste: Wer nicht mehr mitspielen soll, wird aus der Erlaubnisliste genommen.'
+      : 'Sperren geht auch bei gestopptem Server – der Manager trägt sie dann direkt in die Serverdateien ein.'}
+    Läuft der Server, wirkt jede Änderung sofort.
+  </div>
+  <div id="playersBox"><div class="card"><div class="muted small">Wird geladen …</div></div></div>`;
+}
+
+const plRow = (name, meta, buttons) => `<div class="wrow"><div><div class="w-name">${esc(name)}</div>${
+  meta ? `<div class="w-meta">${meta}</div>` : ''}</div><div class="btn-row">${buttons}</div></div>`;
+const plHint = (text) => `<div class="muted small" style="padding:10px 0">${text}</div>`;
+
+/* Karte 1: Freigabeliste (Java: whitelist.json · Bedrock: allowlist.json) */
+function plAllowCard(s, d) {
+  const be = d.kind === 'bedrock';
+  const label = be ? 'Erlaubnisliste' : 'Freigabeliste';
+  const rows = d.allowed.map((p) => plRow(p.name, '',
+    `<button class="btn btn-sm" data-pl="whitelist_remove" data-name="${esc(p.name)}">Entfernen</button>`)).join('');
+  return `<div class="card">
+    <div class="card-head"><h3>✅ ${label}</h3>
+      <span class="pill ${d.enabled ? 'pill-green' : 'pill-grey'}">${d.enabled ? 'eingeschaltet' : 'ausgeschaltet'}</span></div>
+    ${d.enabled && !d.allowed.length
+      ? '<div class="note note-warn" style="margin:0 0 10px"><b>Die Liste ist eingeschaltet, aber leer</b> – so kommt niemand auf den Server. Unten den ersten Namen eintragen.</div>'
+      : `<p class="small">${d.enabled
+        ? `Es kommen nur diese ${d.allowed.length === 1 ? 'eine Person' : d.allowed.length + ' Spieler'} auf den Server.`
+        : 'Zurzeit darf jeder mitspielen, der die Adresse kennt.'}</p>`}
+    <div class="btn-row" style="margin-bottom:6px">
+      <button class="btn btn-sm" data-pl="${d.enabled ? 'whitelist_off' : 'whitelist_on'}">${d.enabled ? 'Liste ausschalten' : 'Liste einschalten'}</button>
+    </div>
+    <div class="pl-list">${rows || plHint('Noch niemand eingetragen – unten den ersten Namen hinzufügen.')}</div>
+    <div class="flex" style="margin-top:12px">
+      <input type="text" id="plAddName" autocomplete="off" placeholder="${be ? 'Gamertag, z. B. Anna Meier' : 'Spielername, z. B. Anna_2011'}">
+      <button class="btn btn-sm" id="plAdd">+ Hinzufügen</button></div>
+    ${d.running ? '' : `<div class="muted small" style="margin-top:8px">Der Server ist gestoppt – der Manager schreibt den Namen direkt in die Datei${
+      be ? '.' : ' und holt die Spieler-Nummer (UUID) bei Mojang.'}</div>`}
+  </div>`;
+}
+
+/* Karte 2: gesperrte Spieler (banned-players.json) – Bedrock kennt keine solche Liste */
+function plBanCard(s, d) {
+  if (!d.bans) {
+    return `<div class="card">
+      <div class="card-head"><h3>⛔ Gesperrte Spieler</h3><span class="pill pill-grey">bei Bedrock nicht nötig</span></div>
+      <p class="small mb0">Der Bedrock-Server führt keine Sperrliste. Wer nicht mehr mitspielen soll: die Erlaubnisliste
+         einschalten und den Namen dort entfernen – dann kommt er nicht mehr herein.</p></div>`;
+  }
+  const rows = d.banned.map((p) => plRow(p.name, [
+    p.reason ? 'Grund: ' + esc(p.reason) : '',
+    p.source ? 'gesperrt von ' + esc(p.source) : '',
+    /* Abgelaufene Sperren räumt der Server erst beim nächsten Start weg – bis dahin stehen sie
+       noch in der Datei, gelten aber nicht mehr. */
+    p.expires && p.expires !== 'forever'
+      ? (p.expired ? 'abgelaufen am ' + esc(fmtBanTime(p.expires)) : 'läuft ab am ' + esc(fmtBanTime(p.expires)))
+      : 'dauerhaft',
+  ].filter(Boolean).join(' · '), `<button class="btn btn-sm" data-pl="unban" data-name="${esc(p.name)}">Entsperren</button>`)).join('');
+  const ips = d.banned_ips || [];
+  const active = d.banned.filter((p) => !p.expired).length;
+  return `<div class="card">
+    <div class="card-head"><h3>⛔ Gesperrte Spieler</h3>
+      <span class="pill ${active ? 'pill-amber' : 'pill-grey'}">${active}</span></div>
+    <div class="pl-list">${rows || plHint('Niemand ist gesperrt.')}</div>
+    ${ips.length ? `<div class="muted small" style="margin-top:8px">Zusätzlich ${ips.length === 1
+      ? 'ist eine IP-Adresse gesperrt' : 'sind ' + ips.length + ' IP-Adressen gesperrt'} (banned-ips.json):
+      ${ips.map((e) => esc(e.ip)).join(', ')}. „Entsperren“ nimmt eine mitgesetzte IP-Sperre mit heraus;
+      einzeln geht es im Spiel mit <code>/pardon-ip</code>.</div>` : ''}
+    <div class="pl-add">
+      <input type="text" id="plBanName" autocomplete="off" placeholder="Spielername">
+      <input type="text" id="plBanReason" autocomplete="off" placeholder="Grund – bekommt der Spieler beim Beitreten zu sehen">
+      <div class="flex">
+        <select id="plBanDur" ${d.running ? 'disabled' : ''}>${BAN_DURATIONS.map(([k, t]) => `<option value="${k}">${t}</option>`).join('')}</select>
+        <button class="btn btn-sm btn-danger" id="plBan">Sperren</button>
+      </div>
+    </div>
+    <div class="muted small" style="margin-top:8px">${d.running
+      ? 'Solange der Server läuft, sperrt er selbst – dauerhaft. Für eine Sperre auf Zeit den Server stoppen.'
+      : 'Der Server ist gestoppt – der Manager trägt die Sperre direkt ein, sie gilt ab dem nächsten Start.'}</div>
+  </div>`;
+}
+
+/* Karte 3: wer gerade spielt – aus dem Begleit-Plugin oder über den Konsolenbefehl „list“ */
+function plOnlineCard(s, d) {
+  const rows = d.online.map((n) => plRow(n, '',
+    `<button class="btn btn-sm" data-pl="kick" data-name="${esc(n)}">Hinauswerfen</button>`
+    + (d.bans ? `<button class="btn btn-sm btn-danger" data-pl="ban" data-name="${esc(n)}">Sperren</button>` : ''))).join('');
+  const body = !d.running ? plHint('Der Server ist gestoppt – es ist niemand online.')
+    : !d.online_known ? plHint('Der Server hat gerade keine Spielerliste geschickt. Mit „Aktualisieren“ noch einmal fragen.')
+    : (rows || plHint('Gerade spielt niemand.'));
+  const pill = !d.running ? ['pill-grey', 'Server aus']
+    : !d.online_known ? ['pill-grey', 'unbekannt']
+    : [d.online.length ? 'pill-green' : 'pill-grey', `${d.online.length} von ${s.max_players}`];
+  return `<div class="card" style="margin-top:14px">
+    <div class="card-head"><h3>🟢 Gerade online</h3><span class="pill ${pill[0]}">${pill[1]}</span></div>
+    <div class="pl-list">${body}</div>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-sm" id="plReload">⟳ Aktualisieren</button>
+      ${d.running && d.bans ? '<span class="muted small">„Sperren“ wirft den Spieler hinaus und lässt ihn nicht mehr herein.</span>' : ''}</div>
+  </div>`;
+}
+
+function renderPlayersBox(s, d) {
+  state.players.data = d;
+  state.players.running = !!d.running;
+  const box = $('#playersBox');
+  if (!box) return;
+  /* Beschädigte Serverdateien sähen sonst wie leere Listen aus – der Manager schreibt sie dann nicht. */
+  const broken = d.broken || [];
+  const brokenNote = broken.length ? `<div class="note note-warn" style="margin:0 0 14px">
+    <b>${broken.map(esc).join(' und ')} ${broken.length === 1 ? 'lässt' : 'lassen'} sich nicht lesen</b> –
+    die Datei ist beschädigt oder nur halb geschrieben (das passiert nach einem harten Serverende).
+    Die Liste darunter ist deshalb unvollständig, und Änderungen daran lehnt der Manager ab.
+    Den Server einmal starten und wieder stoppen, dann schreibt er die Datei neu.</div>` : '';
+  box.innerHTML = `${brokenNote}<div class="grid2" style="margin:0">${plAllowCard(s, d)}${plBanCard(s, d)}</div>${plOnlineCard(s, d)}`;
+
+  $$('[data-pl]', box).forEach((el) => el.onclick = () => playerAction(s, el.dataset.pl, { name: el.dataset.name || '' }));
+  const add = $('#plAddName', box);
+  const doAdd = () => playerAction(s, 'whitelist_add', { name: add.value });
+  $('#plAdd', box).onclick = doAdd;
+  add.onkeydown = (e) => { if (e.key === 'Enter') doAdd(); };
+  const ban = $('#plBan', box);
+  if (ban) {
+    const doBan = () => playerAction(s, 'ban', { name: $('#plBanName', box).value, reason: $('#plBanReason', box).value, duration: $('#plBanDur', box).value });
+    ban.onclick = doBan;
+    $('#plBanName', box).onkeydown = (e) => { if (e.key === 'Enter') doBan(); };
+  }
+  $('#plReload', box).onclick = () => loadPlayers(s);
+}
+
+async function loadPlayers(s) {
+  const box = $('#playersBox');
+  if (!box) return;
+  box.innerHTML = '<div class="card"><div class="muted small">Wird geladen …</div></div>';
+  try { renderPlayersBox(s, await api(`servers/${s.id}/players`)); }
+  catch (e) { box.innerHTML = `<div class="note note-err" style="margin-top:0">${esc(e.message)}</div>`; }
+}
+
+async function playerAction(s, action, body) {
+  const box = $('#playersBox');
+  if (!box) return;
+  if (action === 'ban' && !confirm(`„${(body.name || '').trim()}“ wirklich sperren? Der Spieler kommt dann nicht mehr auf den Server.`)) return;
+  $$('button', box).forEach((el) => el.disabled = true);       // kein zweiter Klick, solange der Server antwortet
+  try {
+    const d = await api(`servers/${s.id}/players`, { method: 'POST', body: { action, ...body } });
+    if (d.message) toast(d.message, !!d.warn);
+    renderPlayersBox(s, d);
+  } catch (e) {
+    toast(e.message, true);
+    $$('button', box).forEach((el) => el.disabled = false);
+  }
 }
 
 /* ---------- Konsole */
@@ -1434,6 +1604,8 @@ function bindServer() {
     $('#btnPortmapRemove').onclick = () => pm(true);
   }
 
+  if (state.tab === 'players') { state.players.running = s.running; loadPlayers(s); }
+
   if (state.tab === 'console') {
     const send = async () => {
       const inp = $('#cmdInput'); const cmd = inp.value.trim(); if (!cmd) return;
@@ -1508,6 +1680,11 @@ function patchStatus() {
     if (csig !== state.companionSig) { state.companionSig = csig; const card = $('#companionCard'); if (card) { card.innerHTML = companionCard(s); bindCompanionCard(s); } }
     const bk = $('#btnBackup'); if (bk && bk.textContent.indexOf('läuft') < 0) bk.disabled = s.running;
     if (s.running) loadMiniLog(s);
+  }
+  if (state.tab === 'players' && state.players.running !== s.running) {
+    // Server gestartet oder gestoppt: Knöpfe und Hinweise der Spielerverwaltung stimmen sonst nicht mehr.
+    state.players.running = s.running;
+    loadPlayers(s);
   }
   if (state.tab === 'files') {
     const bk = $('#fBackup'); if (bk) bk.disabled = s.running;

@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import companion, manager, sources, store, tray, updater  # noqa: E402
+from core import companion, manager, players, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -239,8 +239,9 @@ def api_start(_body, _query, server_id: str = "") -> dict:
 
 
 def api_stop(_body, _query, server_id: str = "") -> dict:
+    """Knopf „Stoppen“: auf Paper-Servern kündigt das Begleit-Plugin den Stopp erst im Spiel an."""
     cfg = _require(store.get(server_id))
-    threading.Thread(target=manager.instance(cfg).stop, daemon=True).start()
+    threading.Thread(target=manager.instance(cfg).stop, kwargs={"announce": True}, daemon=True).start()
     threading.Thread(target=manager.stop_broadcaster, args=(cfg,), daemon=True).start()
     log.info("Server wird gestoppt: %s", cfg["name"])
     return {"ok": True}
@@ -263,6 +264,30 @@ def api_hardcore(body, _query, server_id: str = "") -> dict:
         companion.write_config(updated)
     log.info("Hardcore %s: %s", "an" if enabled else "aus", cfg["name"])
     return {"server": _server_view(updated)}
+
+
+# -- Spielerverwaltung (Freigabeliste, Sperrliste, Online-Spieler)
+
+def _players_cfg(server_id: str) -> dict:
+    cfg = _require(store.get(server_id))
+    if not players.applies(cfg):
+        raise ApiError("Die Spielerverwaltung gibt es nur für Bedrock-Server und für Java-Server mit "
+                       "Paper – Modpack-Server haben keine passende Liste.", 404)
+    return cfg
+
+
+def api_players(_body, _query, server_id: str = "") -> dict:
+    return players.overview(_players_cfg(server_id))
+
+
+def api_players_action(body, _query, server_id: str = "") -> dict:
+    """{"action": "whitelist_on|whitelist_off|whitelist_add|whitelist_remove|ban|unban|kick", "name", "reason", "duration"}."""
+    cfg = _players_cfg(server_id)
+    try:
+        return players.apply_action(cfg, str(body.get("action", "")), body.get("name", ""),
+                                    body.get("reason", ""), body.get("duration", ""))
+    except ValueError as exc:
+        raise ApiError(str(exc)) from exc
 
 
 # -- Xbox-Freunde-Modus
@@ -564,6 +589,8 @@ SERVER_ROUTES = {
     ("POST", "props"): api_props_put,
     ("GET", "worlds"): api_worlds,
     ("POST", "backup"): api_backup,
+    ("GET", "players"): api_players,
+    ("POST", "players"): api_players_action,
     ("GET", "xbox"): api_xbox_status,
     ("POST", "xbox/setup"): api_xbox_setup,
     ("POST", "xbox/start"): api_xbox_start,

@@ -18,7 +18,8 @@ import org.bukkit.plugin.Plugin;
 
 /**
  * Schreibt plugins/MCSMCompanion/status.json (atomar über Temp-Datei + Umbenennen), damit der
- * Manager Version, Spielerzahl, verdächtige Plugins und den Hardcore-Zustand auslesen kann.
+ * Manager Version, Spielerzahl, die Online-Liste, verdächtige Plugins, die Moderations-Kennzahlen
+ * und den Hardcore-Zustand auslesen kann.
  */
 public final class StatusWriter {
 
@@ -103,9 +104,19 @@ public final class StatusWriter {
         field(sb, "minecraft_version", Bukkit.getMinecraftVersion()).append(",\n");
         field(sb, "server_name", cfg.serverName).append(",\n");
         field(sb, "mode", cfg.mode).append(",\n");
-        sb.append("  \"online\": ").append(Bukkit.getOnlinePlayers().size()).append(",\n");
+        sb.append("  \"online\": ").append(visibleOnline()).append(",\n");
         sb.append("  \"max_players\": ").append(Bukkit.getMaxPlayers()).append(",\n");
         sb.append("  \"online_mode\": ").append(Bukkit.getOnlineMode()).append(",\n");
+        // TPS, MSPT, Betriebszeit, geladene Chunks und Entities für den Manager.
+        if (plugin.metrics() != null) {
+            plugin.metrics().appendJson(sb);
+        }
+        // Namen, AFK-Zustand und Spielzeit aller Verbundenen – daraus baut der Manager die Online-Liste.
+        appendPlayers(sb);
+        // Sperren, IP-Sperren, Stummschaltungen und verwarnte Spieler (entfällt bei features.ban: false).
+        if (plugin.bans() != null) {
+            plugin.bans().status().appendJson(sb);
+        }
 
         sb.append("  \"plugins\": [");
         boolean first = true;
@@ -126,6 +137,49 @@ public final class StatusWriter {
         sb.append("  \"updated\": ").append(System.currentTimeMillis() / 1000L).append('\n');
         sb.append("}\n");
         return sb.toString();
+    }
+
+    /**
+     * "players": die verbundenen Spieler mit AFK-Zustand und Spielzeit in Sekunden (laufende
+     * Sitzung eingerechnet). Der Manager benutzt die Liste für seine Online-Anzeige, statt
+     * "list" in die Serverkonsole zu schreiben. Unsichtbare Betreiber bleiben draußen – ihr
+     * Name gehört weder in diese Datei noch in die Oberfläche; "online" zählt genauso, damit
+     * Zahl und Liste zusammenpassen.
+     */
+    private void appendPlayers(StringBuilder sb) {
+        AfkManager afk = plugin.afk();
+        PlayerStatsStore stats = plugin.stats();
+        sb.append("  \"players\": [");
+        boolean first = true;
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (isHidden(p)) {
+                continue;
+            }
+            sb.append(first ? "\n" : ",\n");
+            first = false;
+            long seconds = stats == null ? 0L : Math.max(0L, stats.playMillis(p.getUniqueId()) / 1000L);
+            sb.append("    {\"name\": ").append(quote(p.getName()))
+              .append(", \"afk\": ").append(afk != null && afk.isAfk(p))
+              .append(", \"playtime\": ").append(seconds).append('}');
+        }
+        sb.append(first ? "],\n" : "\n  ],\n");
+    }
+
+    /** Unsichtbarer Betreiber? Fehlt die Sichtbarkeitsverwaltung, gilt niemand als versteckt. */
+    private boolean isHidden(Player p) {
+        VanishManager vanish = plugin.vanish();
+        return vanish != null && vanish.isVanished(p);
+    }
+
+    /** Spielerzahl ohne unsichtbare Betreiber – passend zur Liste unter "players". */
+    private int visibleOnline() {
+        int n = 0;
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (!isHidden(p)) {
+                n++;
+            }
+        }
+        return n;
     }
 
     private static StringBuilder field(StringBuilder sb, String key, String value) {

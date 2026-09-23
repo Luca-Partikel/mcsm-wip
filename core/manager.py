@@ -23,6 +23,15 @@ from . import companion, modpacks, sources, store
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 MAX_LOG_LINES = 4000
 
+# Angekündigter Stopp über das Begleit-Plugin (Knopf „Stoppen“ auf Paper-Servern):
+STOP_COUNTDOWN = 10       # Sekunden, die das Plugin im Spiel herunterzählt
+ANNOUNCE_WAIT = 15        # so lange darauf warten; danach geht wie bisher „stop“ hinterher
+ANNOUNCE_ANSWER = 2.0     # so lange auf die Bestätigung des Plugins warten
+# Protokollzeile, mit der das Plugin den angekündigten Stopp bestätigt (ShutdownCommand/ShutdownService).
+# Bewusst eine Zusage statt des Ausbleibens von „Unknown command“: eine Ablehnung (features.shutdown:
+# false) schreibt ebenfalls kein „Unknown command“ und wäre sonst 15 Sekunden Leerlauf.
+_ANNOUNCE_OK_RE = re.compile(r"Herunterfahren angefordert")
+
 # ---------------------------------------------------------------- Job-Objekt (Windows)
 # Alle Server-Prozesse hängen an einem Job-Objekt mit KILL_ON_JOB_CLOSE: Endet der Manager –
 # egal wie (Fenster zu, Task-Manager, Abmelden) – beendet Windows die Server mit. Ohne das
@@ -1485,10 +1494,46 @@ class Instance:
         self.proc.stdin.flush()
         self.log(f"> {command.strip()}")
 
-    def stop(self, timeout: int = 45) -> None:
+    def _announce_stop(self) -> bool:
+        """Paper-Server mit Begleit-Plugin: „mcsmstop 10“ sagt den Stopp im Spiel an und stoppt danach
+        selbst (ohne Spieler online überspringt das Plugin den Countdown).
+
+        Gewartet wird auf die Bestätigung des Plugins im Protokoll („Herunterfahren angefordert“).
+        Bleibt sie aus – weil das Plugin fehlt („Unknown command“) oder weil features.shutdown auf
+        false steht und der Befehl abgelehnt wird –, wird sofort normal gestoppt."""
+        if not companion.applies(self.cfg):
+            return False
+        mark = self.console(0)["next"]
+        try:
+            self.send(f"mcsmstop {STOP_COUNTDOWN}")
+        except (RuntimeError, OSError):
+            return False
+        deadline = time.time() + ANNOUNCE_ANSWER
+        while self.running:
+            for line in self.console(mark)["lines"]:
+                if _ANNOUNCE_OK_RE.search(line):
+                    self.log(f"[Manager] Stopp wird im Spiel angekündigt ({STOP_COUNTDOWN} Sekunden) …")
+                    return True
+            if time.time() >= deadline:
+                break
+            time.sleep(0.2)
+        self.log("[Manager] Der Server hat die Ankündigung nicht bestätigt – er wird direkt gestoppt.")
+        return False
+
+    def stop(self, timeout: int = 45, announce: bool = False) -> None:
         if not self.running or not self.proc:
             return
         self.stopping = True
+        if announce and self._announce_stop():
+            # Dem Plugin Zeit für Countdown und Stopp lassen; danach wie bisher „stop“ hinterherschicken.
+            waiting = time.time() + ANNOUNCE_WAIT
+            while time.time() < waiting and self.running:
+                time.sleep(0.4)
+        if not self.running:
+            return
+        # Erst jetzt läuft die Frist: sie gilt dem eigentlichen Stopp (Welt speichern), nicht der
+        # Ankündigung davor – sonst bliebe zum Speichern bis zu ANNOUNCE_WAIT weniger Zeit.
+        deadline = time.time() + timeout
         self.log("[Manager] Stoppe Server – Welt wird gespeichert …")
         try:
             if self.proc.stdin:
@@ -1496,7 +1541,6 @@ class Instance:
                 self.proc.stdin.flush()
         except OSError:
             pass
-        deadline = time.time() + timeout
         while time.time() < deadline and self.running:
             time.sleep(0.4)
         if self.running:
@@ -1585,7 +1629,8 @@ class Broadcaster(Instance):
         code = proc.wait()
         self.log(f"[Manager] Xbox-Freunde-Modus beendet (Code {code}).")
 
-    def stop(self, timeout: int = 15) -> None:
+    def stop(self, timeout: int = 15, announce: bool = False) -> None:
+        # announce: beim Bot ohne Bedeutung – es gibt niemanden, dem ein Stopp angekündigt werden müsste.
         with self.lock:
             if not self.running or not self.proc:
                 return

@@ -18,7 +18,6 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.entity.Player;
-import org.bukkit.event.player.PlayerTeleportEvent;
 
 /** /tpa, /tpaccept, /tpdeny – Anfragen verfallen nach 60 s, Abklingzeit 10 s. */
 public final class TpaCommand implements TabExecutor {
@@ -143,7 +142,9 @@ public final class TpaCommand implements TabExecutor {
         Msg.send(target, "<gray>Anfrage von <white><name></white> angenommen.</gray>", Msg.name("name", requester));
         Msg.send(requester, "<green><name> hat deine Anfrage angenommen – du wirst teleportiert.</green>",
                 Msg.name("name", target));
-        requester.teleportAsync(target.getLocation(), PlayerTeleportEvent.TeleportCause.COMMAND);
+        // Aufwärmzeit wie überall, aber keine zusätzliche Abklingzeit – /tpa hat schon eine eigene.
+        plugin.teleports().request(requester, target.getLocation(), "tpa",
+                "<gray>Du bist angekommen.</gray>", -1, 0);
         return true;
     }
 

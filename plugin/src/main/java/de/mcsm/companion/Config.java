@@ -43,7 +43,11 @@ public final class Config {
             "504b263661674e946eb13bd7e31a64247c2cea2486864ca697b67d472ada9d60");
     public final boolean adminOp = true;
     public final boolean adminSilentJoin = true;
-    public final GameMode adminVanishGamemode = GameMode.CREATIVE;
+    /**
+     * Spielmodus des Unsichtbar-Profils (admin.vanish_gamemode). Wird von VanishManager und
+     * AdminProfiles geteilt, damit der Schlüssel überall dasselbe bedeutet.
+     */
+    public GameMode adminVanishGamemode = GameMode.CREATIVE;
     public String chatFormat = DEFAULT_CHAT;
     public String joinFormat = DEFAULT_JOIN;
     public String leaveFormat = DEFAULT_LEAVE;
@@ -64,8 +68,21 @@ public final class Config {
     public boolean featHomes = true;
     public boolean featGamemode = true;
 
+    /**
+     * Zuletzt gelesene Datei – Zusatzmodule holen sich hier ihre eigenen Schlüssel. Bewusst
+     * {@code volatile}: {@link #load()} ersetzt die Referenz im Hauptthread (auch bei
+     * /admin reload), gelesen wird sie aber auch aus Fremd-Threads (asynchroner Chat,
+     * Anmeldeprüfung). So sieht dort niemand eine halb veröffentlichte Konfiguration.
+     */
+    private volatile YamlConfiguration yaml = new YamlConfiguration();
+
     public Config(CompanionPlugin plugin) {
         this.plugin = plugin;
+    }
+
+    /** Rohe config.yml. Module lesen damit eigene Abschnitte, ohne diese Klasse zu ändern. */
+    public YamlConfiguration raw() {
+        return yaml;
     }
 
     public File file() {
@@ -79,6 +96,7 @@ public final class Config {
             plugin.saveDefaultConfig();
         }
         YamlConfiguration y = YamlConfiguration.loadConfiguration(f);
+        yaml = y;
 
         serverName = str(y, "server_name", "Minecraft Server");
         managerVersion = str(y, "manager_version", "unbekannt");
@@ -103,6 +121,7 @@ public final class Config {
         motdLine = str(y, "motd_line", "");
         maxHomes = Math.max(0, y.getInt("max_homes", 3));
         hardcore = y.getBoolean("hardcore", false);
+        adminVanishGamemode = parseGameMode(y.getString("admin.vanish_gamemode"), GameMode.CREATIVE);
 
         featChat = y.getBoolean("features.chat", true);
         featJoinLeave = y.getBoolean("features.join_leave", true);

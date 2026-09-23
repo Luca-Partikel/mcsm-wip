@@ -390,3 +390,10 @@ a.btn { text-decoration: none; }
 #updateBox { margin: 2px 0; }
 .notes { white-space: pre-wrap; font-family: inherit; font-size: 13.5px; background: #0f141d; border: 1px solid var(--line);
   border-radius: 10px; padding: 12px 14px; max-height: 340px; overflow: auto; margin: 0; }
+
+/* ------------------------------------------------------------ Spielerverwaltung */
+.pl-list { max-height: 300px; overflow-y: auto; }
+.pl-list .wrow .btn-row { flex-wrap: nowrap; }
+.pl-list .w-meta { white-space: normal; }
+.pl-add { display: grid; gap: 8px; margin-top: 12px; }
+.pl-add .flex select { flex: 1; }

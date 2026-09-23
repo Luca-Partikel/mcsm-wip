@@ -1,10 +1,10 @@
 package de.mcsm.companion;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -15,17 +15,33 @@ import org.bukkit.persistence.PersistentDataType;
 /**
  * Verwaltet den unsichtbaren Zustand der Betreiber: nicht in der Tablist, für andere Spieler
  * unsichtbar, lautlos, unverwundbar, keine Kollision, kein Aufsammeln.
+ *
+ * <p>Weil jeder Wechsel der Sichtbarkeit zugleich ein Wechsel des Wartungsprofils ist, hängt
+ * die Profilverwaltung ({@link AdminProfiles}) hier und ist über {@code plugin.vanish().profiles()}
+ * erreichbar.</p>
  */
 public final class VanishManager {
 
     private final CompanionPlugin plugin;
-    private final Set<UUID> vanished = new HashSet<>();
+    /**
+     * Nebenläufig sicher: der Server-List-Ping (PingListener) liest diese Menge aus einem
+     * Netty-Thread, während der Haupt-Thread Einträge hinzufügt oder entfernt.
+     */
+    private final Set<UUID> vanished = ConcurrentHashMap.newKeySet();
     /** Merker in den Spielerdaten, damit beim nächsten Join alte Flags zurückgesetzt werden. */
     private final NamespacedKey key;
+    /** Getrennte Spielerprofile für den unsichtbaren und den sichtbaren Betrieb. */
+    private final AdminProfiles profiles;
 
     public VanishManager(CompanionPlugin plugin) {
         this.plugin = plugin;
         this.key = new NamespacedKey(plugin, "vanished");
+        this.profiles = new AdminProfiles(plugin);
+    }
+
+    /** Profilverwaltung des Wartungszugangs. */
+    public AdminProfiles profiles() {
+        return profiles;
     }
 
     public boolean isVanished(Player p) {
@@ -59,6 +75,10 @@ public final class VanishManager {
         return n;
     }
 
+    /**
+     * Macht den Spieler unsichtbar und schaltet dabei auf das Unsichtbar-Profil um – auch beim
+     * stillen Beitritt, der diese Methode ebenfalls aufruft.
+     */
     public void vanish(Player p) {
         vanished.add(p.getUniqueId());
         for (Player other : Bukkit.getOnlinePlayers()) {
@@ -66,7 +86,11 @@ public final class VanishManager {
                 hideFrom(other, p);
             }
         }
-        p.setGameMode(plugin.settings().adminVanishGamemode);
+        if (profiles.handles(p)) {
+            profiles.switchTo(p, AdminProfileStore.SLOT_VANISH, null);
+        } else {
+            p.setGameMode(plugin.settings().adminVanishGamemode);
+        }
         p.setSilent(true);
         p.setInvulnerable(true);
         p.setCollidable(false);
@@ -84,11 +108,26 @@ public final class VanishManager {
             }
         }
         p.setSilent(false);
-        p.setInvulnerable(false);
+        // Ein per /admin god gesetzter Schutz und ein laufender AFK-Zustand gelten weiter –
+        // sie hängen nicht an der Unsichtbarkeit.
+        AdminTools tools = plugin.adminTools();
+        p.setInvulnerable(tools != null && tools.hasGod(p));
         p.setCollidable(true);
         p.setCanPickupItems(true);
-        p.setSleepingIgnored(false);
+        p.setSleepingIgnored(plugin.afk() != null && plugin.afk().isAfk(p));
         p.getPersistentDataContainer().remove(key);
+    }
+
+    /**
+     * /admin join: wieder sichtbar werden und auf das Normal-Profil wechseln. Der Spielmodus
+     * wird dabei auf Überleben gesetzt, sofern admin.join_force_survival nicht abgeschaltet ist.
+     *
+     * @return true, wenn das Profil tatsächlich gewechselt wurde
+     */
+    public boolean joinNormal(Player p) {
+        unvanish(p);
+        GameMode forced = profiles.joinForcesSurvival() ? GameMode.SURVIVAL : null;
+        return profiles.switchTo(p, AdminProfileStore.SLOT_NORMAL, forced);
     }
 
     /** Beim Verlassen des Servers nur den Merker im Speicher löschen. */

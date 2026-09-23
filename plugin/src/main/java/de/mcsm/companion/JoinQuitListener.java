@@ -50,6 +50,10 @@ public final class JoinQuitListener implements Listener {
                 event.joinMessage(joinText(p));
             }
         }
+        // Unverwundbarkeit aus /admin god steht im Spieler-NBT und muss zum Merker passen.
+        if (plugin.adminTools() != null) {
+            plugin.adminTools().restore(p);
+        }
         plugin.tablist().refreshLater();
     }
 
@@ -64,6 +68,9 @@ public final class JoinQuitListener implements Listener {
             event.quitMessage(Msg.mm(cfg.leaveFormat, Msg.name("name", p)));
         }
         plugin.tpa().clear(p);
+        if (plugin.adminTools() != null) {
+            plugin.adminTools().forget(p);
+        }
         plugin.tablist().refreshLater();
     }
 

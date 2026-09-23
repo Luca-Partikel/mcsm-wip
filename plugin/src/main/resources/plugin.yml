@@ -2,7 +2,7 @@ name: MCSMCompanion
 version: 1.0.0
 main: de.mcsm.companion.CompanionPlugin
 api-version: "1.21"
-description: Begleit-Plugin des Minecraft Server Managers (Chat, Join/Leave, Tod, Tablist, TPA, Homes, Hardcore, Admin)
+description: Begleit-Plugin des Minecraft Server Managers (Chat, Join/Leave, Tod, Tablist, TPA, Teleport, Homes, Warps, Sozial, Statistik, Hardcore, Moderation, Freigabeliste, Admin)
 author: Minecraft Server Manager
 load: POSTWORLD
 
@@ -49,13 +49,186 @@ commands:
     description: Zum Spawn teleportieren
     usage: /spawn
     permission: mcsm.spawn
+  back:
+    description: Zur letzten Position oder zum eigenen Todesort zurück
+    usage: /back [ort|tod]
+    aliases: [zurueck]
+    permission: mcsm.back
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  rtp:
+    description: Zu einer sicheren Zufallsposition in der Wildnis teleportieren
+    usage: /rtp
+    aliases: [wild, wildnis]
+    permission: mcsm.rtp
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  top:
+    description: Auf den höchsten sicheren Block über dir teleportieren
+    usage: /top
+    aliases: [oben]
+    permission: mcsm.top
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  warp:
+    description: Zu einem serverweiten Warp teleportieren
+    usage: /warp <Name>
+    permission: mcsm.warp
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  warps:
+    description: Alle Warps anzeigen
+    usage: /warps
+    permission: mcsm.warp
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  setwarp:
+    description: Warp an der eigenen Position setzen
+    usage: /setwarp <Name>
+    permission: mcsm.warp.admin
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  delwarp:
+    description: Warp löschen
+    usage: /delwarp <Name>
+    permission: mcsm.warp.admin
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  msg:
+    description: Private Nachricht an einen Spieler senden
+    usage: /msg <Spieler> <Nachricht>
+    aliases: [w, tell, pm]
+    permission: mcsm.msg
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  r:
+    description: Auf die letzte private Nachricht antworten
+    usage: /r <Nachricht>
+    aliases: [reply]
+    permission: mcsm.msg
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  socialspy:
+    description: Private Nachrichten aller Spieler mitlesen
+    usage: /socialspy [an|aus|status]
+    permission: mcsm.socialspy
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  afk:
+    description: Sich als abwesend melden
+    usage: /afk [Grund]
+    permission: mcsm.afk
+  playtime:
+    description: Spielzeit anzeigen
+    usage: /playtime [Spieler]
+    permission: mcsm.playtime
+  seen:
+    description: Anzeigen, wann ein Spieler zuletzt da war
+    usage: /seen <Spieler>
+    permission: mcsm.seen
+  stats:
+    description: Statistik eines Spielers anzeigen
+    usage: /stats [Spieler]
+    permission: mcsm.stats
+  near:
+    description: Mitspieler in der Nähe anzeigen
+    usage: /near [Radius]
+    permission: mcsm.near
+  rules:
+    description: Serverregeln anzeigen
+    usage: /rules
+    aliases: [regeln]
+    permission: mcsm.rules
+  mcsm:
+    description: Übersicht aller Befehle des Servers
+    usage: /mcsm
+    aliases: [befehle]
+    permission: mcsm.info
+  sb:
+    description: Seitenleiste ein- oder ausschalten
+    usage: /sb [an|aus]
+    aliases: [sidebar, leiste]
+    permission: mcsm.sidebar
   admin:
-    description: Wartungsbefehle des Manager-Plugins
-    usage: /admin <join|vanish|status|reload>
+    description: Wartungsbefehle des Manager-Plugins (Profile, Eingriffe, Neustart)
+    usage: /admin <join|vanish|profile|status|reload|inv|ec|heal|feed|fly|god|speed|save|restart>
   hardcore:
     description: MCSM-Hardcore-Modus schalten (Tote werden Zuschauer, bis ein Totem am Grab sie wiederbelebt)
     usage: /hardcore <on|off|status>
     permission: mcsm.hardcore
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  # Moderation. /ban, /kick und /banlist heißen wie Vanilla-Befehle – der Plugin-Befehl aus dieser
+  # Datei gewinnt in Paper, die Vanilla-Fassung bleibt über /minecraft:ban usw. erreichbar. Sollte
+  # ein anderes Plugin den Namen zuerst belegen, greifen die Aliase mcsmban/mcsmkick/mcsmbanlist
+  # bzw. /mcsmcompanion:ban. /unban heißt bewusst nicht /pardon, der Alias ist /pardon2.
+  ban:
+    description: Spieler dauerhaft sperren
+    usage: /ban <Spieler> [Grund]
+    aliases: [bannen, mcsmban]
+    permission: mcsm.ban
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  tempban:
+    description: Spieler auf Zeit sperren
+    usage: /tempban <Spieler> <Dauer> [Grund]  (Dauer z. B. 30m, 12h, 7d, 2w)
+    aliases: [tban, zeitbann]
+    permission: mcsm.ban
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  unban:
+    description: Sperre eines Spielers aufheben
+    usage: /unban <Spieler>
+    aliases: [pardon2, entsperren]
+    permission: mcsm.ban
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  banlist:
+    description: Alle Sperren mit Grund, Sperrer und Ablauf anzeigen
+    usage: /banlist [Seite]
+    aliases: [bans, sperren, mcsmbanlist]
+    permission: mcsm.ban
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  kick:
+    description: Spieler vom Server werfen
+    usage: /kick <Spieler> [Grund]
+    aliases: [rauswerfen, mcsmkick]
+    permission: mcsm.ban
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  mute:
+    description: Spieler dauerhaft stummschalten
+    usage: /mute <Spieler> [Grund]
+    aliases: [stumm]
+    permission: mcsm.mute
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  tempmute:
+    description: Spieler auf Zeit stummschalten
+    usage: /tempmute <Spieler> <Dauer> [Grund]  (Dauer z. B. 30m, 12h, 7d, 2w)
+    aliases: [tmute]
+    permission: mcsm.mute
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  unmute:
+    description: Stummschaltung aufheben
+    usage: /unmute <Spieler>
+    permission: mcsm.mute
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  mutelist:
+    description: Aktuell stummgeschaltete Spieler anzeigen
+    usage: /mutelist
+    aliases: [mutes]
+    permission: mcsm.mute
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  warn:
+    description: Spieler verwarnen
+    usage: /warn <Spieler> <Grund>
+    aliases: [verwarnen]
+    permission: mcsm.warn
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  warns:
+    description: Verwarnungsverlauf eines Spielers anzeigen
+    usage: /warns <Spieler>
+    aliases: [warnungen]
+    permission: mcsm.warn
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  # Freigabeliste. /whitelist bleibt bewusst der Vanilla-Befehl – unsere Meldungen greifen über
+  # WhitelistToggleEvent trotzdem, auch wenn der Manager oder /minecraft:whitelist umschaltet.
+  wl:
+    description: Freigabeliste des Servers verwalten (eingebaute Whitelist)
+    usage: /wl <an|aus|status|add|remove|list|reload>
+    aliases: [freigabe]
+    permission: mcsm.whitelist
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
+  mcsmstop:
+    description: Server mit Ansage herunterfahren (Countdown, save-all, freundlicher Abschied)
+    usage: /mcsmstop <Sekunden|abbrechen> [Grund]
+    aliases: [serverstop]
+    permission: mcsm.admin
     permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
 
 permissions:
@@ -77,6 +250,60 @@ permissions:
   mcsm.spawn:
     description: /spawn benutzen
     default: true
+  mcsm.back:
+    description: /back benutzen
+    default: true
+  mcsm.rtp:
+    description: /rtp bzw. /wild benutzen
+    default: true
+  mcsm.top:
+    description: /top benutzen
+    default: true
+  mcsm.warp:
+    description: Warps benutzen (/warp, /warps)
+    default: true
+  mcsm.warp.admin:
+    description: Warps setzen und löschen (/setwarp, /delwarp)
+    default: op
+  mcsm.teleport.bypass:
+    description: Teleports ohne Aufwärm- und Abklingzeit
+    default: op
+  mcsm.msg:
+    description: Private Nachrichten senden (/msg, /r)
+    default: true
+  mcsm.socialspy:
+    description: Private Nachrichten mitlesen (/socialspy)
+    default: op
+  mcsm.afk:
+    description: /afk benutzen
+    default: true
+  mcsm.playtime:
+    description: /playtime benutzen
+    default: true
+  mcsm.seen:
+    description: /seen benutzen
+    default: true
+  mcsm.stats:
+    description: /stats benutzen
+    default: true
+  mcsm.near:
+    description: /near benutzen
+    default: true
+  mcsm.near.unlimited:
+    description: /near ohne Begrenzung des Radius
+    default: op
+  mcsm.chat.nospam:
+    description: Vom Spamschutz im Chat ausgenommen
+    default: op
+  mcsm.rules:
+    description: /rules benutzen
+    default: true
+  mcsm.info:
+    description: /mcsm benutzen
+    default: true
+  mcsm.sidebar:
+    description: /sb benutzen
+    default: true
   mcsm.chat.color:
     description: Farbcodes (&a, &l, ...) im Chat verwenden
     default: op
@@ -85,6 +312,18 @@ permissions:
     default: op
   mcsm.hardcore:
     description: /hardcore benutzen (Hardcore-Modus ein-/ausschalten, Status)
+    default: op
+  mcsm.ban:
+    description: Sperren, Entsperren und Kicks (/ban, /tempban, /unban, /banlist, /kick)
+    default: op
+  mcsm.mute:
+    description: Stummschaltungen (/mute, /tempmute, /unmute, /mutelist)
+    default: op
+  mcsm.warn:
+    description: Verwarnungen (/warn, /warns)
+    default: op
+  mcsm.whitelist:
+    description: Freigabeliste verwalten (/wl)
     default: op
   mcsm.*:
     description: Alle Rechte des Plugins
@@ -96,6 +335,28 @@ permissions:
       mcsm.home: true
       mcsm.home.unlimited: true
       mcsm.spawn: true
+      mcsm.back: true
+      mcsm.rtp: true
+      mcsm.top: true
+      mcsm.warp: true
+      mcsm.warp.admin: true
+      mcsm.teleport.bypass: true
+      mcsm.msg: true
+      mcsm.socialspy: true
+      mcsm.afk: true
+      mcsm.playtime: true
+      mcsm.seen: true
+      mcsm.stats: true
+      mcsm.near: true
+      mcsm.near.unlimited: true
+      mcsm.chat.nospam: true
+      mcsm.rules: true
+      mcsm.info: true
+      mcsm.sidebar: true
       mcsm.chat.color: true
       mcsm.admin: true
       mcsm.hardcore: true
+      mcsm.ban: true
+      mcsm.mute: true
+      mcsm.warn: true
+      mcsm.whitelist: true

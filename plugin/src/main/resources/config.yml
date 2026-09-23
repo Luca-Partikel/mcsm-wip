@@ -33,6 +33,277 @@ max_homes: 3
 # übernommen, wenn er sich seit dem letzten Start geändert hat; dazwischen gilt /hardcore on|off.
 hardcore: false
 
+# Wartungszugang: zwei getrennte Spielerprofile. Solange der Betreiber unsichtbar ist, gilt
+# das Unsichtbar-Profil; ab /admin join das Normal-Profil. Inventar, Rüstung, Zweithand,
+# Erfahrung, Leben, Hunger, Spielmodus, Flug und Trank-Effekte werden je Profil gespeichert
+# (Datei admin-profiles.yml). Die Endertruhe bleibt für beide Profile dieselbe.
+admin:
+  # Spielmodus im Unsichtbar-Profil, solange es noch nicht angelegt wurde
+  vanish_gamemode: "creative"
+  # Spielmodus im Normal-Profil, solange es noch nicht angelegt wurde
+  normal_gamemode: "survival"
+  # /admin join schaltet immer auf Überleben (gm 0)
+  join_force_survival: true
+  # Sekunden, bei denen /admin restart warnt (Titel und Chat für alle Spieler)
+  restart_marks: [600, 300, 120, 60, 30, 15, 10, 5, 4, 3, 2, 1]
+
+# Teleports mit Aufwärmzeit (/home, /spawn, /tpa, /back, /warp, /rtp, /top)
+teleport:
+  # Sekunden Stillstehen vor dem Teleport. 0 = sofort. Bewegung von mehr als einem halben Block
+  # oder Schaden bricht ab. Spieler mit mcsm.teleport.bypass und OPs warten nie.
+  warmup_seconds: 3
+  # Sekunden Sperre nach einem Teleport, getrennt je Befehl
+  cooldown_seconds: 5
+  # Bricht Schaden die Aufwärmzeit ab?
+  cancel_on_damage: true
+  # Sperre für /back in Sekunden
+  back_cooldown_seconds: 10
+  # So viele Tage bleiben letzte Position und Todesort gespeichert (teleports.yml)
+  history_days: 14
+  rtp:
+    # Welt für /rtp. Leer = Hauptwelt des Servers.
+    world: ""
+    # Größter Abstand zur Weltmitte in Blöcken
+    radius: 5000
+    # Kleinster Abstand zur Weltmitte in Blöcken
+    min_radius: 500
+    # Sperre für /rtp in Sekunden
+    cooldown_seconds: 120
+    # So viele Zufallspunkte werden höchstens geprüft, bevor die Suche aufgibt
+    attempts: 30
+
+# Private Nachrichten (/msg, /r). Platzhalter: <from>, <to>, <message>
+msg:
+  # Format der gesendeten Nachricht (Sicht des Absenders)
+  format_out: "<dark_gray>[</dark_gray><gray>du</gray> <dark_gray>→</dark_gray> <white><to></white><dark_gray>]</dark_gray> <gray><message></gray>"
+  # Format der empfangenen Nachricht (Sicht des Empfängers)
+  format_in: "<dark_gray>[</dark_gray><white><from></white> <dark_gray>→</dark_gray> <gray>dir</gray><dark_gray>]</dark_gray> <gray><message></gray>"
+  # Format für Mitleser (/socialspy)
+  spy_format: "<dark_gray>[</dark_gray><gray>Spy</gray><dark_gray>]</dark_gray> <gray><from></gray> <dark_gray>→</dark_gray> <gray><to></gray><dark_gray>:</dark_gray> <gray><message></gray>"
+  # Kurzer Ton beim Empfänger einer privaten Nachricht
+  sound: true
+
+# Abwesenheit (/afk)
+afk:
+  # Untätigkeit in Sekunden bis zum automatischen AFK; 0 schaltet die Automatik ab
+  timeout_seconds: 300
+  # Meldung im Chat, wenn jemand AFK geht oder zurückkommt
+  broadcast: true
+  # AFK-Zusatz im Tablist-Namen anzeigen
+  tablist_mark: true
+  # Zusatz hinter dem Namen in der Tablist (MiniMessage)
+  tablist_suffix: " <dark_gray>[</dark_gray><yellow>AFK</yellow><dark_gray>]</dark_gray>"
+  # Meldungen. Platzhalter: <name>, <reason> (enthält bereits die Klammern oder ist leer)
+  afk_format: "<gray><name> ist jetzt AFK<reason>.</gray>"
+  back_format: "<gray><name> ist wieder da.</gray>"
+
+# Chat-Zusätze: Erwähnungen, [i]/[item] und Spamschutz
+chat_extras:
+  # Spielernamen im Chat farbig hervorheben
+  mentions: true
+  # Darstellung einer Erwähnung (MiniMessage). Platzhalter: <name>
+  mention_format: "<gold><bold>@<name></bold></gold>"
+  # Ton für den Erwähnten
+  mention_sound: true
+  # [i] und [item] durch den gehaltenen Gegenstand ersetzen
+  item_display: true
+  # Höchstzahl Nachrichten innerhalb von spam_seconds
+  spam_messages: 3
+  # Zeitfenster des Spamschutzes in Sekunden
+  spam_seconds: 5
+  # Innerhalb dieser Sekunden wird dieselbe Nachricht noch einmal abgewiesen; 0 schaltet das ab
+  repeat_seconds: 30
+
+# Sozialbefehle
+social:
+  # Standardradius von /near in Blöcken
+  near_radius: 100
+  # Größter erlaubter Radius von /near ohne mcsm.near.unlimited
+  near_max_radius: 500
+
+# Nacht überspringen, wenn genug Spieler schlafen.
+sleep:
+  # Anteil der wachen Spieler einer Welt, der schlafen muss (Prozent)
+  percent: 50
+  # Ab wann ein Spieler als abwesend gilt und nicht mehr mitzählt (Sekunden ohne Bewegung)
+  afk_seconds: 180
+  # Fortschritt ("Es schlafen 2/4") in der Aktionsleiste anzeigen
+  actionbar: true
+  # Im Chat melden, wer die Nacht übersprungen hat
+  announce: true
+  # Beim Überspringen auch Regen und Gewitter beenden
+  clear_weather: true
+
+# Begrüßung beim Beitritt. Platzhalter: <name>, <server_name>, <online>, <max>
+welcome:
+  title: "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>"
+  subtitle: "<gray>Willkommen, <white><name></white>!</gray>"
+  # Kurzer Ton beim Beitritt
+  sound: true
+  # Hinweis auf /rules und /mcsm im Chat
+  hint: true
+  # Beim allerersten Beitritt zum Spawn teleportieren
+  first_join_spawn: true
+
+# Serverregeln für /rules (MiniMessage, eine Zeile je Regel).
+# Leere Liste = die eingebauten Standardregeln werden angezeigt.
+rules:
+  - "<white>Sei freundlich.</white> <gray>Keine Beleidigungen, kein Spam, keine Werbung.</gray>"
+  - "<white>Kein Griefing.</white> <gray>Fremde Bauten bleiben unangetastet.</gray>"
+  - "<white>Kein Stehlen.</white> <gray>Finger weg von fremden Kisten.</gray>"
+  - "<white>Keine Cheats.</white> <gray>Keine Hacks, X-Ray oder unerlaubten Mods.</gray>"
+  - "<white>Keine Lag-Maschinen.</white> <gray>Redstone-Uhren und Mob-Massen bitte im Rahmen halten.</gray>"
+  - "<white>Probleme melden.</white> <gray>Bei Ärger erst reden, dann das Team fragen.</gray>"
+
+# Seitenleiste (/sb). Platzhalter im Titel: <server_name>, <name>
+sidebar:
+  title: "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>"
+  # Ist die Leiste für neue Spieler von Anfang an an?
+  default_on: false
+  # Beim Einschalten einmal auf /mcsm hinweisen
+  hint: true
+
+# Rotierende Hinweise im Chat. Platzhalter: <server_name>, <online>, <max>
+broadcast:
+  # Abstand zwischen zwei Hinweisen in Minuten
+  interval_minutes: 10
+  # Leere Liste = die eingebauten deutschen Tipps werden benutzt
+  messages:
+    - "<gray>Tipp: Mit </gray><white>/sethome</white><gray> setzt du dir ein Zuhause und kommst mit </gray><white>/home</white><gray> zurück.</gray>"
+    - "<gray>Tipp: </gray><white>/tpa Name</white><gray> fragt jemanden, ob du zu ihm teleportieren darfst.</gray>"
+    - "<gray>Tipp: Die Serverregeln stehen in </gray><white>/rules</white><gray>.</gray>"
+    - "<gray>Tipp: Mit </gray><white>/sb</white><gray> blendest du die Seitenleiste ein oder aus.</gray>"
+    - "<gray>Tipp: </gray><white>/mcsm</white><gray> listet alle Befehle dieses Servers auf.</gray>"
+
+# Sperren (/ban, /tempban, /unban, /banlist, /kick).
+# Die Sperren selbst liegen in banned-players.json bzw. banned-ips.json und wirken auch ohne Plugin.
+ban:
+  # Grund, wenn beim Sperren oder Kicken keiner angegeben wird
+  default_reason: "Kein Grund angegeben"
+  # Beim Sperren eines Online-Spielers zusätzlich dessen IP sperren
+  also_ban_ip: false
+  # Meldung im Chat, wenn jemand gesperrt, entsperrt oder hinausgeworfen wird
+  broadcast: true
+  # Einträge je Seite in /banlist
+  list_per_page: 8
+  # Sperrbildschirm bei dauerhafter Sperre (MiniMessage, \n = neue Zeile).
+  # Platzhalter: <player>, <reason>, <source>, <date>, <remaining>, <expires>
+  screen_permanent: "<red><bold>Du bist von diesem Server gesperrt.</bold></red>\n\n<gray>Grund:</gray> <white><reason></white>\n<gray>Gesperrt von:</gray> <white><source></white>\n<gray>Gesperrt am:</gray> <white><date></white>\n\n<dark_gray>Diese Sperre ist dauerhaft.</dark_gray>"
+  # Sperrbildschirm bei Zeitsperre (<remaining> = z. B. "6 Tage 4 Stunden")
+  screen_temporary: "<red><bold>Du bist vorübergehend gesperrt.</bold></red>\n\n<gray>Grund:</gray> <white><reason></white>\n<gray>Gesperrt von:</gray> <white><source></white>\n<gray>Gesperrt am:</gray> <white><date></white>\n\n<yellow>Noch <white><remaining></white>.</yellow>\n<dark_gray>Frei ab <expires></dark_gray>"
+  # Sperrbildschirm für eine gesperrte Verbindung (banned-ips.json)
+  screen_ip: "<red><bold>Deine Verbindung ist gesperrt.</bold></red>\n\n<gray>Grund:</gray> <white><reason></white>\n<gray>Gesperrt von:</gray> <white><source></white>\n<gray>Gesperrt am:</gray> <white><date></white>"
+  # Text beim Hinauswerfen (/kick). Platzhalter: <reason>, <source>
+  screen_kick: "<red><bold>Du wurdest vom Server geworfen.</bold></red>\n\n<gray>Grund:</gray> <white><reason></white>\n<gray>Von:</gray> <white><source></white>"
+  # Chat-Meldungen. Platzhalter: <target>, <source>, <reason>, <duration>
+  broadcast_ban: "<red>⚑</red> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>dauerhaft gesperrt:</gray> <white><reason></white>"
+  broadcast_tempban: "<red>⚑</red> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>für</gray> <white><duration></white> <gray>gesperrt:</gray> <white><reason></white>"
+  broadcast_unban: "<green>✔</green> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>entsperrt.</gray>"
+  broadcast_kick: "<red>⚑</red> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>hinausgeworfen:</gray> <white><reason></white>"
+
+# Stummschaltungen (/mute, /tempmute, /unmute, /mutelist). Gespeichert in mutes.yml.
+mute:
+  # Meldung im Chat, wenn jemand stummgeschaltet wird oder wieder schreiben darf
+  broadcast: true
+  # Stummgeschaltete beim Beitritt daran erinnern
+  notify_on_join: true
+  # Befehle, mit denen sich der Chat umgehen ließe – für Stummgeschaltete gesperrt.
+  # Eine leere Liste schaltet die Befehlssperre ab.
+  blocked_commands: [msg, w, tell, pm, whisper, r, reply, me, say, tpa, tpahere, mail]
+  # Abweisung im Chat. Platzhalter: <reason>, <source>, <remaining>, <expires>
+  chat_denied: "Du bist stummgeschaltet und kannst nicht schreiben."
+  # Abweisung bei einem gesperrten Befehl
+  command_denied: "Du bist stummgeschaltet und kannst diesen Befehl nicht benutzen."
+  # Abweisung beim Beschriften von Schildern und Büchern
+  write_denied: "Du bist stummgeschaltet und kannst nichts beschriften."
+  # Zusatzzeile mit Grund und Restzeit; leer lassen, um sie wegzulassen
+  reason_line: "<gray>Grund: <white><reason></white> <dark_gray>(</dark_gray><white><remaining></white><dark_gray>)</dark_gray></gray>"
+  # Chat-Meldungen. Platzhalter: <target>, <source>, <reason>, <duration>
+  broadcast_mute: "<yellow>✖</yellow> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>dauerhaft stummgeschaltet:</gray> <white><reason></white>"
+  broadcast_tempmute: "<yellow>✖</yellow> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>für</gray> <white><duration></white> <gray>stummgeschaltet:</gray> <white><reason></white>"
+  broadcast_unmute: "<green>✔</green> <white><target></white> <gray>darf wieder schreiben</gray> <dark_gray>(<source>)</dark_gray><gray>.</gray>"
+
+# Verwarnungen (/warn, /warns). Gespeichert in warns.yml.
+warn:
+  # Meldung im Chat, wenn jemand verwarnt wird
+  broadcast: true
+  # Ab einer bestimmten Zahl von Verwarnungen automatisch sperren (Standard: aus)
+  auto_ban: false
+  # Ab wie vielen Verwarnungen automatisch gesperrt wird
+  auto_ban_threshold: 3
+  # Dauer der automatischen Sperre (z. B. 30m, 12h, 7d, 2w)
+  auto_ban_duration: "7d"
+  # Grund der automatischen Sperre
+  auto_ban_reason: "Zu viele Verwarnungen"
+  # Verlauf nach einer automatischen Sperre leeren
+  reset_after_ban: true
+  # Verwarnungen, die älter als so viele Tage sind, zählen nicht mehr mit; 0 = alle zählen
+  expire_days: 0
+  # Chat-Meldung. Platzhalter: <target>, <source>, <reason>, <count>
+  broadcast_warn: "<yellow>⚠</yellow> <white><target></white> <gray>wurde von</gray> <white><source></white> <gray>verwarnt</gray> <dark_gray>(<count>.)</dark_gray><gray>:</gray> <white><reason></white>"
+
+# Freigabeliste. Benutzt die eingebaute Whitelist des Servers, whitelist.json bleibt
+# im Vanilla-Format – der Manager kann sie also weiter lesen und schreiben.
+# Platzhalter in allen Texten: <server_name>
+whitelist:
+  # Meldung im Chat, wenn die Freigabeliste an- oder ausgeschaltet wird
+  broadcast: true
+  on_format: "<green>Die Freigabeliste ist jetzt <bold>aktiv</bold>.</green> <gray>Nur freigegebene Spieler kommen noch auf <white><server_name></white>.</gray>"
+  off_format: "<yellow>Die Freigabeliste ist jetzt <bold>aus</bold>.</yellow> <gray><white><server_name></white> steht wieder allen offen.</gray>"
+  # Sollen beim Einschalten alle nicht freigegebenen Spieler getrennt werden? (OPs bleiben)
+  kick_not_listed_on_enable: false
+  # Mehrzeiliger Text beim Verbindungsversuch ohne Freigabe (jede Zeile eine Liste-Zeile)
+  kick_message:
+    - "<red><bold>Kein Zutritt</bold></red>"
+    - ""
+    - "<white>Du stehst nicht auf der Freigabeliste dieses Servers.</white>"
+    - "<gray>Frage das Team von <white><server_name></white>, ob es dich freischaltet.</gray>"
+  # Text für jemanden, dem die Freigabe im laufenden Spiel entzogen wird (/wl remove)
+  removed_kick_message:
+    - "<red><bold>Freigabe entzogen</bold></red>"
+    - ""
+    - "<white>Du stehst nicht mehr auf der Freigabeliste von <server_name>.</white>"
+    - "<gray>Bei Fragen wende dich bitte an das Team.</gray>"
+
+# Herunterfahren mit Ansage (/mcsmstop). Der Manager ruft den Befehl vor jedem Stopp auf.
+# Platzhalter in allen Texten: <sekunden> (deutsche Zeitangabe), <zahl> (reine Sekunden),
+# <grund>, <server_name>
+shutdown:
+  # Sekundenmarken, bei denen gewarnt wird
+  marks: [60, 30, 15, 10, 5, 4, 3, 2, 1]
+  # Grund, wenn beim Befehl keiner angegeben wurde
+  reason_default: "Wartung"
+  chat_format: "<gold>Der Server wird in <white><sekunden></white> heruntergefahren.</gold> <gray>Grund: <white><grund></white></gray>"
+  title: "<gold><bold>Herunterfahren</bold></gold>"
+  subtitle: "<gray>in <white><sekunden></white></gray>"
+  cancel_format: "<green>Das Herunterfahren wurde abgebrochen.</green> <gray>Alles bleibt, wie es ist.</gray>"
+  # Kurzer Ton bei jeder Warnung
+  sound: true
+  # Abschiedstext beim geplanten Herunterfahren (/mcsmstop)
+  kick_message:
+    - "<gold><bold><server_name></bold></gold>"
+    - ""
+    - "<white>Der Server wird jetzt heruntergefahren.</white>"
+    - "<gray>Grund: <white><grund></white></gray>"
+    - "<gray>Danke fürs Spielen – bis bald!</gray>"
+  # Abschiedstext beim Plugin-Ende, also bei jedem Stopp (Konsole, Manager, /stop)
+  disable_kick_message:
+    - "<gold><bold><server_name></bold></gold>"
+    - ""
+    - "<white>Der Server wird gerade beendet.</white>"
+    - "<gray>Danke fürs Spielen – bis bald!</gray>"
+  # Beim Plugin-Ende noch verbundene Spieler freundlich trennen statt hart abbrechen
+  kick_on_disable: true
+  # Nur, wenn der Server wirklich stoppt – schützt vor Hinauswerfen bei einem Plugin-Neuladen
+  kick_only_when_stopping: true
+
+# Leistungsüberwachung für status.json und die Warnung im Spiel
+metrics:
+  # Unter diesem TPS-Wert gilt der Server als überlastet
+  tps_warn: 15.0
+  # So lange muss der Wert am Stück zu niedrig sein, bevor gewarnt wird (Sekunden)
+  warn_after_seconds: 60
+
 features:
   chat: true
   join_leave: true
@@ -41,3 +312,47 @@ features:
   tpa: true
   homes: true
   gamemode: true
+  # Getrennte Profile für den Wartungszugang (aus: unsichtbar und sichtbar teilen sich ein Inventar)
+  admin_profiles: true
+  # Aufwärmzeit vor Teleports (false = überall sofort teleportieren)
+  teleport_warmup: true
+  # /back
+  back: true
+  # /rtp bzw. /wild
+  rtp: true
+  # Serverweite Warps (/warp, /warps, /setwarp, /delwarp)
+  warps: true
+  # /top
+  top: true
+  # Private Nachrichten (/msg, /r, /socialspy)
+  msg: true
+  # Abwesenheit (/afk)
+  afk: true
+  # Spielerstatistik (/stats, /playtime, /seen)
+  stats: true
+  # /near
+  near: true
+  # Chat-Zusätze (Erwähnungen, [i], Spamschutz)
+  chat_extras: true
+  # Nacht überspringen, wenn genug Spieler schlafen
+  sleep: true
+  # Begrüßung beim Beitritt
+  welcome: true
+  # /rules
+  rules: true
+  # Seitenleiste (/sb)
+  sidebar: true
+  # Rotierende Hinweise im Chat
+  broadcast: true
+  # TPS/MSPT in status.json und Warnung bei Überlastung
+  metrics: true
+  # Sperren und Kicks (/ban, /tempban, /unban, /banlist, /kick)
+  ban: true
+  # Stummschaltungen (/mute, /tempmute, /unmute, /mutelist)
+  mute: true
+  # Verwarnungen (/warn, /warns)
+  warn: true
+  # Freigabeliste (/wl) mit eigenen deutschen Texten
+  whitelist: true
+  # Herunterfahren mit Ansage (/mcsmstop) und freundlicher Abschied beim Plugin-Ende
+  shutdown: true

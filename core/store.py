@@ -62,6 +62,9 @@ DEFAULTS = {
     "xbox_autostart": True,     # Bot zusammen mit dem Server starten/stoppen
 }
 
+# Schlüssel früherer Fassungen, die beim Laden verworfen werden, damit sie nicht zurückkommen.
+OBSOLETE = ("companion_admins",)
+
 VALID_TYPES = ("bedrock", "java")
 VALID_FLAVORS = ("paper", "fabric", "neoforge", "forge", "quilt")
 VALID_GAMEMODES = ("survival", "creative", "adventure")
@@ -131,7 +134,13 @@ def _write(data: dict) -> None:
 
 def all_servers() -> list[dict]:
     with _lock:
-        return [dict(DEFAULTS, **s) for s in _read()["servers"]]
+        out = []
+        for s in _read()["servers"]:
+            cfg = dict(DEFAULTS, **s)
+            for key in OBSOLETE:
+                cfg.pop(key, None)
+            out.append(cfg)
+        return out
 
 
 def get(server_id: str) -> dict | None:
