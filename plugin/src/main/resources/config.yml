@@ -163,6 +163,18 @@ sidebar:
   # Beim Einschalten einmal auf /mcsm hinweisen
   hint: true
 
+# Uhrzeit der Spielwelt über der Schnellzugriffsleiste (Actionbar).
+# Platzhalter: <zeit> (hh:mm), <tag> (Spieltag), <symbol> (Sonne/Mond/Wetter), <welt>
+clock:
+  format: "<symbol> <white><zeit></white> <dark_gray>•</dark_gray> <gray>Tag <white><tag></white></gray>"
+  # Sehen neue Spieler die Uhr von Anfang an? Jeder kann sie mit /uhr abschalten.
+  default_on: true
+  # Zeichen für Tag, Nacht, Regen und Gewitter (MiniMessage erlaubt)
+  symbol_day: "<yellow>☀</yellow>"
+  symbol_night: "<aqua>☾</aqua>"
+  symbol_rain: "<gray>☂</gray>"
+  symbol_storm: "<red>☈</red>"
+
 # Rotierende Hinweise im Chat. Platzhalter: <server_name>, <online>, <max>
 broadcast:
   # Abstand zwischen zwei Hinweisen in Minuten
@@ -340,6 +352,8 @@ features:
   welcome: true
   # /rules
   rules: true
+  # Uhrzeit in der Actionbar (/uhr)
+  clock: true
   # Seitenleiste (/sb)
   sidebar: true
   # Rotierende Hinweise im Chat

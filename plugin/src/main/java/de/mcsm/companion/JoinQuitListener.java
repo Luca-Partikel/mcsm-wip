@@ -68,6 +68,7 @@ public final class JoinQuitListener implements Listener {
             event.quitMessage(Msg.mm(cfg.leaveFormat, Msg.name("name", p)));
         }
         plugin.tpa().clear(p);
+        plugin.clock().forget(p);
         if (plugin.adminTools() != null) {
             plugin.adminTools().forget(p);
         }

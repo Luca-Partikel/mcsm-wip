@@ -134,6 +134,11 @@ commands:
     usage: /mcsm
     aliases: [befehle]
     permission: mcsm.info
+  uhr:
+    description: Uhrzeit in der Actionbar an- oder ausschalten
+    usage: /uhr [an|aus]
+    aliases: [clock]
+    permission: mcsm.clock
   sb:
     description: Seitenleiste ein- oder ausschalten
     usage: /sb [an|aus]
@@ -301,6 +306,9 @@ permissions:
   mcsm.info:
     description: /mcsm benutzen
     default: true
+  mcsm.clock:
+    description: /uhr benutzen
+    default: true
   mcsm.sidebar:
     description: /sb benutzen
     default: true
@@ -352,6 +360,7 @@ permissions:
       mcsm.chat.nospam: true
       mcsm.rules: true
       mcsm.info: true
+      mcsm.clock: true
       mcsm.sidebar: true
       mcsm.chat.color: true
       mcsm.admin: true

@@ -55,6 +55,7 @@ public final class McsmCommand implements TabExecutor {
             new Group("Server", List.of(
                     new Entry("rules", "/rules", "Serverregeln"),
                     new Entry("sb", "/sb", "Seitenleiste an/aus"),
+                    new Entry("uhr", "/uhr", "Uhrzeit an/aus"),
                     new Entry("mcsm", "/mcsm", "Diese Übersicht"))),
             new Group("Moderation", List.of(
                     new Entry("ban", "/ban <Spieler> [Grund]", "Dauerhaft sperren"),

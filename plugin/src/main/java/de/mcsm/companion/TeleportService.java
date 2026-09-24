@@ -190,6 +190,7 @@ public final class TeleportService {
             return false;
         }
         if (reason != null && !reason.isBlank()) {
+            plugin.clock().suppress(player, 2500L);
             player.sendActionBar(Msg.mm(reason));
         }
         return true;
@@ -256,11 +257,13 @@ public final class TeleportService {
             }
             if (moved(player, job.origin)) {
                 it.remove();
+                plugin.clock().suppress(player, 2500L);
                 player.sendActionBar(Msg.mm("<red>Teleport abgebrochen – du hast dich bewegt.</red>"));
                 continue;
             }
             job.leftTicks -= (int) STEP_TICKS;
             if (job.leftTicks > 0) {
+                plugin.clock().suppress(player, 1500L);
                 player.sendActionBar(bar(job));
                 continue;
             }

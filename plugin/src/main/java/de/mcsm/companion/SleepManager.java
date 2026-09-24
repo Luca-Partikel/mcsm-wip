@@ -131,6 +131,7 @@ public final class SleepManager implements Runnable {
                         + " <gray>– der Rest der Nacht wird dann übersprungen.</gray>",
                 Msg.number("now", sleeping), Msg.number("need", needed));
         for (Player p : world.getPlayers()) {
+            plugin.clock().suppress(p, 2500L);
             p.sendActionBar(bar);
         }
     }
@@ -182,6 +183,7 @@ public final class SleepManager implements Runnable {
                         w.setThundering(false);
                     }
                     for (Player p : w.getPlayers()) {
+                        plugin.clock().suppress(p, 2500L);
                         p.sendActionBar(Msg.mm("<gray>Ein neuer Tag beginnt.</gray>"));
                     }
                 }

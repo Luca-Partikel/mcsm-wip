@@ -51,6 +51,7 @@ public final class CompanionPlugin extends JavaPlugin {
     private ServerMetrics metrics;
     private SleepManager sleep;
     private SidebarManager sidebar;
+    private ClockTask clock;
     private AutoBroadcastTask broadcast;
 
     // Moderation: Sperren, Kicks, Stummschaltungen, Verwarnungen
@@ -95,6 +96,8 @@ public final class CompanionPlugin extends JavaPlugin {
         sleep = new SleepManager(this);
         sidebar = new SidebarManager(this, metrics);
         sidebar.load();
+        clock = new ClockTask(this);
+        clock.load();
         broadcast = new AutoBroadcastTask(this);
 
         // Moderation (mutes.yml und warns.yml lesen; die Sperren selbst liegen in banned-players.json)
@@ -145,6 +148,7 @@ public final class CompanionPlugin extends JavaPlugin {
         register(new RulesCommand(this), "rules");
         register(new McsmCommand(this, metrics), "mcsm");
         register(new SidebarCommand(this, sidebar), "sb");
+        register(new ClockCommand(clock), "uhr");
         register(new BanCommands(this, bans), "ban", "tempban", "unban", "banlist", "kick");
         register(new MuteCommands(this, bans), "mute", "tempmute", "unmute", "mutelist");
         register(new WarnCommands(this, bans), "warn", "warns");
@@ -158,6 +162,7 @@ public final class CompanionPlugin extends JavaPlugin {
         Bukkit.getScheduler().runTaskTimer(this, chatExtras, 20L, 10L);                  // alle 0,5 s
         Bukkit.getScheduler().runTaskTimer(this, sleep, 40L, 20L);                       // jede Sekunde
         Bukkit.getScheduler().runTaskTimer(this, sidebar, 60L, 20L);                     // jede Sekunde
+        Bukkit.getScheduler().runTaskTimer(this, clock, 40L, 20L);                       // Uhr in der Actionbar
         Bukkit.getScheduler().runTaskTimer(this, afk, 100L, 100L);                       // alle 5 s
         Bukkit.getScheduler().runTaskTimer(this, broadcast, 200L, 100L);                 // alle 5 s
         Bukkit.getScheduler().runTaskTimer(this, metrics, 200L, 100L);                   // alle 5 s
@@ -248,6 +253,7 @@ public final class CompanionPlugin extends JavaPlugin {
         teleportHistory.saveIfDirty();
         stats.run();
         sidebar.load();
+        clock.load();
         bans.load();                 // mutes.yml und warns.yml neu lesen, abgelaufene aufräumen
         whitelist.applyConfig();     // Ablehnungstext der Freigabeliste neu bauen
         if (settings.featTablist) {
@@ -412,6 +418,10 @@ public final class CompanionPlugin extends JavaPlugin {
 
     public SidebarManager sidebar() {
         return sidebar;
+    }
+
+    public ClockTask clock() {
+        return clock;
     }
 
     /** Moderation: Sperren, Kicks, Stummschaltungen und Verwarnungen. */

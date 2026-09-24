@@ -51,6 +51,7 @@ Texte, aber keine eigene Wahrheit.
 | Begrüßung | Titel, Untertitel, Ton und ein Hinweis auf `/rules` und `/mcsm` beim Beitritt|
 | Regeln | `/rules` (`/regeln`) zeigt die Regeln aus der Konfiguration, sonst sechs deutsche Standardregeln. |
 | Übersicht | `/mcsm` (`/befehle`) listet alle Befehle in sechs Kategorien, jede Zeile anklickbar, und zeigt Servername, Version, Spielerzahl, TPS und Betriebszeit. Angezeigt wird nur, was registriert und für den Absender erlaubt ist. |
+| Uhrzeit | Die Uhrzeit der Spielwelt steht bei jedem Spieler über der Schnellzugriffsleiste (Actionbar), mit Symbol für Tag, Nacht, Regen und Gewitter sowie dem Spieltag. Im Nether und im Ende gilt die Zeit der Hauptwelt. Andere Anzeigen in derselben Zeile (Teleport, Ortssuche, Schlafen) haben Vorrang. Mit `/uhr` schaltet sie jeder für sich ab; Zustand je Spieler in `clock.yml`. |
 | Seitenleiste | `/sb` (`/sidebar`, `/leiste`) blendet ein eigenes Scoreboard ein: Spielerzahl, eigene Spielzeit, Welt, Koordinaten, Weltzeit, TPS. Fremde Scoreboards werden nie überschrieben. Zustand je Spieler in `sidebar.yml`. |
 | Hinweise | Rotierende Tipps im Chat im Abstand von `broadcast.interval_minutes`. |
 | Wartungsprofile | Unsichtbar und sichtbar sind zwei getrennte Spielerprofile – siehe Abschnitt „Wartungsprofile“. |
@@ -96,6 +97,7 @@ Alle Meldungen sind deutsch, MiniMessage-formatiert und tragen das Präfix `[MCS
 | `/near [Radius]` | Mitspieler in der Nähe mit Entfernung und Richtung | `mcsm.near` (alle) |
 | `/rules` (`/regeln`) | Serverregeln anzeigen | `mcsm.rules` (alle) |
 | `/mcsm` (`/befehle`) | Übersicht aller Befehle und Serverinfo | `mcsm.info` (alle) |
+| `/uhr [an\|aus]` (`/clock`) | Uhrzeit in der Actionbar ein- oder ausschalten | `mcsm.clock` (alle) |
 | `/sb [an\|aus]` (`/sidebar`, `/leiste`) | Seitenleiste ein- oder ausschalten | `mcsm.sidebar` (alle) |
 | `/hardcore on` | Hardcore-Modus einschalten (ohne Wirkung auf frühere Tode) | `mcsm.hardcore` (OP, Konsole) |
 | `/hardcore off` | Hardcore-Modus ausschalten, alle Toten wiederbeleben, alle Gräber entfernen | `mcsm.hardcore` |
@@ -189,6 +191,7 @@ Tab-Vervollständigung nicht auffällt; geprüft wird im Code (Wartungszugang, O
 | `mcsm.chat.nospam` | OP | vom Spamschutz im Chat ausgenommen |
 | `mcsm.rules` | alle | `/rules` |
 | `mcsm.info` | alle | `/mcsm` |
+| `mcsm.clock` | alle | `/uhr` |
 | `mcsm.sidebar` | alle | `/sb` |
 | `mcsm.chat.color` | OP | `&`-Farbcodes im Chat |
 | `mcsm.admin` | OP | `/admin` |
@@ -262,6 +265,9 @@ Vorlage an; fehlende Schlüssel werden mit Standardwerten ergänzt. Alle Texte s
 | `welcome.hint` | bool | `true` | Hinweis auf `/rules` und `/mcsm` |
 | `welcome.first_join_spawn` | bool | `true` | Beim allerersten Beitritt zum Spawn teleportieren |
 | `rules` | Liste | sechs Standardregeln | Serverregeln für `/rules`; leere Liste = eingebaute Regeln |
+| `clock.format` | Text | Symbol, Uhrzeit, Spieltag | Anzeige in der Actionbar; Platzhalter `<zeit>`, `<tag>`, `<symbol>`, `<welt>` |
+| `clock.default_on` | bool | `true` | Uhr für neue Spieler von Anfang an an |
+| `clock.symbol_day` / `_night` / `_rain` / `_storm` | Text | `☀` / `☾` / `☂` / `☈` | Zeichen je nach Tageszeit und Wetter |
 | `sidebar.title` | Text | Servername als Farbverlauf | Titel der Seitenleiste; Platzhalter `<server_name>`, `<name>` |
 | `sidebar.default_on` | bool | `false` | Leiste für neue Spieler von Anfang an an |
 | `sidebar.hint` | bool | `true` | Beim Einschalten einmal auf `/mcsm` hinweisen |
@@ -327,6 +333,7 @@ Vorlage an; fehlende Schlüssel werden mit Standardwerten ergänzt. Alle Texte s
 | `features.sleep` | bool | `true` | Nacht überspringen |
 | `features.welcome` | bool | `true` | Begrüßung |
 | `features.rules` | bool | `true` | `/rules` |
+| `features.clock` | bool | `true` | Uhrzeit in der Actionbar |
 | `features.sidebar` | bool | `true` | Seitenleiste |
 | `features.broadcast` | bool | `true` | Rotierende Hinweise |
 | `features.metrics` | bool | `true` | Kennzahlen in `status.json` und TPS-Warnung |
@@ -363,6 +370,7 @@ Weitere Dateien im Plugin-Ordner – alle legt das Plugin selbst an, keine gehö
 | `warps.yml` | Serverweite Warps mit Ersteller und Anlagezeit |
 | `teleports.yml` | Letzte Position und Todesort je Spieler für `/back` |
 | `stats.yml` | `players.<uuid>.{name, first_join, last_quit, play_ms, deaths, player_kills, mob_kills, distance_cm}` |
+| `clock.yml` | Je Spieler, ob die Uhr an ist |
 | `sidebar.yml` | Je Spieler, ob die Seitenleiste an ist |
 | `admin-profiles.yml` | Die beiden Wartungsprofile und das jeweils aktive (`aktiv.<uuid>`) |
 | `hardcore.yml` | Zustand des Hardcore-Modus (siehe unten) |

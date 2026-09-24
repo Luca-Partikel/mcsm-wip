@@ -111,6 +111,7 @@ public final class RtpCommand implements TabExecutor {
             Msg.error(player, "Kein sicherer Ort gefunden. Versuch es gleich noch einmal.");
             return;
         }
+        plugin.clock().suppress(player, 2000L);
         player.sendActionBar(Msg.mm("<gray>Suche einen sicheren Ort … <white><a></white><dark_gray>/</dark_gray><gray><m></gray>",
                 Msg.number("a", attempt), Msg.number("m", max)));
 
