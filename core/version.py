@@ -3,7 +3,7 @@
 `tools\\release.py 1.6.0` hebt die Version an, committet und taggt; die GitHub-Action baut daraus das
 Release (ZIP, Setup.exe, SHA256SUMS.txt). Der Manager vergleicht diese Version mit dem neuesten Release.
 """
-__version__ = "1.7.1"
+__version__ = "1.7.2"
 
 # GitHub-Repository "besitzer/repo", aus dem Updates geladen werden. Leer = Update-Prüfung aus.
 # Zum Testen überschreibbar per Umgebungsvariable MCSM_UPDATE_REPO bzw. MCSM_UPDATE_API (volle URL).
