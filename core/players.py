@@ -22,6 +22,9 @@ MOJANG_PROFILE = "https://api.mojang.com/users/profiles/minecraft/"
 # Java-Namen: 3–16 Zeichen, Buchstaben/Ziffern/Unterstrich. Bedrock-Gamertags dürfen Leerzeichen haben.
 JAVA_NAME_RE = re.compile(r"[A-Za-z0-9_]{3,16}")
 BEDROCK_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._\-]{0,29}[A-Za-z0-9])?")
+# Bedrock-Spieler kommen ueber Geyser/Floodgate mit einem Praefix (Standard ".") auf den Java-Server
+# und duerfen Leerzeichen im Namen haben – sonst wuerden sie aus der Online-Liste herausfallen.
+FLOODGATE_NAME_RE = re.compile(r"[.*+_\-]?[A-Za-z0-9](?:[A-Za-z0-9 ._\-]{0,30})?")
 
 ACTIONS = ("whitelist_on", "whitelist_off", "whitelist_add", "whitelist_remove", "ban", "unban", "kick")
 DURATIONS = {"1h": 3600, "6h": 21600, "1d": 86400, "7d": 604800, "30d": 2592000}
@@ -132,8 +135,21 @@ def check_name(cfg: dict, raw) -> str:
             raise ValueError("Dieser Name passt nicht: erlaubt sind Buchstaben, Ziffern, Leerzeichen, Punkt, "
                              "Bindestrich und Unterstrich (höchstens 31 Zeichen).")
     elif not JAVA_NAME_RE.fullmatch(name):
-        raise ValueError("Java-Namen haben 3 bis 16 Zeichen und bestehen aus Buchstaben, Ziffern "
-                         "und Unterstrich – bitte die Schreibweise prüfen.")
+        if not (cfg.get("geyser") and FLOODGATE_NAME_RE.fullmatch(name)):
+            raise ValueError("Java-Namen haben 3 bis 16 Zeichen und bestehen aus Buchstaben, Ziffern "
+                             "und Unterstrich – bitte die Schreibweise prüfen.")
+    return name
+
+
+def read_name(cfg: dict, raw) -> str | None:
+    """Name, wie ihn der Server selbst meldet (Online-Liste). Hier wird nicht auf die Schreibweise
+    bestanden – Bedrock-Spieler über Geyser tragen ein Präfix und dürfen Leerzeichen haben. Abgewiesen
+    wird nur, was in einem Konsolenbefehl gefährlich wäre."""
+    name = re.sub(r"\s+", " ", str(raw or "")).strip()
+    if not name or len(name) > 40:
+        return None
+    if any(ch < " " or ch in "\"\\" for ch in name):
+        return None
     return name
 
 
@@ -283,10 +299,9 @@ def _names_from(text: str, cfg: dict) -> list[str]:
         part = part.strip()
         if not part:
             continue
-        try:
-            names.append(check_name(cfg, part))
-        except ValueError:
-            continue                                   # Zusatztext der Serverantwort überspringen
+        clean = read_name(cfg, part)
+        if clean:
+            names.append(clean)                        # Zusatztext der Serverantwort fällt hier heraus
     return names
 
 
@@ -315,10 +330,9 @@ def _from_plugin(cfg: dict) -> list[str] | None:
     names = []
     for item in raw:
         value = item.get("name") if isinstance(item, dict) else item
-        try:
-            names.append(check_name(cfg, value))
-        except ValueError:
-            continue
+        clean = read_name(cfg, value)
+        if clean:
+            names.append(clean)
     return names
 
 
@@ -453,6 +467,9 @@ def apply_action(cfg: dict, action: str, name="", reason="", duration="") -> dic
         if bedrock:
             entries.append({"ignoresPlayerLimit": False, "name": clean})
         else:
+            if not JAVA_NAME_RE.fullmatch(clean):
+                return done(f"„{clean}“ sieht nach einem Bedrock-Spieler aus (Crossplay). Dafür muss der "
+                            "Server laufen – bitte starten und es dann noch einmal versuchen.", True)
             uuid, clean = profile_for(cfg, clean)
             entries.append({"uuid": uuid, "name": clean})
         _write_list(allow_path(cfg), entries)
