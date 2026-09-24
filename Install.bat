@@ -32,7 +32,7 @@ if exist "%SRC%MinecraftServerManager.zip" (
   powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ($env:SRC + 'MinecraftServerManager.zip') -DestinationPath $env:TARGET -Force"
 ) else (
   echo  Dateien werden kopiert ...
-  robocopy "%SRC%." "%TARGET%" /E /NFL /NDL /NJH /NJS /NP /XD servers cache runtime data dist .git /XF Install.bat *.log *.part >nul
+  robocopy "%SRC%." "%TARGET%" /E /NFL /NDL /NJH /NJS /NP /XD servers cache runtime data dist .git build plugin .github __pycache__ /XF Install.bat *.log *.part >nul
 )
 
 if not exist "%TARGET%\app.py" (
