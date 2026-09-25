@@ -191,34 +191,40 @@ public final class SidebarManager implements Runnable {
         // nicht wie eine Liste aus Schlüssel und Wert.
         List<String> out = new ArrayList<>();
         out.add(TRENNER);
-        out.add(" <green>❖</green> <gray>Welt</gray>");
-        out.add("  <white>" + weltName(world) + "</white> <dark_gray>·</dark_gray> <white>"
-                + clock(world.getTime()) + "</white> " + wetter(world));
-        out.add("  <dark_gray>x</dark_gray> <white>" + loc.getBlockX() + "</white>"
-                + " <dark_gray>y</dark_gray> <white>" + loc.getBlockY() + "</white>"
-                + " <dark_gray>z</dark_gray> <white>" + loc.getBlockZ() + "</white>");
+        out.add(" <green>❖</green> <gray>Position</gray>");
+        out.add(achse("X", loc.getBlockX()));
+        out.add(achse("Y", loc.getBlockY()));
+        out.add(achse("Z", loc.getBlockZ()));
         out.add("");
-        out.add(" <green>❖</green> <gray>Du</gray>");
-        out.add("  <white>" + playtime(player) + "</white> <dark_gray>gespielt</dark_gray>");
+        out.add(" <green>❖</green> <gray>Zeit</gray>");
+        out.add("  <white>" + clock(world.getTime()) + "</white> " + wetter(world)
+                + bereich(world));
         out.add("");
         out.add(" <green>❖</green> <gray>Server</gray>");
         out.add("  <white>" + plugin.vanish().visibleOnline() + "</white><dark_gray>/</dark_gray><gray>"
-                + Bukkit.getMaxPlayers() + "</gray> <dark_gray>online</dark_gray>");
-        out.add("  " + metrics.tpsColored() + " <dark_gray>TPS</dark_gray>");
+                + Bukkit.getMaxPlayers() + "</gray> <dark_gray>online</dark_gray> <dark_gray>·</dark_gray> "
+                + metrics.tpsColored() + " <dark_gray>TPS</dark_gray>");
+        out.add("  <white>" + playtime(player) + "</white> <dark_gray>gespielt</dark_gray>");
         out.add(TRENNER);
         out.add("<dark_gray>" + plugin.settings().sponsorText + "</dark_gray>");
         return out;
     }
 
-    /** Weltname ohne technische Zusätze: „world_nether" wird zu „Nether". */
-    private static String weltName(World world) {
+    /** Eine Achse der Position: Buchstabe grün, Zahl weiß, dazwischen Luft. */
+    private static String achse(String name, int wert) {
+        return "  <green>" + name + "</green>  <white>" + wert + "</white>";
+    }
+
+    /**
+     * Nether und Ende werden benannt, die Oberwelt nicht – dort stünde nur der technische
+     * Ordnername („world"), und der sagt niemandem etwas.
+     */
+    private static String bereich(World world) {
         switch (world.getEnvironment()) {
-            case NETHER: return "Nether";
-            case THE_END: return "Ende";
-            default: break;
+            case NETHER: return " <dark_gray>·</dark_gray> <red>Nether</red>";
+            case THE_END: return " <dark_gray>·</dark_gray> <light_purple>Ende</light_purple>";
+            default: return "";
         }
-        String n = world.getName();
-        return n.length() > 14 ? n.substring(0, 13) + "…" : n;
     }
 
     /** Kleines Zeichen für Wetter und Tageszeit. */

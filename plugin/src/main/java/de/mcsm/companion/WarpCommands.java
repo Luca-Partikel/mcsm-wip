@@ -84,7 +84,7 @@ public final class WarpCommands implements TabExecutor {
     private boolean list(Player player) {
         Set<String> names = warps.names();
         if (names.isEmpty()) {
-            Msg.send(player, "<gray>Es gibt noch keine Warps.</gray>");
+            Msg.line(player, "<gray>Es gibt noch keine Warps.</gray>");
             return true;
         }
         List<Component> parts = new ArrayList<>();
@@ -96,7 +96,7 @@ public final class WarpCommands implements TabExecutor {
         }
         Component joined = Component.join(
                 JoinConfiguration.separator(Component.text(", ", NamedTextColor.GRAY)), parts);
-        Msg.send(player, "<gray>Warps (<white><c></white>): </gray><list>",
+        Msg.line(player, "<gray>Warps (<white><c></white>): </gray><list>",
                 Msg.number("c", names.size()), Placeholder.component("list", joined));
         return true;
     }

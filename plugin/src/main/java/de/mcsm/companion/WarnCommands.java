@@ -38,7 +38,7 @@ public final class WarnCommands implements TabExecutor {
 
     private boolean warn(CommandSender sender, String[] args) {
         if (args.length < 2) {
-            Msg.send(sender, "<gray>Verwendung: <white>/warn <Spieler> <Grund></white></gray>");
+            Msg.line(sender, "<gray>Verwendung: <white>/warn <Spieler> <Grund></white></gray>");
             return true;
         }
         String reason = BanService.joinReason(args, 1);
@@ -86,7 +86,7 @@ public final class WarnCommands implements TabExecutor {
         }
         List<WarnStore.Warn> list = service.warns().list(id);
         if (list.isEmpty()) {
-            Msg.send(sender, "<gray><white><n></white> hat keine Verwarnungen.</gray>", Msg.text("n", name));
+            Msg.line(sender, "<gray><white><n></white> hat keine Verwarnungen.</gray>", Msg.text("n", name));
             return true;
         }
 
@@ -95,12 +95,12 @@ public final class WarnCommands implements TabExecutor {
         long maxAge = Math.max(0, service.cfg().getInt("warn.expire_days", 0)) * 86_400_000L;
         int counted = service.warns().count(id, maxAge);
         if (auto) {
-            Msg.send(sender, "<gray>Verwarnungen von <white><n></white><dark_gray>:</dark_gray> "
+            Msg.line(sender, "<gray>Verwarnungen von <white><n></white><dark_gray>:</dark_gray> "
                             + "<white><c></white> <gray>von</gray> <white><t></white> "
                             + "<gray>bis zur automatischen Sperre.</gray>",
                     Msg.text("n", name), Msg.number("c", counted), Msg.number("t", threshold));
         } else {
-            Msg.send(sender, "<gray>Verwarnungen von <white><n></white><dark_gray>:</dark_gray> "
+            Msg.line(sender, "<gray>Verwarnungen von <white><n></white><dark_gray>:</dark_gray> "
                             + "<white><c></white></gray>",
                     Msg.text("n", name), Msg.number("c", list.size()));
         }

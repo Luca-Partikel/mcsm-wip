@@ -38,6 +38,14 @@ public final class Msg {
         to.sendMessage(prefixed(text, resolvers));
     }
 
+    /**
+     * Zeile ohne Präfix – für Auflistungen. Bei einer Statistik oder einer Liste gehört das
+     * Präfix einmal an die Überschrift; vor jeder Zeile wiederholt macht es die Ausgabe unruhig.
+     */
+    public static void line(CommandSender to, String text, TagResolver... resolvers) {
+        to.sendMessage(mm("  " + text, resolvers));
+    }
+
     public static void error(CommandSender to, String text, TagResolver... resolvers) {
         to.sendMessage(prefixed("<red>" + text + "</red>", resolvers));
     }

@@ -63,10 +63,10 @@ public final class HardcoreCommand implements TabExecutor {
                 ? "<gray>Hardcore-Modus: <red>aktiv</red></gray>"
                 : "<gray>Hardcore-Modus: <green>inaktiv</green></gray>");
         if (hc.graves().isEmpty()) {
-            Msg.send(sender, "<gray>Tote Spieler: <white>keine</white></gray>");
+            Msg.line(sender, "<gray>Tote Spieler: <white>keine</white></gray>");
             return;
         }
-        Msg.send(sender, "<gray>Tote Spieler (<white><n></white>):</gray>", Msg.number("n", hc.graves().size()));
+        Msg.line(sender, "<gray>Tote Spieler (<white><n></white>):</gray>", Msg.number("n", hc.graves().size()));
         for (GraveStore.Grave g : hc.graves()) {
             Msg.send(sender, "<gray>- <white><line></white></gray>", Msg.text("line", HardcoreManager.describe(g)));
         }

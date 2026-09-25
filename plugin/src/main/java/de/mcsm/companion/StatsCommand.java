@@ -53,20 +53,20 @@ public final class StatsCommand implements TabExecutor {
         sender.sendMessage(Msg.mm("<dark_gray>──────── <green>Statistik</green> <white><name></white> <dark_gray>────────</dark_gray>",
                 Msg.text("name", name)));
         // Der Zustandstext ist fest vorgegeben und darf deshalb als MiniMessage eingesetzt werden.
-        Msg.send(sender, "<gray>Zustand: " + state(id, online) + "</gray>");
-        Msg.send(sender, "<gray>Spielzeit: <white><total></white></gray>",
+        Msg.line(sender, "<gray>Zustand: " + state(id, online) + "</gray>");
+        Msg.line(sender, "<gray>Spielzeit: <white><total></white></gray>",
                 Msg.text("total", PlayerStatsStore.duration(stats.playMillis(id))));
-        Msg.send(sender, "<gray>Erster Besuch: <white><first></white></gray>",
+        Msg.line(sender, "<gray>Erster Besuch: <white><first></white></gray>",
                 Msg.text("first", PlayerStatsStore.stamp(stats.firstJoin(id))));
-        Msg.send(sender, "<gray>Zuletzt gesehen: <white><last></white></gray>",
+        Msg.line(sender, "<gray>Zuletzt gesehen: <white><last></white></gray>",
                 Msg.text("last", online != null ? "jetzt gerade" : PlayerStatsStore.ago(stats.lastQuit(id))));
-        Msg.send(sender, "<gray>Tode: <white><deaths></white> <dark_gray>|</dark_gray> "
+        Msg.line(sender, "<gray>Tode: <white><deaths></white> <dark_gray>|</dark_gray> "
                         + "Spieler besiegt: <white><pk></white> <dark_gray>|</dark_gray> "
                         + "Kreaturen besiegt: <white><mk></white></gray>",
                 Msg.number("deaths", deaths), Msg.number("pk", playerKills), Msg.number("mk", mobKills));
-        Msg.send(sender, "<gray>Verhältnis Kills/Tode: <white><ratio></white></gray>",
+        Msg.line(sender, "<gray>Verhältnis Kills/Tode: <white><ratio></white></gray>",
                 Msg.text("ratio", ratio(playerKills, deaths)));
-        Msg.send(sender, "<gray>Zurückgelegte Strecke: <white><km></white></gray>",
+        Msg.line(sender, "<gray>Zurückgelegte Strecke: <white><km></white></gray>",
                 Msg.text("km", distance(stats.distanceMeters(id))));
         return true;
     }

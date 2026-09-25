@@ -127,7 +127,7 @@ public final class BanCommands implements TabExecutor {
         PlayerProfile profile = entry.getBanTarget();
         String name = profile == null || profile.getName() == null ? args[0] : profile.getName();
         service.unban(entry, BanService.actorName(sender));
-        Msg.send(sender, "<gray>Die Sperre von <white><n></white> wurde aufgehoben.</gray>",
+        Msg.line(sender, "<gray>Die Sperre von <white><n></white> wurde aufgehoben.</gray>",
                 Msg.text("n", name));
         return true;
     }

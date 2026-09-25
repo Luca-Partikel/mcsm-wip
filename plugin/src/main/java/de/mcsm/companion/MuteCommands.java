@@ -98,7 +98,7 @@ public final class MuteCommands implements TabExecutor {
                     Msg.text("d", BanService.remaining(expiresAt - System.currentTimeMillis())),
                     Msg.text("r", reason));
         } else {
-            Msg.send(sender, "<gray><white><n></white> ist dauerhaft stummgeschaltet: <white><r></white></gray>",
+            Msg.line(sender, "<gray><white><n></white> ist dauerhaft stummgeschaltet: <white><r></white></gray>",
                     Msg.text("n", target.name), Msg.text("r", reason));
         }
         return true;

@@ -69,7 +69,7 @@ public final class SeenCommand implements TabExecutor {
                 Msg.text("name", name),
                 Msg.text("ago", PlayerStatsStore.ago(last)),
                 Msg.text("stamp", PlayerStatsStore.stamp(last)));
-        Msg.send(sender, "<gray>Gesamte Spielzeit: <white><total></white></gray>",
+        Msg.line(sender, "<gray>Gesamte Spielzeit: <white><total></white></gray>",
                 Msg.text("total", PlayerStatsStore.duration(stats.playMillis(id))));
         return true;
     }

@@ -43,7 +43,7 @@ public final class PlaytimeCommand implements TabExecutor {
             }
         }
         String name = stats.nameOf(id);
-        Msg.send(sender, "<gray>Spielzeit von <white><name></white>: <green><total></green></gray>",
+        Msg.line(sender, "<gray>Spielzeit von <white><name></white>: <green><total></green></gray>",
                 Msg.text("name", name),
                 Msg.text("total", PlayerStatsStore.duration(stats.playMillis(id))));
         Player online = Bukkit.getPlayer(id);
