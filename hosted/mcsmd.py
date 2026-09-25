@@ -113,6 +113,7 @@ WEB_FILES = {
     "admin.html": "text/html; charset=utf-8",
     "admin.css": "text/css; charset=utf-8",
     "admin.js": "application/javascript; charset=utf-8",
+    "logo.svg": "image/svg+xml",
 }
 COOKIE_NAME = "mcsm_sitzung"                # Sitzung der Verwaltung im Browser
 
@@ -500,9 +501,13 @@ LOGIN_FEHLVERSUCHE_MAX = 5
 
 
 def _login_anlegen(state: str, *, flow: str, ziel: str = "", device: str = "",
-                   secret: str = "", browser: str = "", now: int | None = None) -> None:
+                   secret: str = "", browser: str = "", verknuepfen: str = "",
+                   now: int | None = None) -> None:
     stamp = store_hosted.now() if now is None else int(now)
     eintrag = {"flow": flow, "ziel": ziel, "device": device, "fehler": "", "ergebnis": None,
+               # Gesetzt, wenn ein bereits angemeldetes Konto nur sein Discord anhaengen will:
+               # dann entsteht in der Rueckleitung KEINE neue Sitzung.
+               "verknuepfen": str(verknuepfen or ""),
                "expires_at": stamp + oauth.STATE_TTL_SECONDS, "versuche": 0,
                "hash": hashlib.sha256(secret.encode("utf-8")).hexdigest() if secret else "",
                # Merkmal des Browsers, der diese Anmeldung begonnen hat (siehe `_browser_passt`).
@@ -1258,7 +1263,7 @@ def h_web_index(req: Req):
     return h_web(req, "admin.html")
 
 
-@route("GET", r"^/(admin\.css|admin\.js)$", auth=False)
+@route("GET", r"^/(admin\.css|admin\.js|logo\.svg)$", auth=False)
 def h_web(req: Req, name: str = "admin.html"):
     """Die drei Dateien der Betreiberoberfläche ausliefern.
 
@@ -1516,9 +1521,19 @@ def h_discord_start(req: Req):
     """
     ziel = req.q("ziel", "")
     device = req.q("device", "")[:40]
+    # Ein angemeldetes Konto kann sein Discord nachtraeglich anhaengen (Konto per Einladungscode).
+    verknuepfen = ""
+    if req.q("link", "") in ("1", "ja", "true"):
+        if req.user is None:
+            raise ApiError("Zum Verknüpfen musst du angemeldet sein.", 401)
+        if req.user.get("discord_id"):
+            raise ApiError("Dieses Konto ist bereits mit Discord verknüpft.", 409)
+        verknuepfen = str(req.user.get("id") or "")
     roh = req.q("flow", "")
     abhol = req.q("abhol", "")
     flow = oauth.clean_flow(roh) if roh else (oauth.FLOW_APP if device else oauth.FLOW_ADMIN)
+    if verknuepfen:
+        flow = oauth.FLOW_ADMIN            # das Verknüpfen läuft immer im Browser der Verwaltung
     data = oauth.start(flow, invite_code=req.q("code", ""), port=req.qint("port", 0),
                        abhol_hash=abhol, prompt=req.q("prompt", ""))
     out = dict(data)
@@ -1539,7 +1554,7 @@ def h_discord_start(req: Req):
         # bliebe bis zum Ablauf unabholbar im Arbeitsspeicher liegen.
         return out
     _login_anlegen(data["state"], flow=flow, ziel=_admin_ziel(ziel) if ziel else "",
-                   device=device, secret=secret, browser=browser)
+                   device=device, secret=secret, browser=browser, verknuepfen=verknuepfen)
     if browser:
         return 200, out, {"Set-Cookie": _anmelde_cookie_setzen(browser)}
     return out
@@ -1572,6 +1587,32 @@ def h_discord_callback(req: Req):
             "schicken, mit der du unbemerkt in **seinem** Konto arbeitest. Bitte die Verwaltung "
             "in diesem Browser öffnen und dort auf „Mit Discord anmelden“ klicken.",
             flow=flow, ziel=ziel, status=403)
+    verknuepfen = str(vorgang.get("verknuepfen") or "")
+    if verknuepfen:
+        # Kein Anmeldevorgang: Das Konto ist schon angemeldet und haengt nur sein Discord an.
+        # Es entsteht deshalb weder eine neue Sitzung noch ein neues Konto.
+        try:
+            ergebnis = oauth.complete(state, req.q("code", ""), error=req.q("error", ""),
+                                      error_description=req.q("error_description", ""))
+            user = oauth.verknuepfen(verknuepfen, ergebnis.identitaet)
+        except oauth.OAuthFehler as exc:
+            _login_setzen(state, fehler=exc.message)
+            return _discord_fehlerseite(exc.message, flow=flow, ziel=ziel, status=exc.status)
+        except ValueError as exc:
+            _login_setzen(state, fehler=str(exc))
+            return _discord_fehlerseite(str(exc), flow=flow, ziel=ziel)
+        try:
+            store_hosted.patch_by("users", "id", str(user.get("id") or ""),
+                                  {"discord_name": str(ergebnis.identitaet.anzeigename or "")[:64],
+                                   "avatar_url": str(ergebnis.identitaet.avatar_url or "")[:200]})
+        except ValueError:
+            pass
+        log_event(f"Konto {user.get('id')} ist jetzt mit Discord verknüpft.")
+        _login_setzen(state, ergebnis={"verknuepft": True})
+        return Raw(b"", "text/html; charset=utf-8", 302,
+                   {"Location": _admin_ziel(ziel) + "#verknuepft=1",
+                    "Set-Cookie": [_anmelde_cookie_loeschen()]})
+
     try:
         ergebnis = oauth.complete(state, req.q("code", ""), error=req.q("error", ""),
                                   error_description=req.q("error_description", ""))

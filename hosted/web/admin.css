@@ -57,12 +57,11 @@ code, .mono {
   position: sticky; top: 0; z-index: 5; flex-wrap: wrap;
 }
 .brand { display: flex; align-items: center; gap: 11px; }
-.brand-cube {
-  width: 36px; height: 36px; border-radius: 9px; flex: 0 0 36px;
-  background: linear-gradient(140deg, var(--green) 0%, var(--green-dk) 55%, #197a46 100%);
-  box-shadow: inset 0 0 0 2px rgba(255,255,255,.14), 0 4px 12px rgba(61,220,132,.25);
+.brand-logo {
+  width: 36px; height: 36px; border-radius: 9px; flex: 0 0 36px; display: block;
+  box-shadow: 0 4px 12px rgba(61,220,132,.22);
 }
-.brand-cube.big { width: 76px; height: 76px; border-radius: 20px; flex: 0 0 76px; margin: 0 auto 14px; }
+.brand-logo.big { width: 76px; height: 76px; border-radius: 20px; flex: 0 0 76px; margin: 0 auto 14px; }
 .brand-title { font-weight: 650; font-size: 15px; letter-spacing: -.2px; }
 .brand-sub { font-size: 11.5px; color: var(--muted); }
 

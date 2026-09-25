@@ -1059,7 +1059,7 @@ class HilfenTest(Basis):
             r"^(?:/api)?/auth/discord/finish$",
             r"^(?:/api)?/auth/discord/claim$",
             r"^/(?:admin\.html)?$",
-            r"^/(admin\.css|admin\.js)$",
+            r"^/(admin\.css|admin\.js|logo\.svg)$",
             r"^/favicon\.ico$",
         })
 

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Verwaltung – Minecraft Server Manager</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
 <meta name="theme-color" content="#0d1117">
 <link rel="stylesheet" href="admin.css">
 </head>
@@ -13,7 +14,7 @@
 <!-- ======================================================== Anmeldung -->
 <div class="login-wrap" id="login">
   <div class="login">
-    <div class="brand-cube big"></div>
+    <img class="brand-logo big" src="logo.svg" alt="" width="76" height="76">
     <h1>Verwaltung</h1>
     <p class="muted">Minecraft Server Manager – gehostete Server</p>
 
@@ -55,7 +56,7 @@
 
   <header class="head">
     <div class="brand">
-      <div class="brand-cube"></div>
+      <img class="brand-logo" src="logo.svg" alt="" width="36" height="36">
       <div>
         <div class="brand-title">Verwaltung</div>
         <div class="brand-sub" id="headSub">Gehostete Server</div>
@@ -67,6 +68,7 @@
         <div class="me-role" id="meRole"></div>
       </div>
       <div class="avatar" id="meAvatar">?</div>
+      <button class="btn btn-sm hidden" id="btnLink" title="Discord-Konto mit diesem Konto verbinden">Discord verknüpfen</button>
       <button class="btn btn-sm" id="btnLogout">Abmelden</button>
     </div>
   </header>

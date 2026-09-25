@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#182232"/><stop offset="1" stop-color="#0a0f17"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="53%" r="46%">
+      <stop offset="0" stop-color="#3ddc84" stop-opacity="0.30"/><stop offset="1" stop-color="#3ddc84" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#aaf7c8"/><stop offset="1" stop-color="#80ecac"/>
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="url(#bg)"/>
+  <rect width="100" height="100" rx="22" fill="url(#glow)"/>
+  <polygon points="21.0,34.5 50.0,50.0 50.0,81.0 21.0,65.5" fill="#3ddc84"/>
+  <polygon points="50.0,50.0 79.0,34.5 79.0,65.5 50.0,81.0" fill="#1c8a52"/>
+  <polygon points="21.0,34.5 21.0,39.0 25.1,41.2 25.1,44.2 29.3,46.4 29.3,43.4 33.4,45.6 33.4,48.6 37.6,50.9 37.6,47.9 41.7,50.1 41.7,53.1 45.9,55.3 45.9,52.3 50.0,54.5 50.0,50.0" fill="#80ecac"/>
+  <polygon points="50.0,50.0 50.0,54.5 54.1,52.3 54.1,55.3 58.3,53.1 58.3,50.1 62.4,47.9 62.4,50.9 66.6,48.6 66.6,45.6 70.7,43.4 70.7,46.4 74.9,44.2 74.9,41.2 79.0,39.0 79.0,34.5" fill="#68e6a0"/>
+  <polygon points="50.0,19.0 79.0,34.5 50.0,50.0 21.0,34.5" fill="url(#top)"/>
+  <path d="M21.0,34.5 L50.0,50.0 L79.0,34.5 M50.0,50.0 L50.0,81.0"
+        fill="none" stroke="#0a3e24" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -225,8 +225,13 @@ function tokenFromHash() {
   const q = new URLSearchParams(raw);
   const fehler = q.get('fehler') || q.get('error');
   if (fehler) showLoginNote(fehler, true);
+  const verknuepft = q.get('verknuepft') === '1';
+  if (verknuepft) {
+    // Rueckkehr vom Verknuepfen: die Sitzung blieb bestehen, nur das Discord-Konto ist neu dran.
+    setTimeout(() => toast('Dein Discord-Konto ist jetzt verknüpft – ab sofort reicht „Mit Discord anmelden“.'), 300);
+  }
   const token = q.get('token') || '';
-  if (token || fehler) {
+  if (token || fehler || verknuepft) {
     history.replaceState(null, '', location.pathname + location.search);
   }
   return /^[A-Za-z0-9._-]{16,512}$/.test(token) ? token : '';
@@ -290,6 +295,26 @@ async function loginDiscord() {
   } catch (e) {
     showLoginNote(e.message, true);
     $('#codeBox').classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* Discord nachträglich an das angemeldete Konto hängen (kein neuer Login, keine neue Sitzung). */
+async function linkDiscord() {
+  const btn = $('#btnLink');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const ziel = location.origin + location.pathname;
+    const data = await api('/api/auth/discord/start?link=1&ziel=' + encodeURIComponent(ziel));
+    const url = String(data.url || '');
+    if (!/^https:\/\/(discord\.com|discordapp\.com)\//.test(url)) {
+      throw new ApiError('Discord ist auf diesem Server nicht richtig eingerichtet.', 0);
+    }
+    location.href = url;
+  } catch (e) {
+    toast(e.message, true);
   } finally {
     btn.disabled = false;
   }
@@ -399,6 +424,12 @@ function renderMe() {
   const name = String(user.discord_name || user.name || '');
   $('#meName').textContent = name || '–';
   $('#meRole').textContent = user.role === 'admin' ? 'Betreiber' : 'Benutzer';
+  const link = $('#btnLink');
+  if (link) {
+    // Wer sich nur mit Einladungscode angemeldet hat, kann Discord hier nachtragen.
+    const verknuepft = !!(user.discord_linked || user.discord_name || user.discord_id);
+    link.classList.toggle('hidden', verknuepft);
+  }
   const av = $('#meAvatar');
   const url = String(user.avatar_url || user.discord_avatar || '');
   if (/^https:\/\/cdn\.discordapp\.com\//.test(url)) {
