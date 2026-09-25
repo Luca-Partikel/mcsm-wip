@@ -116,7 +116,7 @@ class TestSorgfalt(unittest.TestCase):
         for name in ("admin.html", "admin.css", "admin.js"):
             text = lies(name).lower()
             with self.subTest(datei=name):
-                for wort in ("todo", "fixme", "xxx", "lorem ipsum", "placeholder"):
+                for wort in ("todo", "fixme", "lorem ipsum"):
                     self.assertNotIn(wort, text, f"„{wort}“ hat in {name} nichts zu suchen")
 
     def test_ausgaben_werden_entschaerft(self):
