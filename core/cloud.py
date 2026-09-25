@@ -80,6 +80,8 @@ STATE_TEXTS = {
     "downloading": "wird zurückgeholt",
     "suspended": "ruht auf dem Root-Server",
 }
+#: Rollen, wie der Root-Server sie führt – hier nur die Anzeige dazu.
+ROLE_TEXTS = {"user": "Benutzer", "admin": "Betreiber", "owner": "Betreiber"}
 
 _lock = threading.RLock()
 _ssl_broken = False                                        # nach dem ersten Zertifikatsfehler curl nutzen
@@ -377,11 +379,24 @@ def login_start(device: str = "") -> dict:
 
 
 def login_poll() -> dict:
-    """Nachsehen, ob die Anmeldung im Browser fertig ist."""
+    """Nachsehen, ob die Anmeldung im Browser fertig ist.
+
+    Drei mögliche Ausgänge:
+
+    * ``{"pending": True}`` – der Benutzer ist im Browser noch nicht fertig,
+    * ``{"needs_invite": True, …}`` – Discord hat geklappt, aber dieses Konto gibt es auf dem
+      Root-Server noch nicht. Der Root legt dafür einen **Merkzettel** an; die Oberfläche fragt
+      jetzt einmal den Einladungscode ab und schickt ihn mit :func:`login_register`.
+    * ``{"logged_in": True}`` – fertig, das Sitzungstoken liegt auf der Platte.
+    """
     with _lock:
         ticket = str(_login.get("state") or "")
         secret = str(_login.get("secret") or "")
         started = float(_login.get("started") or 0)
+        zettel = str(_login.get("zettel") or "")
+    if zettel:
+        # Der Merkzettel liegt schon vor – die Oberfläche muss nur noch den Code nachreichen.
+        return invite_pending()
     if not ticket:
         return {"pending": False, "logged_in": logged_in()}
     if time.time() - started > 600:
@@ -392,6 +407,17 @@ def login_poll() -> dict:
                 auth=False, timeout=20)
     if data.get("pending"):
         return {"pending": True}
+    zettel = str(data.get("pending_invite") or "")
+    if zettel:
+        # Der Abholvorgang ist damit verbraucht (der Root gibt ihn genau einmal heraus) – den
+        # Zustandswert deshalb wegwerfen und nur noch den Merkzettel merken.
+        person = data.get("discord") if isinstance(data.get("discord"), dict) else {}
+        gueltig = max(60, int(data.get("gueltig_sekunden") or 900))
+        with _lock:
+            _login.clear()
+            _login.update({"zettel": zettel, "discord": _discord_person(person),
+                           "zettel_bis": time.time() + gueltig})
+        return invite_pending()
     token = str(data.get("token") or "")
     if not token:
         raise CloudError("Der Root-Server hat kein Sitzungstoken geliefert.")
@@ -399,6 +425,73 @@ def login_poll() -> dict:
     with _lock:
         _login.clear()
     return {"pending": False, "logged_in": True}
+
+
+def _discord_person(person: dict) -> dict:
+    """Nur die Felder für die Anzeige – und Bilder nur von Discord selbst."""
+    bild = str(person.get("avatar_url") or person.get("avatar") or "")
+    return {
+        "name": str(person.get("anzeigename") or person.get("name")
+                    or person.get("username") or "")[:64],
+        "avatar_url": bild if bild.startswith("https://cdn.discordapp.com/") else "",
+    }
+
+
+def invite_pending() -> dict:
+    """Stand der offenen Erstanmeldung (Merkzettel liegt vor, Code fehlt noch)."""
+    with _lock:
+        zettel = str(_login.get("zettel") or "")
+        bis = float(_login.get("zettel_bis") or 0)
+        person = dict(_login.get("discord") or {})
+    if not zettel:
+        return {"pending": False, "needs_invite": False, "logged_in": logged_in()}
+    rest = int(bis - time.time()) if bis else 0
+    if bis and rest <= 0:
+        with _lock:
+            _login.clear()
+        raise CloudError("Die Anmeldung ist abgelaufen – bitte noch einmal mit Discord anmelden.")
+    return {"pending": False, "needs_invite": True, "logged_in": False,
+            "discord": person, "gueltig_sekunden": max(0, rest)}
+
+
+def format_code(code: str) -> str:
+    """Einladungscode zur Anzeige: Großbuchstaben, Vierergruppen mit Trennstrich."""
+    roh = re.sub(r"[^A-Za-z0-9]", "", str(code or "")).upper()
+    return "-".join(roh[i:i + 4] for i in range(0, len(roh), 4))
+
+
+def login_register(code: str, note: str = "") -> dict:
+    """Zweiter Schritt der Erstanmeldung: Einladungscode zum vorgemerkten Discord-Konto."""
+    with _lock:
+        zettel = str(_login.get("zettel") or "")
+        bis = float(_login.get("zettel_bis") or 0)
+    if not zettel:
+        raise CloudError("Für diese Anmeldung liegt nichts mehr vor – bitte noch einmal auf "
+                         "„Mit Discord anmelden“ klicken.")
+    if bis and time.time() > bis:
+        with _lock:
+            _login.clear()
+        raise CloudError("Die Anmeldung ist abgelaufen – bitte noch einmal mit Discord anmelden.")
+    sauber = format_code(code)
+    if not sauber:
+        raise CloudError("Bitte den Einladungscode eintragen.")
+    device = str(note or "").strip() or (os.environ.get("COMPUTERNAME") or "PC")[:40]
+    data = _api("POST", "/api/auth/discord/register",
+                body={"zettel": zettel, "code": sauber, "note": device}, auth=False, timeout=30)
+    token = str(data.get("token") or "")
+    if not token:
+        raise CloudError("Der Root-Server hat kein Sitzungstoken geliefert.")
+    _finish_login(token, int(data.get("expires_at") or 0), data.get("user"))
+    with _lock:
+        _login.clear()
+    return {"logged_in": True}
+
+
+def login_abort() -> dict:
+    """Angefangene Anmeldung verwerfen (Knopf „Abbrechen“ im Dialog)."""
+    with _lock:
+        _login.clear()
+    return {"pending": False, "needs_invite": False, "logged_in": logged_in()}
 
 
 def login_invite(code: str, name: str) -> dict:
@@ -442,6 +535,97 @@ def logout(*, remote: bool = True) -> dict:
     with _lock:
         _login.clear()
     return {"logged_in": False}
+
+
+# --------------------------------------------------------------------------- Konto-Einstellungen
+#
+# Drei der vier Wege gibt es auf dem Root-Server vielleicht noch nicht. Statt in die Oberfläche
+# zu krachen, liefern sie dann ``{"supported": False, "hint": "<deutscher Satz>"}`` – die
+# Oberfläche zeigt den Satz an und lässt den Rest des Dialogs unberührt. Offene Punkte dazu
+# stehen in `spec-cloud-client-offen.md`.
+
+#: Antworten, die „diesen Weg gibt es hier (noch) nicht“ bedeuten.
+_NICHT_DA = (404, 405, 501)
+
+
+def _nicht_da(hint: str) -> dict:
+    return {"supported": False, "hint": hint}
+
+
+def sessions() -> dict:
+    """Aktive Sitzungen des Kontos (`GET /api/sessions`)."""
+    try:
+        data = _api("GET", "/api/sessions", timeout=20)
+    except CloudError as exc:
+        if exc.status in _NICHT_DA:
+            return _nicht_da("Dieser Root-Server führt noch keine Liste der Sitzungen.")
+        raise
+    roh = data.get("sessions")
+    liste = [s for s in roh if isinstance(s, dict)] if isinstance(roh, list) else []
+    liste.sort(key=lambda s: int(s.get("last_seen") or s.get("created_at") or 0), reverse=True)
+    state = _read_state()
+    return {"supported": True, "sessions": liste,
+            "current_expires_at": int(state.get("expires_at") or 0),
+            "logged_in_at": int(state.get("logged_in_at") or 0)}
+
+
+def set_name(name: str) -> dict:
+    """Anzeigenamen des Kontos ändern (`POST /api/me`, falls der Root das kann)."""
+    name = str(name or "").strip()
+    if len(name) < 2 or len(name) > 32:
+        raise CloudError("Bitte einen Namen mit 2 bis 32 Zeichen eintragen.")
+    try:
+        data = _api("POST", "/api/me", body={"name": name}, timeout=20)
+    except CloudError as exc:
+        if exc.status in _NICHT_DA:
+            return _nicht_da("Dieser Root-Server kann den Anzeigenamen noch nicht ändern. "
+                             "Bitte den Betreiber darum bitten.")
+        raise
+    user = data.get("user") if isinstance(data.get("user"), dict) else {"name": name}
+    neu = str(user.get("name") or name)
+    _update_state(lambda d: d.__setitem__("user", {**(d.get("user") or {}), "name": neu}))
+    _drop_cache()
+    return {"supported": True, "user": user, "name": neu}
+
+
+def revoke_session(created_at: int, note: str = "") -> dict:
+    """Eine einzelne Sitzung beenden (`POST /api/sessions/revoke`, falls vorhanden)."""
+    try:
+        created_at = int(created_at)
+    except (TypeError, ValueError) as exc:
+        raise CloudError("Diese Sitzung lässt sich nicht zuordnen.") from exc
+    if created_at <= 0:
+        raise CloudError("Diese Sitzung lässt sich nicht zuordnen.")
+    try:
+        _api("POST", "/api/sessions/revoke",
+             body={"created_at": created_at, "note": str(note or "")}, timeout=20)
+    except CloudError as exc:
+        if exc.status in _NICHT_DA:
+            return _nicht_da("Dieser Root-Server kann einzelne Sitzungen noch nicht beenden. "
+                             "„Abmelden“ beendet die Sitzung dieses PCs.")
+        raise
+    return {"supported": True, "ok": True}
+
+
+def discord_link_start(ziel: str = "") -> dict:
+    """Discord nachträglich mit einem bestehenden Konto verknüpfen.
+
+    Der Root-Server schickt den Browser nach dem Bestätigen auf ``ziel#verknuepft=1`` zurück –
+    dieses Programm kann die Rückleitung nicht auffangen und bittet deshalb darum, danach auf
+    „Aktualisieren“ zu klicken."""
+    query = {"link": "1"}
+    if str(ziel or "").strip():
+        query["ziel"] = str(ziel).strip()
+    try:
+        data = _api("GET", "/api/auth/discord/start", query=query, timeout=25)
+    except CloudError as exc:
+        if exc.status in _NICHT_DA:
+            return _nicht_da("Dieser Root-Server kann Discord noch nicht nachträglich verknüpfen.")
+        raise
+    url = str(data.get("url") or "")
+    if not url.startswith("https://"):
+        return _nicht_da("Der Root-Server hat keine Adresse zum Verknüpfen geliefert.")
+    return {"supported": True, "url": url}
 
 
 # --------------------------------------------------------------------------- Konto, Pässe, Server
@@ -586,16 +770,42 @@ def sync_links(servers: list[dict] | None = None) -> None:
 
 # --------------------------------------------------------------------------- Gesamtbild für die Oberfläche
 
+def _anzeige_user(user) -> dict:
+    """Konto für die Anzeige. Das Bild darf **nur** von Discord kommen.
+
+    Der Root-Server prüft das schon; hier wird es ein zweites Mal geprüft, damit die Oberfläche
+    unter keinen Umständen ein Bild von einer fremden Adresse nachlädt."""
+    info = dict(user) if isinstance(user, dict) else {}
+    bild = str(info.get("avatar_url") or "")
+    info["avatar_url"] = bild if bild.startswith("https://cdn.discordapp.com/") else ""
+    info["name"] = str(info.get("name") or "")
+    info["role"] = str(info.get("role") or "user")
+    info["role_text"] = ROLE_TEXTS.get(info["role"], info["role"])
+    info["discord_name"] = str(info.get("discord_name") or "")
+    info["discord_linked"] = bool(info.get("discord_linked") or info.get("discord_name"))
+    return info
+
+
 def status(force: bool = False) -> dict:
     """Alles, was der Bereich „Cloud“ braucht. Enthält nie das Token."""
     state = _read_state()
+    with _lock:
+        pending = bool(_login.get("state"))
+        offen = bool(_login.get("zettel"))
+        person = dict(_login.get("discord") or {})
+        zettel_bis = float(_login.get("zettel_bis") or 0)
     out = {
         "base": BASE_URL, "domain": HOST_DOMAIN, "logged_in": logged_in(),
-        "login_pending": bool(_login.get("state")),
-        "user": state.get("user") or {}, "passes": [], "limits": {}, "limits_text": "",
+        "login_pending": pending,
+        "needs_invite": offen,
+        "invite_discord": person,
+        "invite_seconds": max(0, int(zettel_bis - time.time())) if zettel_bis else 0,
+        "user": _anzeige_user(state.get("user") or {}),
+        "passes": [], "limits": {}, "limits_text": "",
         "servers": [], "notices": [], "machine": {}, "error": "", "auth_error": "",
         "transfer": state.get("transfer") or {}, "pull": [],
         "session_expires_at": int(state.get("expires_at") or 0),
+        "logged_in_at": int(state.get("logged_in_at") or 0),
     }
     if not out["logged_in"]:
         return out
@@ -610,7 +820,7 @@ def status(force: bool = False) -> dict:
         out["error"] = str(exc)
         return out
     sync_links(remotes)
-    out["user"] = me.get("user") or out["user"]
+    out["user"] = _anzeige_user(me.get("user") or out["user"])
     out["passes"] = [p for p in (me.get("passes") or []) if isinstance(p, dict)]
     out["limits"] = me.get("limits") or {}
     out["limits_text"] = str(me.get("limits_text") or "")

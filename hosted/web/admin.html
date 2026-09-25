@@ -5,39 +5,57 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Verwaltung – Minecraft Server Manager</title>
-  <link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
 <meta name="theme-color" content="#0d1117">
 <link rel="stylesheet" href="admin.css">
 </head>
 <body>
+<a class="skip" href="#inhalt">Zum Inhalt springen</a>
 
 <!-- ======================================================== Anmeldung -->
 <div class="login-wrap" id="login">
   <div class="login">
-    <img class="brand-logo big" src="logo.svg" alt="" width="76" height="76">
+    <div class="login-mark"><img class="brand-logo big" src="logo.svg" alt="" width="72" height="72"></div>
     <h1>Verwaltung</h1>
-    <p class="muted">Minecraft Server Manager – gehostete Server</p>
+    <p class="lead">Minecraft Server Manager · gehostete Server</p>
 
-    <div class="card">
+    <!-- Schritt 1: Es gibt genau einen Weg herein. -->
+    <div class="card login-card" id="loginStep1">
       <p class="small muted mb0" id="loginHint">Melde dich mit dem Discord-Konto an, das als
         Betreiber eingetragen ist.</p>
-      <div class="spacer" style="height:14px"></div>
-      <button class="btn btn-discord btn-block" id="btnDiscord">Mit Discord anmelden</button>
+      <button class="btn btn-discord btn-block" id="btnDiscord">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.6 5.6A16.5 16.5 0 0 0 15.5 4.3l-.2.4a12.4 12.4 0 0 1 3.6 1.8 15.8 15.8 0 0 0-13.8 0 12.4 12.4 0 0 1 3.6-1.8l-.2-.4A16.5 16.5 0 0 0 4.4 5.6C1.8 9.5 1.1 13.3 1.4 17a16.7 16.7 0 0 0 5.1 2.6l1-1.7a10.8 10.8 0 0 1-1.7-.8l.4-.3a11.8 11.8 0 0 0 10.1 0l.4.3a10.8 10.8 0 0 1-1.7.8l1 1.7a16.7 16.7 0 0 0 5.1-2.6c.4-4.3-.7-8.1-2.5-11.4ZM8.4 14.7c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm7.2 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg>
+        Mit Discord anmelden
+      </button>
+      <p class="small muted mb0 login-tip" id="loginTip">Einen zweiten Weg gibt es nicht: Discord ist
+        der Schlüssel zu diesem Konto.</p>
+    </div>
 
-      <div class="sep">oder</div>
-      <button class="btn btn-ghost btn-block btn-sm" id="btnCodeToggle">Mit Einladungscode anmelden</button>
-
-      <div id="codeBox" class="hidden" style="margin-top:14px">
-        <div class="field">
-          <label for="inviteCode">Einladungscode</label>
-          <input type="text" id="inviteCode" placeholder="KRF2-TGQN-SPAP" autocomplete="off" spellcheck="false">
-        </div>
-        <div class="field">
-          <label for="inviteName">Anzeigename</label>
-          <input type="text" id="inviteName" placeholder="Luca" autocomplete="off">
-          <div class="hint">2 bis 32 Zeichen. So heißt das Konto später in der Verwaltung.</div>
-        </div>
-        <button class="btn btn-primary btn-block" id="btnCode">Anmelden</button>
+    <!-- Schritt 2: Discord kennt den Server, der Server das Konto noch nicht. -->
+    <div class="card login-card hidden" id="regBox">
+      <div class="steps">
+        <span class="step-dot done">1</span>
+        <span class="step-label">Discord</span>
+        <span class="step-bar"></span>
+        <span class="step-dot now">2</span>
+        <span class="step-label">Einladungscode</span>
+      </div>
+      <h2 class="reg-hello" id="regHello">Fast geschafft</h2>
+      <p class="small muted" id="regLead">Bitte einmal deinen Einladungscode eintragen – danach
+        reicht für immer „Mit Discord anmelden“.</p>
+      <div class="note note-info small hidden" id="regFirst"></div>
+      <div class="field">
+        <label for="regCode">Einladungscode</label>
+        <input type="text" id="regCode" class="code-input" placeholder="ABCD-EFGH-IJKL"
+               autocomplete="off" spellcheck="false" maxlength="14"
+               aria-describedby="regCodeHint">
+        <div class="hint" id="regCodeHint">Zwölf Zeichen in drei Gruppen. Die Striche setzt die
+          Seite selbst.</div>
+      </div>
+      <button class="btn btn-primary btn-block" id="btnReg">Konto einrichten</button>
+      <div class="reg-foot">
+        <span class="muted small" id="regTimer"></span>
+        <button class="btn btn-ghost btn-sm" id="btnRegBack">Doch neu anmelden</button>
       </div>
     </div>
 
@@ -56,46 +74,94 @@
 
   <header class="head">
     <div class="brand">
-      <img class="brand-logo" src="logo.svg" alt="" width="36" height="36">
+      <img class="brand-logo" src="logo.svg" alt="" width="38" height="38">
       <div>
         <div class="brand-title">Verwaltung</div>
-        <div class="brand-sub" id="headSub">Gehostete Server</div>
+        <div class="brand-sub">Minecraft Server Manager</div>
       </div>
     </div>
+    <div class="head-live" id="headLive"></div>
     <div class="me">
-      <div style="text-align:right">
-        <div class="me-name" id="meName">…</div>
-        <div class="me-role" id="meRole"></div>
+      <button class="btn btn-sm btn-ghost hidden" id="btnLink">Discord verknüpfen</button>
+      <div class="me-box">
+        <div class="me-text">
+          <div class="me-name" id="meName">…</div>
+          <div class="me-role" id="meRole"></div>
+        </div>
+        <div class="avatar" id="meAvatar">?</div>
       </div>
-      <div class="avatar" id="meAvatar">?</div>
-      <button class="btn btn-sm hidden" id="btnLink" title="Discord-Konto mit diesem Konto verbinden">Discord verknüpfen</button>
       <button class="btn btn-sm" id="btnLogout">Abmelden</button>
     </div>
   </header>
 
-  <nav class="tabs" id="tabs">
-    <button class="tab active" data-view="users">Benutzer</button>
-    <button class="tab" data-view="invites">Einladungscodes</button>
-    <button class="tab" data-view="passes">Pässe</button>
-    <button class="tab" data-view="servers">Server</button>
-    <button class="tab" data-view="machine">Maschine</button>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Bereiche der Verwaltung">
+    <button class="tab active" data-view="uebersicht" role="tab" aria-selected="true">Übersicht</button>
+    <button class="tab" data-view="users" role="tab" aria-selected="false">Benutzer<span class="tab-count" id="cntUsers">0</span></button>
+    <button class="tab" data-view="invites" role="tab" aria-selected="false">Einladungscodes<span class="tab-count" id="cntInvites">0</span></button>
+    <button class="tab" data-view="passes" role="tab" aria-selected="false">Pässe<span class="tab-count" id="cntPasses">0</span></button>
+    <button class="tab" data-view="servers" role="tab" aria-selected="false">Server<span class="tab-count" id="cntServers">0</span></button>
+    <button class="tab" data-view="machine" role="tab" aria-selected="false">Maschine</button>
   </nav>
 
-  <main class="page">
+  <main class="page" id="inhalt">
     <div id="globalNote"></div>
 
+    <!-- ------------------------------------------------ Übersicht -->
+    <section id="viewUebersicht" class="view" role="tabpanel" aria-label="Übersicht">
+      <div class="kpis kpis-5" id="ovKpis"></div>
+      <div class="ov-grid">
+        <div class="card">
+          <div class="card-head">
+            <h3>Das braucht Aufmerksamkeit</h3>
+            <span class="muted small" id="ovAufgabenSum"></span>
+          </div>
+          <div id="ovAufgaben"></div>
+        </div>
+        <div class="ov-side">
+          <div class="card">
+            <div class="card-head">
+              <h3>Gerade an</h3>
+              <span class="muted small" id="ovRunSum"></span>
+            </div>
+            <div id="ovRunning"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h3>Auslastung der Maschine</h3>
+              <button class="btn btn-sm btn-ghost" data-goto="machine">Alles zur Maschine</button>
+            </div>
+            <div id="ovMeters"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ------------------------------------------------ Benutzer -->
-    <section id="viewUsers" class="view">
+    <section id="viewUsers" class="view hidden" role="tabpanel" aria-label="Benutzer">
       <div class="kpis" id="usersKpis"></div>
-      <div class="card">
+      <div class="card card-flat">
         <div class="card-head">
-          <h3>Benutzer</h3>
-          <div class="muted small">Eine Zeile anklicken, um Server und Pässe zu sehen.</div>
+          <div>
+            <h3>Benutzer</h3>
+            <div class="muted small" id="usersSum">Eine Zeile anklicken, um Server und Pässe zu sehen.</div>
+          </div>
+          <div class="card-tools">
+            <label class="search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input type="search" id="usersSearch" placeholder="Name oder Discord suchen"
+                     aria-label="Benutzer suchen" autocomplete="off">
+            </label>
+            <div class="seg" id="usersFilter" role="group" aria-label="Benutzer filtern">
+              <button type="button" class="on" data-ufilter="alle">Alle</button>
+              <button type="button" data-ufilter="pass">Mit Pass</button>
+              <button type="button" data-ufilter="gesperrt">Gesperrt</button>
+            </div>
+          </div>
         </div>
         <div class="scroll-x"><table class="table">
           <thead><tr>
-            <th style="width:22px"></th><th>Name</th><th>Discord</th><th>Rolle</th>
-            <th>Angelegt</th><th>Letzte Anmeldung</th><th>Zustand</th><th></th>
+            <th style="width:26px"><span class="muted">·</span></th><th>Name</th><th>Discord</th><th>Rolle</th>
+            <th>Grenzen</th><th>Server</th><th>Letzte Anmeldung</th><th>Zustand</th><th></th>
           </tr></thead>
           <tbody id="usersBody"></tbody>
         </table></div>
@@ -103,30 +169,51 @@
     </section>
 
     <!-- ------------------------------------------------ Einladungen -->
-    <section id="viewInvites" class="view hidden">
-      <div class="card">
-        <div class="card-head"><h3>Neuen Einladungscode erzeugen</h3></div>
-        <div class="grid3">
-          <div class="field">
-            <label for="invUses">Wie oft einlösbar</label>
-            <input type="number" id="invUses" value="1" min="1" max="50" step="1">
+    <section id="viewInvites" class="view hidden" role="tabpanel" aria-label="Einladungscodes">
+      <div class="split">
+        <div class="card">
+          <div class="card-head"><h3>Neuen Einladungscode erzeugen</h3></div>
+          <div class="grid3">
+            <div class="field">
+              <label for="invUses">Wie oft einlösbar</label>
+              <input type="number" id="invUses" value="1" min="1" max="50" step="1">
+            </div>
+            <div class="field">
+              <label for="invDays">Gültig für … Tage</label>
+              <input type="number" id="invDays" value="7" min="0" max="365" step="1">
+              <div class="hint">0 bedeutet: läuft nicht ab.</div>
+            </div>
+            <div class="field">
+              <label for="invNote">Notiz (nur für dich)</label>
+              <input type="text" id="invNote" placeholder="z. B. für Anna" maxlength="120">
+            </div>
           </div>
-          <div class="field">
-            <label for="invDays">Gültig für … Tage</label>
-            <input type="number" id="invDays" value="7" min="0" max="365" step="1">
-            <div class="hint">0 bedeutet: läuft nicht ab.</div>
-          </div>
-          <div class="field">
-            <label for="invNote">Notiz (nur für dich)</label>
-            <input type="text" id="invNote" placeholder="z. B. für Anna" maxlength="120">
+          <div class="btn-row"><button class="btn btn-primary" id="btnInvite">Code erzeugen</button></div>
+          <div id="inviteFresh"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>So kommt jemand herein</h3></div>
+          <div class="preview">
+            <p>Ein Code ist die Eintrittskarte für <b>ein neues Konto</b>. Der Gast meldet sich mit
+              Discord an und trägt den Code einmal ein – danach gehören Discord-Konto und Konto hier
+              zusammen.</p>
+            <p class="small muted mb0">Ein Code, der schon eingelöst wurde, lässt sich nicht
+              wiederverwenden. Zurückziehen wirkt nur auf noch offene Codes; bereits angelegte
+              Konten bleiben bestehen.</p>
           </div>
         </div>
-        <button class="btn btn-primary" id="btnInvite">Code erzeugen</button>
-        <div id="inviteFresh"></div>
       </div>
 
-      <div class="card">
-        <div class="card-head"><h3>Ausgestellte Codes</h3></div>
+      <div class="card card-flat">
+        <div class="card-head">
+          <div>
+            <h3>Ausgestellte Codes</h3>
+            <div class="muted small" id="invitesSum"></div>
+          </div>
+          <div class="card-tools">
+            <label class="check"><input type="checkbox" id="invOnlyOpen"> nur offene</label>
+          </div>
+        </div>
         <div class="scroll-x"><table class="table">
           <thead><tr>
             <th>Code</th><th>Zustand</th><th>Verwendungen</th><th>Angelegt</th>
@@ -138,77 +225,86 @@
     </section>
 
     <!-- ------------------------------------------------ Pässe -->
-    <section id="viewPasses" class="view hidden">
-      <div class="card">
-        <div class="card-head"><h3>Pass ausstellen</h3></div>
+    <section id="viewPasses" class="view hidden" role="tabpanel" aria-label="Pässe">
+      <div class="split">
+        <div class="card">
+          <div class="card-head"><h3>Pass ausstellen</h3></div>
 
-        <div class="field">
-          <label for="pmUser">Für welchen Benutzer</label>
-          <select id="pmUser"></select>
-        </div>
-
-        <div class="field">
-          <label>Art des Passes</label>
-          <div class="choices" id="pmKind">
-            <button type="button" class="choice sel" data-kind="local">
-              <div class="t">Lokal</div>
-              <div class="d">Für Server, die vom eigenen PC hochgeladen werden. Nach Ablauf holt
-                der Besitzer sie wieder zurück.</div>
-            </button>
-            <button type="button" class="choice" data-kind="premium">
-              <div class="t">Premium</div>
-              <div class="d">Server, die dauerhaft hier liegen bleiben – auch ohne Kopie auf dem PC.</div>
-            </button>
+          <div class="grid2">
+            <div class="field">
+              <label for="pmUser">Für welchen Benutzer</label>
+              <select id="pmUser"></select>
+            </div>
+            <div class="field">
+              <label for="pmSlots">Wie viele Server gleichzeitig</label>
+              <input type="number" id="pmSlots" value="1" min="1" max="10" step="1">
+              <div class="hint">Anlegen darf jeder beliebig viele – begrenzt ist nur das Einschalten.</div>
+            </div>
           </div>
-        </div>
 
-        <div class="grid2">
+          <div class="field">
+            <label id="pmKindLabel">Art des Passes</label>
+            <div class="choices" id="pmKind" role="group" aria-labelledby="pmKindLabel">
+              <button type="button" class="choice sel" data-kind="local" aria-pressed="true">
+                <span class="t">Lokal</span>
+                <span class="d">Für Server, die vom eigenen PC hochgeladen werden. Nach Ablauf holt
+                  der Besitzer sie wieder zurück.</span>
+              </button>
+              <button type="button" class="choice" data-kind="premium" aria-pressed="false">
+                <span class="t">Premium</span>
+                <span class="d">Server, die dauerhaft hier liegen bleiben – auch ohne Kopie auf dem PC.</span>
+              </button>
+            </div>
+          </div>
+
           <div class="field">
             <label for="pmDays">Laufzeit</label>
-            <div class="flex wrap" style="margin-bottom:8px">
-              <div class="seg" id="pmDaysQuick">
+            <div class="flex wrap">
+              <div class="seg" id="pmDaysQuick" role="group" aria-label="Laufzeit schnell wählen">
                 <button type="button" data-days="1">Tag</button>
                 <button type="button" data-days="7">Woche</button>
                 <button type="button" class="on" data-days="30">Monat</button>
+                <button type="button" data-days="365">Jahr</button>
               </div>
-              <input type="number" id="pmDays" class="inline-narrow" value="30" min="1" max="3650" step="1">
+              <input type="number" id="pmDays" class="inline-narrow" value="30" min="1" max="3650" step="1"
+                     aria-label="Laufzeit in Tagen">
               <span class="muted small">Tage</span>
             </div>
           </div>
+
           <div class="field">
-            <label for="pmSlots">Wie viele Server gleichzeitig</label>
-            <input type="number" id="pmSlots" value="1" min="1" max="10" step="1">
-            <div class="hint">Anlegen darf jeder beliebig viele – begrenzt ist nur das Einschalten.</div>
+            <label for="pmRam">Arbeitsspeicher insgesamt</label>
+            <div class="range-row">
+              <input type="range" id="pmRam" min="1" max="10" step="1" value="4">
+              <div class="range-val" id="pmRamVal">4 GB</div>
+            </div>
+            <div class="hint">Gilt für alle gleichzeitig laufenden Server zusammen –
+              z. B. 8 GB = zwei Server mit je 4 GB.</div>
           </div>
-        </div>
 
-        <div class="field">
-          <label for="pmRam">Arbeitsspeicher insgesamt</label>
-          <div class="range-row">
-            <input type="range" id="pmRam" min="1" max="10" step="1" value="4">
-            <div class="range-val" id="pmRamVal">4 GB</div>
+          <div class="field">
+            <label for="pmNote">Notiz (nur für dich)</label>
+            <input type="text" id="pmNote" placeholder="z. B. bezahlt bis Ende März" maxlength="120">
           </div>
-          <div class="hint">Gilt für alle gleichzeitig laufenden Server zusammen –
-            z. B. 8 GB = zwei Server mit je 4 GB.</div>
+
+          <div class="btn-row"><button class="btn btn-primary" id="btnIssue">Pass ausstellen</button></div>
         </div>
 
-        <div class="field">
-          <label for="pmNote">Notiz (nur für dich)</label>
-          <input type="text" id="pmNote" placeholder="z. B. bezahlt bis Ende März" maxlength="120">
-        </div>
-
-        <div class="preview" id="pmPreview">Bitte oben einen Benutzer auswählen.</div>
-        <div class="btn-row" style="margin-top:16px">
-          <button class="btn btn-primary" id="btnIssue">Pass ausstellen</button>
+        <div class="card">
+          <div class="card-head"><h3>Das steht dann im Pass</h3></div>
+          <div class="preview" id="pmPreview">Bitte links einen Benutzer auswählen.</div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card card-flat">
         <div class="card-head">
-          <h3>Alle Pässe</h3>
-          <label class="muted small flex" style="gap:6px">
-            <input type="checkbox" id="pmOnlyActive" style="width:auto"> nur gültige
-          </label>
+          <div>
+            <h3>Alle Pässe</h3>
+            <div class="muted small" id="passesSum"></div>
+          </div>
+          <div class="card-tools">
+            <label class="check"><input type="checkbox" id="pmOnlyActive"> nur gültige</label>
+          </div>
         </div>
         <div class="scroll-x"><table class="table">
           <thead><tr>
@@ -221,17 +317,32 @@
     </section>
 
     <!-- ------------------------------------------------ Server -->
-    <section id="viewServers" class="view hidden">
+    <section id="viewServers" class="view hidden" role="tabpanel" aria-label="Server">
       <div class="kpis" id="serversKpis"></div>
-      <div class="card">
+      <div class="card card-flat">
         <div class="card-head">
-          <h3>Alle Server</h3>
-          <div class="muted small" id="serversSum"></div>
+          <div>
+            <h3>Alle Server</h3>
+            <div class="muted small" id="serversSum"></div>
+          </div>
+          <div class="card-tools">
+            <label class="search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input type="search" id="serversSearch" placeholder="Server oder Besitzer suchen"
+                     aria-label="Server suchen" autocomplete="off">
+            </label>
+            <div class="seg" id="serversFilter" role="group" aria-label="Server filtern">
+              <button type="button" class="on" data-sfilter="alle">Alle</button>
+              <button type="button" data-sfilter="laufend">Laufend</button>
+              <button type="button" data-sfilter="gestoppt">Gestoppt</button>
+              <button type="button" data-sfilter="wartend">Wartend</button>
+            </div>
+          </div>
         </div>
         <div class="scroll-x"><table class="table">
           <thead><tr>
             <th>Server</th><th>Besitzer</th><th>Zustand</th><th>Größe</th>
-            <th>Arbeitsspeicher</th><th>Ports</th><th>Adresse</th><th></th>
+            <th>Arbeitsspeicher</th><th>Adresse</th><th></th>
           </tr></thead>
           <tbody id="serversBody"></tbody>
         </table></div>
@@ -239,13 +350,13 @@
     </section>
 
     <!-- ------------------------------------------------ Maschine -->
-    <section id="viewMachine" class="view hidden">
+    <section id="viewMachine" class="view hidden" role="tabpanel" aria-label="Maschine">
       <div id="machineBox"></div>
     </section>
   </main>
 </div>
 
-<div class="toast-wrap" id="toasts"></div>
+<div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
 <div id="modalHost"></div>
 
 <script src="admin.js"></script>

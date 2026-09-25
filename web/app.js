@@ -33,13 +33,17 @@ const state = {
   cloud: {
     data: null, error: '', loading: true, busy: '', hideBanner: false,
     job: null,                        // { id, label, serverId, job }
+    rate: null,                       // { at, bytes, bps } – Geschwindigkeit der Übertragung
     open: null,                       // geöffneter entfernter Server (Konsole/Dateien)
     log: { next: 0, lines: [], running: false },
-    files: { path: '', entries: null, open: null, text: '', error: '' },
-    login: { pending: false, invite: false, error: '' },
+    files: { path: '', entries: null, open: null, text: '', error: '', dirty: false },
+    login: { pending: false, error: '', url: '' },
+    cmd: '',                          // Befehlszeile der entfernten Konsole (überlebt das Neuzeichnen)
+    askingInvite: false,              // der Dialog für den Einladungscode ist offen
+    sig: '',                          // Fingerabdruck des zuletzt Gezeichneten (siehe cloudSig)
   },
   timers: { status: null, console: null, job: null, xbox: null, xboxJob: null,
-            cloud: null, cloudJob: null, cloudLog: null, cloudLogin: null },
+            cloud: null, cloudJob: null, cloudLog: null, cloudLogin: null, cloudTick: null },
   xboxSig: '',
 };
 
@@ -63,6 +67,179 @@ function toast(msg, err = false) {
   el.textContent = msg;
   $('#toasts').appendChild(el);
   setTimeout(() => el.remove(), err ? 7000 : 4000);
+}
+
+/* ------------------------------------------------------------------ Dialoge
+   Eigene Dialoge statt confirm(), prompt() und alert() des Browsers: Die zeigen im Fenster
+   „127.0.0.1:12345 enthält …“, lassen sich nicht gestalten und halten das ganze Programm an.
+   Hier: abgedunkelter Hintergrund, Karte in der Mitte, Escape und Klick daneben schließen,
+   Tab bleibt im Dialog, Enter bestätigt. Rückgabe ist immer ein Promise. */
+
+const MODALS = [];                       // offene Dialoge, der letzte ist der oberste
+const modalOpen = () => MODALS.length > 0;
+const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), '
+  + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+let modalNr = 0;
+
+function dialogFields(fields) {
+  return fields.map((f) => {
+    const id = esc(f.id);
+    if (f.type === 'textarea') {
+      return `<div class="field"><label for="${id}">${esc(f.label || '')}</label>
+        <textarea id="${id}" rows="${f.rows || 4}" placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>
+        ${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}</div>`;
+    }
+    return `<div class="field"><label for="${id}">${esc(f.label || '')}</label>
+      <input type="text" id="${id}" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}"
+        ${f.maxlength ? `maxlength="${Number(f.maxlength)}"` : ''}
+        ${f.mono ? 'class="mono-in" autocapitalize="characters" spellcheck="false"' : ''}
+        ${f.aria ? `aria-label="${esc(f.aria)}"` : ''}>
+      ${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}</div>`;
+  }).join('');
+}
+
+/* opts: title, sub, icon, tone ('danger'|'warn'|'ok'), text, html, body() (statt text/html),
+         fields[], validate(values), onSubmit(values, ctx), bind(ctx), confirmText, cancelText
+         (null = Knopf weglassen), wide, locked (kein Escape/Klick daneben). */
+function dialog(opts = {}) {
+  return new Promise((resolve) => {
+    const nr = ++modalNr;
+    const fields = opts.fields || [];
+    const prev = document.activeElement;
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `
+      <div class="modal${opts.wide ? ' modal-wide' : ''}" role="dialog" aria-modal="true"
+           aria-labelledby="mdl${nr}t" tabindex="-1">
+        <div class="modal-head">
+          ${opts.icon ? `<div class="modal-ico${opts.tone ? ' ico-' + opts.tone : ''}" aria-hidden="true">${esc(opts.icon)}</div>` : ''}
+          <div class="modal-titles">
+            <h2 class="modal-title" id="mdl${nr}t">${esc(opts.title || '')}</h2>
+            ${opts.sub ? `<div class="modal-sub">${esc(opts.sub)}</div>` : ''}
+          </div>
+          <button type="button" class="modal-x" data-mx="cancel" aria-label="Dialog schließen">✕</button>
+        </div>
+        <div class="modal-body" id="mdl${nr}b"></div>
+        <div class="modal-err" role="alert" hidden></div>
+        <div class="modal-foot">
+          ${opts.cancelText === null ? '' : `<button type="button" class="btn" data-mx="cancel">${esc(opts.cancelText || 'Abbrechen')}</button>`}
+          ${opts.confirmText === null ? '' : `<button type="button" class="btn ${opts.tone === 'danger' ? 'btn-red' : 'btn-primary'}" data-mx="ok">${esc(opts.confirmText || 'Bestätigen')}</button>`}
+        </div>
+      </div>`;
+    const card = $('.modal', back);
+    const bodyBox = $('.modal-body', back);
+    const errBox = $('.modal-err', back);
+    const entry = { card, back };
+    let done = false;
+
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      const i = MODALS.indexOf(entry);
+      if (i >= 0) MODALS.splice(i, 1);
+      document.removeEventListener('keydown', onKey, true);
+      back.remove();
+      if (!MODALS.length) document.body.classList.remove('modal-on');
+      try { if (prev && prev.focus) prev.focus(); } catch { /* Element gibt es nicht mehr */ }
+      resolve(value);
+    };
+    const setError = (msg) => { errBox.hidden = !msg; errBox.textContent = msg || ''; };
+    const setBusy = (on) => {
+      card.classList.toggle('is-busy', !!on);
+      $$('[data-mx]', back).forEach((b) => { b.disabled = !!on; });
+    };
+    const values = () => {
+      const out = {};
+      fields.forEach((f) => { const el = $('#' + f.id, back); if (el) out[f.id] = el.value; });
+      return out;
+    };
+    const submit = async () => {
+      setError('');
+      const v = values();
+      if (opts.validate) { const bad = opts.validate(v); if (bad) { setError(bad); return; } }
+      if (opts.onSubmit) {
+        setBusy(true);
+        try {
+          const r = await opts.onSubmit(v, ctx);
+          setBusy(false);
+          if (r === false) return;                     // der Dialog bleibt bewusst offen
+        } catch (e) { setBusy(false); setError(e && e.message ? e.message : String(e)); return; }
+      }
+      finish(fields.length ? v : true);
+    };
+    const bodyHtml = () => {
+      if (opts.body) return opts.body(ctx);
+      const text = (opts.text || '').split('\n\n').filter(Boolean)
+        .map((p) => `<p>${esc(p)}</p>`).join('');
+      return text + (opts.html || '') + (fields.length ? dialogFields(fields) : '');
+    };
+    const draw = (focusIt) => {
+      const wasId = document.activeElement && document.activeElement.id;
+      bodyBox.innerHTML = bodyHtml();
+      if (opts.bind) opts.bind(ctx);
+      if (!focusIt) {
+        const back2 = wasId ? $('#' + CSS.escape(wasId), card) : null;
+        if (back2) { try { back2.focus(); } catch { /* egal */ } }
+        return;
+      }
+      const first = $('.modal-body input, .modal-body select, .modal-body textarea', card)
+        || $('[data-mx="ok"]', card) || card;
+      try { first.focus(); if (first.select) first.select(); } catch { /* egal */ }
+    };
+    const ctx = { root: card, body: bodyBox, setError, setBusy, submit, redraw: () => draw(false),
+                  close: (v) => finish(v === undefined ? null : v) };
+
+    const onKey = (e) => {
+      if (MODALS[MODALS.length - 1] !== entry) return;
+      if (e.key === 'Escape') {
+        if (opts.locked) return;
+        e.preventDefault(); e.stopPropagation(); finish(null); return;
+      }
+      if (!card.contains(document.activeElement)) return;
+      if (e.key === 'Tab') {
+        const list = $$(FOCUSABLE, card).filter((el) => el.offsetWidth || el.offsetHeight);
+        if (!list.length) return;
+        const first = list[0], last = list[list.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        return;
+      }
+      if (e.key === 'Enter') {
+        const t = e.target;
+        if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON' || t.tagName === 'A')) return;
+        if (opts.confirmText === null) return;
+        e.preventDefault();
+        submit();
+      }
+    };
+
+    back.onclick = (e) => { if (e.target === back && !opts.locked) finish(null); };
+    $$('[data-mx]', back).forEach((b) => {
+      b.onclick = () => (b.dataset.mx === 'ok' ? submit() : finish(null));
+    });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(back);
+    document.body.classList.add('modal-on');
+    MODALS.push(entry);
+    draw(true);
+  });
+}
+
+/** Ja/Nein-Dialog. Gefährliches („danger“) bekommt einen roten Knopf. */
+async function askConfirm(opts) {
+  return (await dialog({ icon: opts.tone === 'danger' ? '⚠' : '❓', confirmText: 'Bestätigen', ...opts })) === true;
+}
+/** Eingabe-Dialog (Ersatz für prompt). Rückgabe: Text oder null bei Abbruch. */
+async function askInput(opts) {
+  const f = { id: opts.id || 'mdlInput', label: opts.label || '', value: opts.value || '',
+              placeholder: opts.placeholder || '', hint: opts.hint || '', mono: !!opts.mono,
+              maxlength: opts.maxlength, aria: opts.aria };
+  const r = await dialog({ icon: '✏', confirmText: 'Übernehmen', ...opts, fields: [f] });
+  return r ? String(r[f.id] ?? '').trim() : null;
+}
+/** Reiner Hinweis (Ersatz für alert). */
+function askNote(opts) {
+  return dialog({ icon: 'ℹ', cancelText: null, confirmText: 'Verstanden', ...opts });
 }
 
 async function refresh() {
@@ -961,7 +1138,11 @@ function bindCompanionCard(s) {
   const card = $('#companionCard'); if (!card) return;
   const btn = $('#btnHardcore'); if (btn) btn.onclick = async () => {
     const on = companionHardcoreOn(s);
-    if (on && !confirm('Hardcore ausschalten? Alle Toten werden wieder in den Überlebensmodus gesetzt.')) return;
+    if (on && !(await askConfirm({
+      tone: 'danger', title: 'Hardcore ausschalten?', confirmText: 'Hardcore ausschalten',
+      text: 'Alle Spieler, die im Hardcore-Modus gestorben sind, kommen sofort wieder in den '
+        + 'Überlebensmodus und können weiterspielen. Das lässt sich nicht einzeln zurücknehmen.',
+    }))) return;
     btn.disabled = true;
     try { await api(`servers/${s.id}/hardcore`, { method: 'POST', body: { enabled: !on } }); toast(on ? 'Hardcore ausgeschaltet.' : 'Hardcore eingeschaltet.'); await refresh(); render(); }
     catch (e) { toast(e.message, true); btn.disabled = false; }
@@ -1016,11 +1197,19 @@ function bindXboxCard(s) {
   const start = $('#btnXboxStart'); if (start) start.onclick = () => api(`servers/${s.id}/xbox/start`, { method: 'POST' }).then(() => { toast('Bot wird gestartet …'); return refresh(); }).catch((e) => toast(e.message, true));
   const stop = $('#btnXboxStop'); if (stop) stop.onclick = () => api(`servers/${s.id}/xbox/stop`, { method: 'POST' }).then(() => refresh()).catch((e) => toast(e.message, true));
   const reset = $('#btnXboxReset'); if (reset) reset.onclick = async () => {
-    if (!confirm('Gespeicherte Anmeldung verwerfen? Beim nächsten Start wird ein neuer Code angezeigt.')) return;
+    if (!(await askConfirm({
+      tone: 'danger', title: 'Gespeicherte Anmeldung verwerfen?', confirmText: 'Verwerfen',
+      text: 'Die Verbindung zum Xbox-Konto wird gelöscht. Beim nächsten Start zeigt der Manager '
+        + 'einen neuen Code, den du auf microsoft.com/link eingeben musst.',
+    }))) return;
     try { await api(`servers/${s.id}/xbox/reset`, { method: 'POST' }); toast('Anmeldung verworfen.'); await refresh(); } catch (e) { toast(e.message, true); }
   };
   const disable = $('#btnXboxDisable'); if (disable) disable.onclick = async () => {
-    if (!confirm('Xbox-Freunde-Modus ausschalten? Der Server verschwindet aus der Freundesliste.')) return;
+    if (!(await askConfirm({
+      tone: 'danger', title: 'Xbox-Freunde-Modus ausschalten?', confirmText: 'Ausschalten',
+      text: 'Der Server verschwindet aus der Freundesliste auf Xbox, PlayStation und Switch. '
+        + 'Deine Freunde kommen dann nur noch über die Adresse auf den Server.',
+    }))) return;
     try { await api(`servers/${s.id}/xbox/disable`, { method: 'POST' }); await refresh(); render(); } catch (e) { toast(e.message, true); }
   };
   const copy = $('#btnXboxCopy'); if (copy) copy.onclick = () => navigator.clipboard?.writeText(s.xbox.code).then(() => toast('Code kopiert.'));
@@ -1276,7 +1465,11 @@ async function loadPlayers(s) {
 async function playerAction(s, action, body) {
   const box = $('#playersBox');
   if (!box) return;
-  if (action === 'ban' && !confirm(`„${(body.name || '').trim()}“ wirklich sperren? Der Spieler kommt dann nicht mehr auf den Server.`)) return;
+  if (action === 'ban' && !(await askConfirm({
+    tone: 'danger', title: `„${(body.name || '').trim()}“ sperren?`, confirmText: 'Sperren',
+    text: 'Der Spieler kommt nicht mehr auf den Server und wird sofort hinausgeworfen, '
+      + 'falls er gerade online ist. Aufheben kannst du die Sperre jederzeit wieder.',
+  }))) return;
   $$('button', box).forEach((el) => el.disabled = true);       // kein zweiter Klick, solange der Server antwortet
   try {
     const d = await api(`servers/${s.id}/players`, { method: 'POST', body: { action, ...body } });
@@ -1362,7 +1555,11 @@ async function loadDir(s, path) {
 
 async function openFile(s, path, editable) {
   const f = state.files;
-  if (f.dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) return;
+  if (f.dirty && !(await askConfirm({
+    tone: 'danger', title: 'Ungespeicherte Änderungen verwerfen?', confirmText: 'Verwerfen',
+    text: 'In der geöffneten Datei stehen Änderungen, die noch nicht gespeichert sind. '
+      + 'Beim Wechsel gehen sie verloren.',
+  }))) return;
   f.open = path; f.dirty = false;
   $$('.frow').forEach((el) => el.classList.toggle('active', el.dataset.path === path));
   const main = $('#fMain');
@@ -1550,15 +1747,25 @@ function bindSettingsModpack(s) {
       state.install = { serverId: s.id, jobId: d.job_id, job: null, after: 'overview' }; state.view = 'install'; render(); pollJob();
     } catch (e) { toast(e.message, true); }
   };
-  $('#btnMpUpdate').onclick = () => {
+  $('#btnMpUpdate').onclick = async () => {
     const v = versions.find((x) => x.id === sel.value);
     if (!v) { toast('Bitte warten, bis die Versionsliste geladen ist, und eine Version wählen.', true); return; }
     if (v.id === mp.version_id) { toast('Diese Version ist bereits installiert – für ein erneutes Einrichten „Neu installieren“ wählen.'); return; }
-    if (!confirm(`„${s.name}“ auf ${v.name} (Minecraft ${v.mc_version}) umstellen? Die Mods der aktuellen Version werden ersetzt.`)) return;
+    if (!(await askConfirm({
+      tone: 'danger', title: `„${s.name}“ auf ${v.name} umstellen?`, confirmText: 'Jetzt umstellen',
+      text: `Das Modpack wird auf ${v.name} (Minecraft ${v.mc_version}) gebracht. Die Mods der `
+        + 'jetzigen Version werden dabei ersetzt. Die Welt bleibt erhalten – sichere sie '
+        + 'trotzdem vorher, falls das neue Modpack nicht dazu passt.',
+    }))) return;
     reinstall(v);
   };
-  $('#btnReinstall').onclick = () => {
-    if (!confirm(`Modpack „${mp.title || ''}“ ${mp.version_name || ''} für "${s.name}" erneut einrichten?`)) return;
+  $('#btnReinstall').onclick = async () => {
+    if (!(await askConfirm({
+      tone: 'danger', title: 'Modpack erneut einrichten?', confirmText: 'Erneut einrichten',
+      text: `„${mp.title || ''}“ ${mp.version_name || ''} wird für „${s.name}“ noch einmal `
+        + 'heruntergeladen und eingerichtet. Mods und Einstellungen aus dem Pack werden dabei '
+        + 'überschrieben, die Welt bleibt erhalten.',
+    }))) return;
     reinstall(versions.find((x) => x.id === mp.version_id) || { id: mp.version_id, name: mp.version_name, mc_version: mp.mc_version, loaders: [s.flavor] });
   };
 }
@@ -1654,14 +1861,22 @@ function bindServer() {
     if (isModpack(s)) bindSettingsModpack(s);
     else $('#btnReinstall').onclick = async () => {
       const version = $('#st_version').value.trim();
-      if (!confirm(`Server-Software für "${s.name}" jetzt als Version ${version} neu laden?`)) return;
+      if (!(await askConfirm({
+        tone: 'danger', title: 'Server-Software neu laden?', confirmText: 'Neu laden',
+        text: `Für „${s.name}“ wird die Server-Software als Version ${version} neu `
+          + 'heruntergeladen und eingerichtet. Die Welt und die Einstellungen bleiben erhalten.',
+      }))) return;
       try {
         const d = await api(`servers/${s.id}/reinstall`, { method: 'POST', body: { version } });
         state.install = { serverId: s.id, jobId: d.job_id, job: null, after: 'overview' }; state.view = 'install'; render(); pollJob();
       } catch (e) { toast(e.message, true); }
     };
     $('#btnDelete').onclick = async () => {
-      if (!confirm(`"${s.name}" wirklich löschen? Die Welt wird dabei entfernt.`)) return;
+      if (!(await askConfirm({
+        tone: 'danger', title: `„${s.name}“ endgültig löschen?`, confirmText: 'Endgültig löschen',
+        text: 'Der ganze Ordner dieses Servers wird von diesem PC entfernt – mit Welt, Plugins, '
+          + 'Einstellungen und Sicherungen. Das lässt sich nicht zurücknehmen.',
+      }))) return;
       try { await api(`servers/${s.id}`, { method: 'DELETE' }); toast('Server gelöscht.'); await refresh(); state.activeId = state.servers[0]?.id || null; state.view = state.activeId ? 'server' : 'welcome'; render(); }
       catch (e) { toast(e.message, true); }
     };
@@ -1918,15 +2133,110 @@ function stopConsolePolling() { clearInterval(state.timers.console); state.timer
 
 /* ------------------------------------------------------------------ Cloud (Root-Server)
    Gehostete Server laufen auf dem Root-Server (api.arcardia-nexus.de) und werden von hier aus
-   gesteuert. Das Sitzungstoken bleibt im Programm – die Oberfläche bekommt es nie zu sehen. */
+   gesteuert. Das Sitzungstoken bleibt im Programm – die Oberfläche bekommt es nie zu sehen.
+   Angemeldet wird ausschließlich über Discord; kennt der Root-Server das Discord-Konto noch
+   nicht, fragt die Oberfläche einmal den Einladungscode nach (siehe cloudAskInvite). */
 
 const CLOUD_STATE = {
   local_only: 'nur auf diesem PC', uploading: 'wird hochgeladen', hosted: 'auf dem Root-Server',
   awaiting_pull: 'wartet auf Rückholung', downloading: 'wird zurückgeholt', suspended: 'ruht',
 };
+const ROLE_TEXT = { user: 'Benutzer', admin: 'Betreiber', owner: 'Betreiber' };
 const cloudData = () => state.cloud.data || {};
 const cloudStateText = (x) => CLOUD_STATE[x] || x || '–';
 const cloudPullList = () => (cloudData().pull || []);
+const cloudUser = () => cloudData().user || {};
+
+/* ---------- kleine Helfer für Zeiten, Größen und Zahlen */
+
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+/** Restzeit in Worten: „2 Tage 5 Std.“, „12 Min. 30 Sek.“, „abgelaufen“. */
+function fmtLeft(sec) {
+  sec = Math.floor(Number(sec) || 0);
+  if (sec <= 0) return 'abgelaufen';
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (d) return `${d} ${d === 1 ? 'Tag' : 'Tage'} ${h} Std.`;
+  if (h) return `${h} Std. ${m} Min.`;
+  if (m) return `${m} Min. ${s} Sek.`;
+  return `${s} Sek.`;
+}
+/** Kurzform für Ringe und Kacheln: „12 Tage“, „5 Std.“, „40 Min.“. */
+function fmtLeftShort(sec) {
+  sec = Math.floor(Number(sec) || 0);
+  if (sec <= 0) return 'aus';
+  if (sec >= 86400) { const d = Math.round(sec / 86400); return `${d} ${d === 1 ? 'Tag' : 'Tage'}`; }
+  if (sec >= 3600) return `${Math.round(sec / 3600)} Std.`;
+  if (sec >= 60) return `${Math.round(sec / 60)} Min.`;
+  return `${sec} Sek.`;
+}
+/** „seit 3 Tagen“ – für die Zeile unter dem Namen. */
+function fmtSince(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, nowSec() - Number(ts));
+  if (s < 120) return 'gerade eben';
+  if (s < 5400) return `seit ${Math.round(s / 60)} Min.`;
+  if (s < 172800) return `seit ${Math.round(s / 3600)} Std.`;
+  const d = Math.round(s / 86400);
+  return `seit ${d} ${d === 1 ? 'Tag' : 'Tagen'}`;
+}
+/** Arbeitsspeicher mit deutschem Komma: „512 MB“, „4 GB“, „2,7 GB“. */
+function fmtMb(mb) {
+  const n = Number(mb) || 0;
+  if (n < 1024) return Math.round(n) + ' MB';
+  const g = n / 1024;
+  return (g % 1 ? g.toFixed(1).replace('.', ',') : String(Math.round(g))) + ' GB';
+}
+const komma = (n, stellen = 1) => Number(n).toFixed(stellen).replace('.', ',');
+const fmtRate = (bps) => !bps || bps < 1 ? '' : bps < 1048576 ? (bps / 1024).toFixed(0) + ' KB/s' : komma(bps / 1048576) + ' MB/s';
+/** Erste Zahl, die wirklich geliefert wurde (der Root nennt nicht alles). */
+function firstNum(list) {
+  for (const v of list) {
+    if (v === null || v === undefined || v === '') continue;
+    const n = Number(v);
+    if (!Number.isNaN(n)) return n;
+  }
+  return null;
+}
+/** Einladungscode formatieren: ABCD-EFGH-IJKL */
+const fmtCode = (s) => (String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12).match(/.{1,4}/g) || []).join('-');
+
+/* ---------- Bausteine: Ring, Balken, Kennzahl, Bild */
+
+function ringBox(pct, big, small, tone = '') {
+  const r = 46, c = 2 * Math.PI * r;
+  const off = c * (1 - Math.max(0, Math.min(1, Number(pct) || 0)));
+  return `<div class="ring ${tone}">
+    <svg viewBox="0 0 112 112" width="112" height="112" aria-hidden="true" focusable="false">
+      <circle class="ring-bg" cx="56" cy="56" r="${r}"></circle>
+      <circle class="ring-fg" cx="56" cy="56" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"></circle>
+    </svg>
+    <div class="ring-txt"><div class="ring-v">${big}</div><div class="ring-k">${esc(small)}</div></div>
+  </div>`;
+}
+
+function meterBox(label, value, max, text, tone = '') {
+  const pct = max > 0 ? Math.min(100, Math.round((Number(value) || 0) / max * 100)) : 0;
+  return `<div class="meter">
+    <div class="meter-top"><span class="meter-k">${esc(label)}</span><span class="meter-v">${text}</span></div>
+    <div class="bar ${tone}" role="img" aria-label="${esc(label)}: ${pct} Prozent belegt"><i style="width:${pct}%"></i></div>
+  </div>`;
+}
+
+const statBox = (k, v, cls = '') => `<div class="ministat ${cls}"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
+
+/** Bild des Discord-Kontos. Geladen wird **nur** von cdn.discordapp.com. */
+function cloudAvatar(u, size = 'av-36') {
+  const src = String((u || {}).avatar_url || '');
+  const name = String((u || {}).name || '').trim();
+  if (src.startsWith('https://cdn.discordapp.com/')) {
+    return `<img class="avatar ${size}" src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+  }
+  return `<span class="avatar ${size} avatar-txt" aria-hidden="true">${esc(name.charAt(0).toUpperCase() || '☁')}</span>`;
+}
+
+/* ---------- Laden, Zeichnen, Takt */
 
 function openCloud() {
   state.view = 'cloud';
@@ -1945,19 +2255,71 @@ async function loadCloud(force = false) {
   state.cloud.loading = false;
   renderCloudBanner();
   renderCloudNav();
-  // Nicht neu zeichnen, während jemand tippt (Befehlszeile, Editor) – sonst ist die Eingabe weg.
+  paintCloud();
+  // Die Erstanmeldung wartet auf den Einladungscode: einmal nachfragen, nicht bei jedem Takt.
+  const d = cloudData();
+  if (d.needs_invite && !state.cloud.askingInvite && !modalOpen()) cloudAskInvite(d.invite_discord);
+}
+
+/** Fingerabdruck alles Sichtbaren – ändert sich nichts, wird auch nicht neu gezeichnet. */
+function cloudSig() {
+  const d = cloudData();
+  const t = state.cloud.job;
+  const c = state.cloud;
+  return JSON.stringify([
+    d.logged_in, d.error, d.needs_invite, d.user, d.passes, d.limits, d.limits_text, d.notices,
+    d.machine, d.slots_used, d.ram_used_mb, d.transfer, d.logged_in_at, d.session_expires_at, d.base,
+    (d.servers || []).map((s) => [s.id, s.name, s.state, s.state_text, s.running, s.address, s.port,
+      s.ram_text, s.size_text, s.can_pull, s.live, s.players_online, s.tps, s.local_name, s.version]),
+    state.servers.map((s) => [s.id, s.name, s.installed, s.running, s.installing, s.cloud_locked,
+      s.cloud, s.version, s.ram_mb, s.type, s.flavor]),
+    c.open, c.busy, c.error, c.loading, c.login, c.hideBanner,
+    c.files.path, c.files.open, c.files.entries, c.files.error,
+    t ? [t.id, t.label, t.job && [t.job.pct, t.job.detail, t.job.status, t.job.steps]] : null,
+  ]);
+}
+
+/** Neu zeichnen, ohne dem Benutzer die Arbeit wegzunehmen. */
+function paintCloud() {
+  if (state.view !== 'cloud') return;
+  // Nicht neu zeichnen, während jemand tippt oder ein Dialog offen ist – sonst ist die
+  // Eingabe weg bzw. der Dialog hängt an Elementen, die es nicht mehr gibt.
   const act = document.activeElement;
-  const typing = act && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName);
-  if (state.view === 'cloud' && !typing) { $('#view').innerHTML = renderCloud(); bindCloud(); }
+  if (modalOpen()) return;
+  if (act && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName) && $('#view').contains(act)) return;
+  // Hat sich nichts geändert, bleibt die Seite stehen: kein Flackern, keine verlorenen Klicks.
+  if (cloudSig() === state.cloud.sig) return;
+  const main = $('#main');
+  const top = main ? main.scrollTop : 0;
+  const log = $('#cloudLog');
+  const kleben = !log || (log.scrollHeight - log.scrollTop - log.clientHeight) < 48;
+  $('#view').innerHTML = renderCloud();
+  bindCloud();
+  if (main) main.scrollTop = top;
+  const log2 = $('#cloudLog');
+  if (log2 && kleben) log2.scrollTop = log2.scrollHeight;
 }
 
 function startCloudPolling() {
   clearInterval(state.timers.cloud);
   state.timers.cloud = setInterval(() => loadCloud(), 6000);
+  clearInterval(state.timers.cloudTick);
+  state.timers.cloudTick = setInterval(cloudTick, 1000);
 }
 function stopCloudPolling() {
   clearInterval(state.timers.cloud); state.timers.cloud = null;
   clearInterval(state.timers.cloudLog); state.timers.cloudLog = null;
+  clearInterval(state.timers.cloudTick); state.timers.cloudTick = null;
+}
+
+/** Sekundentakt: nur die Countdown-Texte auffrischen, nichts neu zeichnen. */
+function cloudTick() {
+  $$('[data-until]').forEach((el) => {
+    const rest = Number(el.dataset.until) - nowSec();
+    const neu = el.dataset.style === 'short' ? fmtLeftShort(rest) : fmtLeft(rest);
+    if (el.textContent !== neu) el.textContent = neu;
+    el.classList.toggle('is-urgent', rest > 0 && rest < 3600);
+  });
 }
 
 function renderCloudNav() {
@@ -1965,10 +2327,32 @@ function renderCloudNav() {
   if (!el) return;
   el.classList.toggle('active', state.view === 'cloud');
   const badge = $('#cloudBadge');
-  if (!badge) return;
-  const n = cloudPullList().length;
-  badge.className = n ? 'pill pill-amber' : '';
-  badge.textContent = n ? String(n) : (cloudData().logged_in ? '' : '');
+  if (badge) {
+    const n = cloudPullList().length;
+    badge.className = n ? 'pill pill-amber' : 'right';
+    badge.textContent = n ? String(n) : '';
+  }
+  const side = $('#cloudSide');
+  if (!side) return;
+  const d = cloudData();
+  const u = d.user || {};
+  const html = !d.logged_in
+    ? `<button class="side-acct is-off" id="sideAcct">
+         <span class="avatar av-24 avatar-txt" aria-hidden="true">☁</span>
+         <span class="sa-txt"><span class="sa-name">Nicht angemeldet</span>
+           <span class="sa-meta">Mit Discord anmelden</span></span></button>`
+    : `<button class="side-acct" id="sideAcct" aria-label="Konto-Einstellungen öffnen">
+         ${cloudAvatar(u, 'av-24')}
+         <span class="sa-txt"><span class="sa-name">${esc(u.name || 'Konto')}</span>
+           <span class="sa-meta">${esc(u.role_text || ROLE_TEXT[u.role] || 'Benutzer')}${
+             d.logged_in_at ? ' · ' + esc(fmtSince(d.logged_in_at)) : ''}</span></span></button>`;
+  // Nur schreiben, wenn sich wirklich etwas geändert hat – sonst geht bei jedem Takt der
+  // Zeigerzustand (und bei Tastaturbedienung der Fokus) verloren.
+  if (side.dataset.stand === html) return;
+  side.dataset.stand = html;
+  side.innerHTML = html;
+  const b = $('#sideAcct');
+  if (b) b.onclick = d.logged_in ? () => { openCloud(); openAccountDialog(); } : openCloud;
 }
 
 /* ---------- Hinweis beim Programmstart: Server wartet auf die Rückholung */
@@ -1980,7 +2364,7 @@ function renderCloudBanner() {
   if (!pull.length || state.cloud.hideBanner) { box.innerHTML = ''; return; }
   box.innerHTML = `
     <div class="cloud-banner">
-      <div class="cb-head"><span class="cb-ico">⬇</span>
+      <div class="cb-head"><span class="cb-ico" aria-hidden="true">⬇</span>
         <div><div class="cb-title">${pull.length === 1 ? 'Ein Server wartet darauf, zurückgeholt zu werden'
           : `${pull.length} Server warten darauf, zurückgeholt zu werden`}</div>
           <div class="cb-sub">Der Pass ist abgelaufen oder zurückgezogen: die Server sind auf dem Root-Server
@@ -1998,245 +2382,765 @@ function renderCloudBanner() {
   $('#cbLater').onclick = () => { state.cloud.hideBanner = true; renderCloudBanner(); };
 }
 
-/* ---------- Seite „Cloud“ */
+/* ---------- Seite „Cloud“: Kopfbereich */
 
 function renderCloud() {
+  state.cloud.sig = cloudSig();
   const d = cloudData();
-  const head = `
-  <div class="head">
-    <div><h1>Cloud – Server auf dem Root-Server</h1>
-      <div class="head-sub">${esc(d.base || '')}${d.logged_in && d.user && d.user.name
-        ? ' · angemeldet als <b>' + esc(d.user.name) + '</b>' : ''}</div></div>
-    <div class="btn-row">
+  const body = state.cloud.loading && !state.cloud.data
+    ? '<div class="card cl-skeleton">Der Stand wird geholt …</div>'
+    : (d.logged_in ? cloudAccountPage(d) : cloudLoginPage(d));
+  const fehler = state.cloud.error && !d.needs_invite
+    ? `<div class="note note-err"><b>Der Root-Server hat einen Fehler gemeldet.</b>
+       <p class="mb0">${esc(state.cloud.error)}</p></div>` : '';
+  return cloudHead(d) + `<div class="page cloud-page">${fehler}${body}</div>`;
+}
+
+function cloudHead(d) {
+  const verbindung = !d.logged_in
+    ? { cls: 'is-off', text: 'nicht angemeldet' }
+    : state.cloud.error ? { cls: 'is-bad', text: 'Verbindung gestört' }
+      : { cls: 'is-ok', text: 'verbunden' };
+  const host = String(d.base || '').replace(/^https?:\/\//, '');
+  return `
+  <div class="head cloud-head">
+    <div class="head-main">
+      <h1>Cloud</h1>
+      <div class="head-sub">
+        <span class="conn ${verbindung.cls}"><span class="conn-dot" aria-hidden="true"></span>${esc(verbindung.text)}</span>
+        <span class="sep" aria-hidden="true">·</span>
+        <span class="mono-sm">${esc(host)}</span>
+      </div>
+    </div>
+    <div class="head-right">
+      ${d.logged_in ? `<button class="acct" id="cloudAcct" aria-label="Konto-Einstellungen öffnen">
+          ${cloudAvatar(d.user || {}, 'av-36')}
+          <span class="acct-txt">
+            <span class="acct-name">${esc((d.user || {}).name || 'Konto')}</span>
+            <span class="acct-meta">${esc((d.user || {}).role_text || ROLE_TEXT[(d.user || {}).role] || 'Benutzer')}${
+              d.logged_in_at ? ' · ' + esc(fmtSince(d.logged_in_at)) + ' angemeldet' : ''}</span>
+          </span>
+          <span class="acct-caret" aria-hidden="true">⌄</span>
+        </button>` : ''}
       <button class="btn btn-sm" id="cloudReload">↻ Aktualisieren</button>
-      ${d.logged_in ? '<button class="btn btn-sm" id="cloudLogout">Abmelden</button>' : ''}
     </div>
   </div>`;
-  if (state.cloud.loading && !state.cloud.data) return head + '<div class="page"><div class="card">Wird geladen …</div></div>';
-  const body = d.logged_in ? cloudAccountPage(d) : cloudLoginPage(d);
-  return head + `<div class="page wide">${cloudJobBox()}${state.cloud.error
-    ? `<div class="note note-err"><b>Der Root-Server hat einen Fehler gemeldet.</b><p class="mb0">${esc(state.cloud.error)}</p></div>` : ''}${body}</div>`;
 }
 
-/* ---------- Nicht angemeldet: was der Root-Server bringt */
+/* ---------- Nicht angemeldet: Schaufenster und der eine Knopf */
 
 function cloudLoginPage(d) {
-  const inv = state.cloud.login.invite;
+  const L = state.cloud.login;
+  const domain = esc(d.domain || 'arcardia-nexus.de');
   return `
-  <div class="grid2" style="margin-top:0">
-    <div class="card">
-      <div class="pill pill-green">Rund um die Uhr</div>
-      <h3>Dein Server läuft weiter, auch wenn der PC aus ist</h3>
-      <p class="small">Der Server zieht in ein Rechenzentrum um: 8 Kerne, schnelle Leitung, kein Stromverbrauch
-         bei dir zu Hause. Du steuerst ihn weiterhin aus diesem Programm – Konsole, Dateien, Einstellungen,
-         alles wie gewohnt.</p>
-      <p class="small mb0">Deine Welt wird dafür <b>vollständig übertragen</b> (mit Prüfsumme für jede Datei) und
-         kann jederzeit wieder auf diesen PC zurückgeholt werden.</p>
+  <section class="cl-hero">
+    <div class="cl-hero-main">
+      <div class="pill pill-green">Hosted-Modus</div>
+      <h2>Dein Server läuft weiter, auch wenn dieser PC aus ist</h2>
+      <p class="lead">Der Server zieht in ein Rechenzentrum um: 8 Kerne, schnelle Leitung, kein Stromverbrauch
+        bei dir zu Hause. Gesteuert wird er weiterhin aus diesem Programm – Konsole, Dateien, Einstellungen,
+        alles wie gewohnt.</p>
+      ${L.pending ? `
+        <div class="note note-info">
+          <b>Bitte im Browser bestätigen.</b>
+          <p>Das Fenster hat sich geöffnet – nach der Bestätigung geht es hier von selbst weiter.
+          ${L.url ? `<br>Öffnet sich nichts: <a href="${esc(L.url)}" target="_blank" rel="noopener noreferrer">Adresse hier öffnen</a>.` : ''}</p>
+          <div class="btn-row"><button class="btn btn-sm" id="cloudLoginCancel">Abbrechen</button></div>
+        </div>`
+        : `<div class="btn-row">
+             <button class="btn btn-primary btn-lg" id="cloudLoginDiscord">
+               <span aria-hidden="true">🔗</span> Mit Discord anmelden</button>
+           </div>
+           <p class="muted small mb0">Dein Passwort sieht dieses Programm nie – Discord bestätigt nur, dass du du bist.
+             Beim ersten Mal fragt der Root-Server danach einmal nach deinem Einladungscode.</p>`}
+      ${L.error ? `<div class="note note-err mb0">${esc(L.error)}</div>` : ''}
     </div>
-    <div class="card">
-      <div class="pill pill-blue">Feste Adresse</div>
-      <h3>mein-server.${esc(d.domain || 'arcardia-nexus.de')}</h3>
-      <p class="small">Keine Portfreigabe in der FritzBox, kein DynDNS, kein Problem mit DS-Lite:
-         Deine Freunde tippen einfach die feste Adresse ein – von Xbox, PlayStation, Switch, Handy oder PC.</p>
-      <p class="small mb0">Wie viele Server gleichzeitig laufen dürfen und wie viel Arbeitsspeicher sie zusammen
-         bekommen, steht in deinem <b>Pass</b> (z.&nbsp;B. „2 Server gleichzeitig, zusammen 8 GB“).</p>
+    <div class="cl-hero-side">
+      <div class="addr addr-pub"><div>
+        <div class="a-k">So sieht deine Adresse aus</div>
+        <div class="a-v">mein-server.${domain}</div></div></div>
+      <ul class="checklist">
+        <li><span class="ck on" aria-hidden="true">✓</span><div>Keine Portfreigabe in der FritzBox, kein DynDNS, kein Problem mit DS-Lite.</div></li>
+        <li><span class="ck on" aria-hidden="true">✓</span><div>Xbox, PlayStation, Switch, Handy und PC tippen dieselbe Adresse ein.</div></li>
+        <li><span class="ck on" aria-hidden="true">✓</span><div>Deine Welt wird vollständig übertragen – mit Prüfsumme für jede Datei.</div></li>
+        <li><span class="ck on" aria-hidden="true">✓</span><div>Zurückholen kannst du sie jederzeit.</div></li>
+      </ul>
     </div>
-  </div>
-  <div class="card">
-    <h3 style="margin-top:0">Anmelden</h3>
-    <p class="small">Die Anmeldung läuft über <b>Discord</b>: Es öffnet sich dein Browser, du bestätigst dort den
-       Zugriff, und das Programm holt die Sitzung ab. Dein Passwort sieht dieses Programm nie.</p>
-    ${state.cloud.login.pending
-      ? `<div class="note note-info"><b>Bitte im Browser bestätigen.</b>
-           <p class="mb0">Das Fenster hat sich geöffnet – nach der Bestätigung geht es hier automatisch weiter.
-           ${state.cloud.login.url ? `<br>Öffnet sich nichts: <a href="${esc(state.cloud.login.url)}" target="_blank" rel="noopener noreferrer">Adresse hier öffnen</a>.` : ''}</p></div>`
-      : `<div class="btn-row"><button class="btn btn-primary" id="cloudLoginDiscord">Mit Discord anmelden</button>
-           <button class="btn" id="cloudLoginInvite">${inv ? 'Abbrechen' : 'Ich habe einen Einladungscode'}</button></div>`}
-    ${inv && !state.cloud.login.pending ? `
-      <div class="spacer"></div>
-      <div class="grid2" style="margin:0">
-        ${fieldInput('cloudInviteCode', 'Einladungscode', '', { placeholder: 'ABCD-EFGH-IJKL', hint: 'Vom Betreiber erhalten.' })}
-        ${fieldInput('cloudInviteName', 'Name für das Konto', '', { placeholder: 'z. B. Luca', hint: '2–32 Zeichen.' })}
-      </div>
-      <div class="btn-row"><button class="btn btn-primary" id="cloudInviteGo">Konto anlegen und anmelden</button></div>` : ''}
-    ${state.cloud.login.error ? `<div class="note note-err" style="margin-bottom:0">${esc(state.cloud.login.error)}</div>` : ''}
-  </div>
-  <div class="note note-info">Ohne Anmeldung ändert sich nichts: Deine Server auf diesem PC laufen weiter wie bisher.</div>`;
+  </section>
+
+  <div class="grid3">
+    <div class="card"><div class="pill pill-blue">Pass</div>
+      <h3>Wie viel darf gleichzeitig laufen?</h3>
+      <p class="small mb0">Das steht in deinem Pass – zum Beispiel „2 Server gleichzeitig, zusammen 8 GB“.
+        Anlegen und Hochladen darfst du immer, begrenzt ist nur das Einschalten.</p></div>
+    <div class="card"><div class="pill pill-green">Umzug</div>
+      <h3>Ein Server, ein Ort</h3>
+      <p class="small mb0">Solange ein Server auf dem Root-Server liegt, ist die Kopie auf diesem PC gesperrt.
+        So kann keine Welt zweimal weiterlaufen und auseinanderdriften.</p></div>
+    <div class="card"><div class="pill pill-grey">Ohne Anmeldung</div>
+      <h3>Es ändert sich nichts</h3>
+      <p class="small mb0">Deine Server auf diesem PC laufen weiter wie bisher. Der Hosted-Modus kommt
+        obendrauf, er ersetzt nichts.</p></div>
+  </div>`;
 }
 
-/* ---------- Angemeldet: Pässe, entfernte Server, lokale Server */
+/* ---------- Angemeldet: die ganze Seite */
 
 function cloudAccountPage(d) {
-  return cloudPassBox(d) + cloudRemoteBox(d) + cloudDetailBox(d) + cloudLocalBox(d);
+  return cloudNoticeBox(d)
+    + cloudPassBox(d)
+    + `<div class="cl-cols">
+         <div class="cl-main">
+           ${cloudTransferBox(d)}
+           ${cloudDetailBox(d)}
+           ${cloudRemoteBox(d)}
+           ${cloudLocalBox(d)}
+         </div>
+         <div class="cl-side">
+           ${cloudMachineBox(d)}
+           ${cloudTipBox(d)}
+         </div>
+       </div>`;
 }
+
+/** Meldungen des Root-Servers – unverändert, sie kommen von dort. */
+function cloudNoticeBox(d) {
+  const list = d.notices || [];
+  if (!list.length) return '';
+  return `<div class="cl-notices">${list.map((n) => `<div class="note ${
+    n.kind === 'expiring' || n.kind === 'pull' || n.kind === 'pull_running' ? 'note-warn' : 'note-info'}">
+    ${esc(n.text)}</div>`).join('')}</div>`;
+}
+
+/* ---------- Pässe: Restzeit, Plätze, Arbeitsspeicher */
 
 function cloudPassBox(d) {
   const passes = d.passes || [];
   const lim = d.limits || {};
   const active = passes.filter((p) => p.state === 'active');
-  return `
-  <div class="card">
-    <div class="card-head"><h3>🎫 Meine Pässe</h3>
+  if (!passes.length) {
+    return `<section class="card cl-pass is-empty">
+      <div class="card-head"><h3>🎫 Dein Pass</h3></div>
+      <div class="empty-inline">
+        <div class="ei-ico" aria-hidden="true">🎫</div>
+        <div>
+          <b>Du hast noch keinen Pass.</b>
+          <p class="mb0">Server anlegen und hochladen darfst du auch ohne Pass – <b>einschalten</b> lässt sich
+            auf dem Root-Server aber erst mit einem gültigen Pass. Pässe stellt der Betreiber aus;
+            frag ihn nach einem Tages-, Wochen- oder Monatspass.</p>
+        </div>
+      </div>
+    </section>`;
+  }
+  const rest = active.map((p) => firstNum([p.remaining_seconds, p.expires_at ? p.expires_at - nowSec() : null]) || 0);
+  const kuerzeste = active.length ? Math.min(...rest) : 0;
+  const naechster = active.length ? active[rest.indexOf(kuerzeste)] : null;
+  const ganz = naechster ? Math.max(1, (Number(naechster.expires_at) || 0) - (Number(naechster.issued_at) || 0)
+    || (Number(naechster.days) || 1) * 86400) : 1;
+  const anteil = naechster ? kuerzeste / ganz : 0;
+  const knapp = active.length > 0 && kuerzeste > 0 && kuerzeste < 86400;
+  const tone = !active.length ? 'is-grey' : knapp ? 'is-amber' : 'is-green';
+
+  const slots = Number(d.slots_used || 0), slotsMax = Number(lim.max_concurrent || 0);
+  const ram = Number(d.ram_used_mb || 0), ramMax = Number(lim.ram_total_mb || 0);
+
+  return `<section class="card cl-pass">
+    <div class="card-head"><h3>🎫 Dein Pass</h3>
       <span class="muted small">${esc(d.limits_text || 'kein gültiger Pass')}</span></div>
-    ${!passes.length ? `<div class="note note-warn" style="margin:0"><b>Du hast noch keinen Pass.</b>
-        <p class="mb0">Ohne gültigen Pass kannst du Server anlegen und hochladen, aber keinen starten.
-        Pässe stellt der Betreiber aus.</p></div>`
-      : passes.map((p) => `
-        <div class="wrow">
-          <div><div class="w-name">${esc(p.kind_text || p.kind)}
-            <span class="pill ${p.state === 'active' ? 'pill-green' : p.state === 'expired' ? 'pill-amber' : 'pill-grey'}">${
-              p.state === 'active' ? 'gültig' : p.state === 'expired' ? 'abgelaufen' : 'zurückgezogen'}</span></div>
-            <div class="w-meta">${esc(p.remaining_text || '')} · ${p.max_concurrent} Server gleichzeitig,
-              zusammen ${esc(p.ram_total_text || gb(p.ram_total_mb))}${p.expires_at ? ' · bis ' + fmtDate(p.expires_at) : ''}</div></div>
-        </div>`).join('')}
-    ${active.length ? `<div class="kpis" style="margin-top:14px">
-      <div class="stat"><div class="k">Gleichzeitig</div><div class="v">${d.slots_used ?? 0} / ${lim.max_concurrent ?? 0}</div></div>
-      <div class="stat"><div class="k">Arbeitsspeicher</div><div class="v sm">${gb(d.ram_used_mb || 0)} von ${gb(lim.ram_total_mb || 0)}</div></div>
-      <div class="stat"><div class="k">Platte auf dem Root</div><div class="v sm">${esc((d.machine || {}).disk_free_text || '–')} frei</div></div>
-      <div class="stat"><div class="k">Pässe</div><div class="v">${active.length}</div></div></div>` : ''}
-    ${(d.notices || []).map((n) => `<div class="note ${n.kind === 'expiring' ? 'note-warn' : 'note-info'}" style="margin:12px 0 0">${esc(n.text)}</div>`).join('')}
-  </div>`;
+    <div class="pass-grid">
+      <div class="pass-ring">
+        ${ringBox(active.length ? anteil : 0,
+          active.length ? `<span data-until="${nowSec() + Math.max(0, kuerzeste)}" data-style="short">${esc(fmtLeftShort(kuerzeste))}</span>` : '–',
+          active.length ? 'Restlaufzeit' : 'kein gültiger Pass', tone)}
+        ${naechster ? `<div class="pass-ring-sub">läuft ab am ${esc(fmtDate(naechster.expires_at))}<br>
+          <span class="mono-sm" data-until="${Number(naechster.expires_at) || 0}">${esc(fmtLeft(kuerzeste))}</span></div>` : ''}
+      </div>
+      <div class="pass-meters">
+        ${meterBox('Belegte Plätze', slots, slotsMax,
+          `<b>${slots}</b> von ${slotsMax || '–'} Servern gleichzeitig`,
+          slotsMax && slots >= slotsMax ? 'warn' : '')}
+        ${meterBox('Arbeitsspeicher', ram, ramMax,
+          `<b>${esc(fmtMb(ram))}</b> von ${esc(ramMax ? fmtMb(ramMax) : '–')} in Betrieb`,
+          ramMax && ram / ramMax > 0.85 ? 'warn' : '')}
+        <div class="pass-list">
+          ${passes.map((p) => {
+            const zustand = p.state === 'active' ? ['pill-green', 'gültig']
+              : p.state === 'expired' ? ['pill-amber', 'abgelaufen'] : ['pill-grey', 'zurückgezogen'];
+            return `<div class="pass-row">
+              <div><div class="w-name">${esc(p.kind_text || p.kind)}
+                  <span class="pill ${zustand[0]}">${zustand[1]}</span></div>
+                <div class="w-meta">${p.max_concurrent} Server gleichzeitig · zusammen
+                  ${esc(p.ram_total_text || fmtMb(p.ram_total_mb))}${p.note ? ' · ' + esc(p.note) : ''}</div></div>
+              <div class="pass-rest">
+                <div class="pr-v">${esc(p.remaining_text || '–')}</div>
+                <div class="pr-k">${p.expires_at ? 'bis ' + esc(fmtDate(p.expires_at)) : ''}</div></div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+    ${knapp ? `<div class="note note-warn mb0"><b>Dein Pass läuft bald ab.</b>
+      <p class="mb0">Noch <span data-until="${nowSec() + kuerzeste}">${esc(fmtLeft(kuerzeste))}</span>.
+        Zehn Minuten vor Schluss bekommen die Spieler eine Ansage, danach werden die Server sauber
+        gestoppt und die Welten gespeichert. Server aus einem lokalen Pass musst du danach auf
+        diesen PC zurückholen – bitte rechtzeitig einen neuen Pass besorgen.</p></div>` : ''}
+  </section>`;
 }
+
+/* ---------- Übertragungen: laufend, unterbrochen */
+
+function cloudTransferBox(d) {
+  const t = state.cloud.job;
+  const merk = d.transfer || {};
+  if (!t && !merk.kind) return '';
+  if (!t && merk.kind) {
+    // Nichts läuft, aber es steht noch eine angefangene Übertragung in der Merkdatei.
+    const name = merk.kind === 'upload'
+      ? (state.servers.find((s) => s.id === merk.local) || {}).name || 'Server'
+      : ((d.servers || []).find((s) => s.id === merk.instance) || {}).name || 'Server';
+    return `<section class="card cl-transfer is-paused">
+      <div class="card-head"><h3>⏸ Unterbrochene Übertragung</h3>
+        <span class="pill pill-amber">wartet</span></div>
+      <p class="small">„${esc(name)}“ ${merk.kind === 'upload' ? 'wurde auf den Root-Server hochgeladen' : 'wurde auf diesen PC geholt'},
+        die Übertragung ist aber abgebrochen. Fertige Dateien liegen schon drüben –
+        beim Fortsetzen geht es genau dort weiter, nichts wird doppelt übertragen.</p>
+      <div class="w-meta">${merk.files ? merk.files + ' Dateien · ' : ''}${merk.bytes ? fmtBytes(merk.bytes) : ''}
+        ${merk.started ? '· begonnen am ' + esc(fmtDate(merk.started)) : ''}</div>
+      <div class="btn-row">
+        <button class="btn btn-sm btn-primary" id="cloudResume">↻ Fortsetzen</button>
+        ${merk.kind === 'upload' ? `<button class="btn btn-sm btn-danger" id="cloudAbortT">Verwerfen</button>` : ''}
+      </div>
+    </section>`;
+  }
+  const job = t.job;
+  const rate = cloudRate(job);
+  const failed = job && job.status === 'error', done = job && job.status === 'done';
+  const steps = job ? job.steps.map((st) => `<div class="steprow ${st.state}"><span class="mark">${
+    st.state === 'done' ? '✓' : st.state === 'failed' ? '!' : ''}</span>${esc(st.text)}</div>`).join('') : '';
+  const rest = rate && rate.bps > 0 && rate.total > rate.done
+    ? fmtLeft(Math.round((rate.total - rate.done) / rate.bps)) : '';
+  return `<section class="card cl-transfer">
+    <div class="card-head"><h3>${done ? '✓ ' : failed ? '⚠ ' : '⇅ '}${esc(t.label)}</h3>
+      ${done || failed ? '<button class="btn btn-sm" id="cloudJobClose">Schließen</button>'
+        : `<span class="pill pill-blue">${job ? job.pct : 0} %</span>`}</div>
+    <div class="bar ${failed ? 'warn' : ''}"><i style="width:${job ? job.pct : 0}%"></i></div>
+    <div class="tr-line">
+      <span class="muted small">${esc(job ? job.detail : 'Wird vorbereitet …')}</span>
+      <span class="tr-rate">${rate && rate.bps ? esc(fmtRate(rate.bps)) : ''}${rest ? ' · noch etwa ' + esc(rest) : ''}</span>
+    </div>
+    <div class="steplist">${steps}</div>
+    ${failed ? `<div class="note note-err mb0"><b>Die Übertragung ist fehlgeschlagen.</b>
+        <p class="mb0">${esc(job.error)} Schon übertragene Dateien bleiben liegen – ein neuer Anlauf
+        setzt dort auf, wo es abgerissen ist.</p></div>` : ''}
+    ${done ? '<div class="note note-ok mb0"><b>Fertig.</b><p class="mb0">Alle Dateien sind geprüft angekommen.</p></div>' : ''}
+  </section>`;
+}
+
+/** Geschwindigkeit aus „Hochladen: 12.5 / 300.0 MB“ – der Job rechnet in MB. */
+function cloudRate(job) {
+  const m = /([\d.,]+)\s*\/\s*([\d.,]+)\s*MB/.exec((job && job.detail) || '');
+  if (!m) return null;
+  const done = parseFloat(m[1].replace(',', '.')) * 1048576;
+  const total = parseFloat(m[2].replace(',', '.')) * 1048576;
+  const jetzt = Date.now();
+  const r = state.cloud.rate;
+  if (!r || done < r.bytes) { state.cloud.rate = { at: jetzt, bytes: done, bps: 0 }; return { done, total, bps: 0 }; }
+  const dt = (jetzt - r.at) / 1000;
+  if (dt >= 1.2) {
+    const sofort = (done - r.bytes) / dt;
+    // Geglättet, sonst springt die Zahl bei jedem Stück von 0 auf 40 MB/s und zurück.
+    state.cloud.rate = { at: jetzt, bytes: done, bps: r.bps ? r.bps * 0.6 + sofort * 0.4 : sofort };
+  }
+  return { done, total, bps: state.cloud.rate.bps };
+}
+
+/* ---------- Server auf dem Root-Server */
 
 function cloudRemoteBox(d) {
   const servers = d.servers || [];
-  return `
-  <div class="card">
-    <div class="card-head"><h3>☁ Meine Server auf dem Root-Server</h3>
-      <span class="muted small">${servers.length ? servers.length + (servers.length === 1 ? ' Server' : ' Server') : 'noch keiner'}</span></div>
-    ${!servers.length ? `<div class="muted small">Hier erscheinen die Server, die du auf den Root-Server verschoben hast –
-        unten in der Liste deiner Server auf diesem PC steht bei jedem der Knopf dafür.</div>`
-      : servers.map((s) => cloudRemoteRow(s)).join('')}
-  </div>`;
+  return `<section class="card">
+    <div class="card-head"><h3>☁ Server auf dem Root-Server</h3>
+      <span class="muted small">${servers.length ? servers.length + (servers.length === 1 ? ' Server' : ' Server, ' + servers.filter((s) => s.running).length + ' online') : 'noch keiner'}</span></div>
+    ${!servers.length ? `<div class="empty-inline">
+        <div class="ei-ico" aria-hidden="true">☁</div>
+        <div><b>Hier ist noch nichts.</b>
+          <p class="mb0">Weiter unten stehen deine Server auf diesem PC – bei jedem gibt es den Knopf
+            <b>„Auf den Root-Server verschieben“</b>. Der Server muss dafür gestoppt sein. Nach dem
+            Umzug erscheint er hier mit Adresse, Konsole und Dateiverwaltung.</p></div></div>`
+      : `<div class="rsv-grid">${servers.map((s) => cloudRemoteCard(s)).join('')}</div>`}
+  </section>`;
 }
 
-function cloudRemoteRow(s) {
+function cloudRemoteCard(s) {
   const busy = state.cloud.busy === s.id;
-  const canStart = s.state === 'hosted' && !s.running;
+  const offen = state.cloud.open && state.cloud.open.id === s.id;
+  const live = s.live || {};
+  const running = !!s.running;
+  const canStart = s.state === 'hosted' && !running;
+  const spieler = firstNum([s.players_online, s.players, live.players_online, live.players]);
+  const spielerMax = firstNum([s.players_max, live.players_max, s.max_players]);
+  const tps = firstNum([s.tps, live.tps]);
+  const laufzeit = firstNum([s.uptime, live.uptime]);
+  const belegt = firstNum([live.memory_mb, s.memory_mb]);
+  const ramText = esc(s.ram_text || gb(s.ram_mb || 0));
+  // Der Root-Server nennt die Adresse bei Bedrock schon mit Port – dann keinen zweiten anhängen.
+  const roh = String(s.address || '');
+  const adresse = roh && !roh.includes(':') && s.port ? roh + ':' + s.port : roh;
+  const zustand = s.state === 'hosted' ? (running ? ['pill-green', 'läuft'] : ['pill-grey', 'gestoppt'])
+    : s.state === 'awaiting_pull' || s.state === 'downloading' ? ['pill-amber', esc(s.state_text || cloudStateText(s.state))]
+      : ['pill-grey', esc(s.state_text || cloudStateText(s.state))];
   return `
-  <div class="wrow cloud-row">
-    <div>
-      <div class="w-name"><span class="dot ${s.running ? 'dot-on' : ''}"></span> ${esc(s.name)}
-        <span class="pill ${s.state === 'hosted' ? 'pill-green' : s.state === 'awaiting_pull' || s.state === 'downloading' ? 'pill-amber' : 'pill-grey'}">${esc(s.state_text || cloudStateText(s.state))}</span></div>
-      <div class="w-meta">${esc(s.type === 'bedrock' ? 'Bedrock' : 'Java')} ${esc(s.version || '')} ·
-        ${esc(s.ram_text || gb(s.ram_mb))} · ${esc(s.size_text || '–')}
-        ${s.local_name ? '· lokale Kopie: ' + esc(s.local_name) : ''}</div>
-      ${s.state === 'hosted' ? `<div class="addr addr-pub" style="margin-top:8px"><div>
-          <div class="a-k">Für Freunde</div>
-          <div class="a-v">${esc(s.address)}${s.port ? ' : ' + s.port : ''}</div></div>
-        <span class="pill pill-green">${s.type === 'bedrock' ? 'UDP' : 'TCP'}</span></div>` : ''}
+  <article class="rsv ${running ? 'is-on' : ''}${offen ? ' is-open' : ''}${busy ? ' is-busy' : ''}">
+    <header class="rsv-head">
+      <span class="dot ${running ? 'dot-on' : ''}" aria-hidden="true"></span>
+      <h4 class="rsv-name">${esc(s.name)}</h4>
+      <span class="pill ${zustand[0]}">${zustand[1]}</span>
+    </header>
+    <div class="rsv-sub">${esc(s.type === 'bedrock' ? 'Bedrock' : 'Java')} ${esc(s.version || '')}
+      · ${ramText}${s.size_text ? ' · ' + esc(s.size_text) : ''}${s.local_name ? ' · lokale Kopie: ' + esc(s.local_name) : ''}</div>
+    ${s.state === 'hosted' && adresse ? `
+      <div class="addr addr-pub">
+        <div><div class="a-k">Adresse für deine Freunde</div><div class="a-v">${esc(adresse)}</div></div>
+        <button class="btn btn-sm" data-copy="${esc(adresse)}" aria-label="Adresse von ${esc(s.name)} kopieren">⧉ Kopieren</button>
+      </div>` : ''}
+    <div class="rsv-stats">
+      ${statBox('Zustand', running ? 'Online' : 'Offline', running ? 'ok' : '')}
+      ${spieler !== null ? statBox('Spieler', esc(String(spieler)) + (spielerMax ? ' / ' + esc(String(spielerMax)) : '')) : ''}
+      ${running && laufzeit ? statBox('Laufzeit', esc(fmtUptime(laufzeit))) : ''}
+      ${statBox('Arbeitsspeicher', belegt ? esc(fmtMb(belegt)) + ' <span class="mini">von ' + ramText + '</span>' : ramText)}
+      ${tps !== null ? statBox('TPS', esc(komma(tps)), tps >= 19 ? 'ok' : tps >= 15 ? 'warn' : 'bad') : ''}
     </div>
-    <div class="btn-row" style="justify-content:flex-end">
+    <div class="rsv-btns btn-row">
       <button class="btn btn-sm btn-primary" data-cloud-start="${esc(s.id)}" ${canStart && !busy ? '' : 'disabled'}>▶ Starten</button>
-      <button class="btn btn-sm btn-danger" data-cloud-stop="${esc(s.id)}" ${s.running && !busy ? '' : 'disabled'}>■ Stoppen</button>
+      <button class="btn btn-sm btn-danger" data-cloud-stop="${esc(s.id)}" ${running && !busy ? '' : 'disabled'}>■ Stoppen</button>
       <button class="btn btn-sm" data-cloud-open="${esc(s.id)}">🖥 Konsole</button>
       <button class="btn btn-sm" data-cloud-files="${esc(s.id)}">📂 Dateien</button>
-      <button class="btn btn-sm" data-cloud-pull="${esc(s.id)}" ${s.can_pull && !busy ? '' : 'disabled'}>⬇ Zurück auf diesen PC holen</button>
+      <button class="btn btn-sm" data-cloud-pull="${esc(s.id)}" ${s.can_pull && !busy ? '' : 'disabled'}
+        ${running ? 'title="Der Server läuft – er wird beim Zurückholen zuerst gestoppt."' : ''}>⬇ Zurückholen</button>
     </div>
-  </div>`;
+  </article>`;
 }
 
-/* ---------- Konsole und Dateien eines entfernten Servers */
+/* ---------- Konsole und Dateien eines entfernten Servers (fest eingebaut) */
 
 function cloudDetailBox(d) {
   const open = state.cloud.open;
   if (!open) return '';
   const s = (d.servers || []).find((x) => x.id === open.id);
   if (!s) return '';
-  if (open.tab === 'files') {
-    const f = state.cloud.files;
-    const body = f.open !== null
-      ? `<div class="flex" style="margin-bottom:8px"><b>${esc(f.open)}</b>
-           <button class="btn btn-sm right" id="cloudFileBack">← Zurück zur Liste</button></div>
-         <textarea id="cloudFileText" class="cloud-editor" spellcheck="false">${esc(f.text)}</textarea>
-         <div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" id="cloudFileSave">Speichern</button></div>`
-      : (f.entries === null ? '<div class="muted small">Wird geladen …</div>'
-        : `<div class="muted small" style="margin-bottom:8px">${esc('/' + (f.path || ''))}
-             ${f.path ? '<a href="#" id="cloudFileUp">· eine Ebene höher</a>' : ''}</div>
-           <div class="btn-row" style="margin-bottom:10px">
-             <input type="file" id="cloudFileAdd" style="max-width:16rem">
-             <button class="btn btn-sm" id="cloudFileAddGo">In diesen Ordner hochladen</button>
-           </div>`
-          + (f.entries.length ? f.entries.map((e) => `<div class="wrow">
-              <div><div class="w-name">${KIND_ICON[e.kind] || '📄'} ${esc(e.name)}</div>
-                <div class="w-meta">${e.is_dir ? 'Ordner' : fmtBytes(e.size)} · ${fmtDate(e.mtime)}</div></div>
-              ${e.is_dir ? `<button class="btn btn-sm" data-cloud-dir="${esc(e.path)}">Öffnen</button>`
-                : (e.editable ? `<button class="btn btn-sm" data-cloud-file="${esc(e.path)}">Bearbeiten</button>` : '')}
-              ${e.is_dir ? '' : `<button class="btn btn-sm" data-cloud-get="${esc(e.path)}">Herunterladen</button>`}
-              <button class="btn btn-sm btn-danger" data-cloud-del="${esc(e.path)}">Löschen</button>
-            </div>`).join('') : '<div class="muted small">Dieser Ordner ist leer.</div>'));
-    return `<div class="card"><div class="card-head"><h3>📂 Dateien – ${esc(s.name)}</h3>
-      <button class="btn btn-sm" id="cloudDetailClose">Schließen</button></div>
-      ${f.error ? `<div class="note note-err">${esc(f.error)}</div>` : ''}${body}</div>`;
-  }
-  const log = state.cloud.log;
-  return `
-  <div class="card"><div class="card-head"><h3>🖥 Konsole – ${esc(s.name)}</h3>
-    <button class="btn btn-sm" id="cloudDetailClose">Schließen</button></div>
-    <div class="console" id="cloudLog">${log.lines.length
-      ? log.lines.map((l) => `<div class="${classify(l)}">${esc(l)}</div>`).join('')
-      : (s.running ? 'Wird geladen …' : 'Der Server läuft gerade nicht.')}</div>
-    <div class="cmd-row">
-      <input id="cloudCmd" placeholder="${s.running ? 'Befehl an den Server, z. B. list' : 'Der Server läuft nicht'}"
-        ${s.running ? '' : 'disabled'}>
-      <button class="btn" id="cloudCmdSend" ${s.running ? '' : 'disabled'}>Senden</button></div>
-    <div class="muted small" style="margin-top:8px">Befehle gehen unverändert an den Server auf dem Root-Server –
-      dieselben wie in der lokalen Konsole.</div></div>`;
+  const tab = open.tab === 'files' ? 'files' : 'console';
+  return `<section class="card cl-detail">
+    <div class="card-head cl-detail-head">
+      <div class="flex">
+        <span class="dot ${s.running ? 'dot-on' : ''}" aria-hidden="true"></span>
+        <h3>${esc(s.name)}</h3>
+        <span class="pill ${s.running ? 'pill-green' : 'pill-grey'}">${s.running ? 'läuft' : 'gestoppt'}</span>
+      </div>
+      <div class="flex">
+        <div class="seg" role="tablist" aria-label="Ansicht wählen">
+          <button role="tab" aria-selected="${tab === 'console'}" class="${tab === 'console' ? 'on' : ''}" data-cloud-tab="console">🖥 Konsole</button>
+          <button role="tab" aria-selected="${tab === 'files'}" class="${tab === 'files' ? 'on' : ''}" data-cloud-tab="files">📂 Dateien</button>
+        </div>
+        <button class="btn btn-sm" id="cloudDetailClose">Schließen</button>
+      </div>
+    </div>
+    ${tab === 'files' ? cloudFilesPanel(s) : cloudConsolePanel(s)}
+  </section>`;
 }
 
-/* ---------- Lokale Server: hoch- und zurückholen */
+function cloudConsolePanel(s) {
+  const log = state.cloud.log;
+  return `
+  <div class="console cl-console" id="cloudLog" role="log" aria-label="Konsole von ${esc(s.name)}">${
+    log.lines.length ? log.lines.map((l) => `<div class="${classify(l)}">${esc(l)}</div>`).join('')
+      : (s.running ? 'Wird geladen …' : 'Der Server läuft gerade nicht – die Konsole füllt sich erst nach dem Start.')}</div>
+  <div class="cmd-row">
+    <input type="text" id="cloudCmd" value="${esc(state.cloud.cmd || '')}" aria-label="Befehl an ${esc(s.name)}"
+      placeholder="${s.running ? 'Befehl an den Server, z. B. list' : 'Der Server läuft nicht'}" ${s.running ? '' : 'disabled'}>
+    <button class="btn" id="cloudCmdSend" ${s.running ? '' : 'disabled'}>Senden</button>
+  </div>
+  <div class="muted small" style="margin-top:8px">Befehle gehen unverändert an den Server auf dem Root-Server –
+    dieselben wie in der Konsole eines Servers auf diesem PC.</div>`;
+}
+
+function cloudFilesPanel(s) {
+  const f = state.cloud.files;
+  if (f.open !== null) {
+    return `
+    <div class="cl-editor-head">
+      <div class="e-title">${esc(f.open)}</div>
+      <div class="btn-row">
+        <button class="btn btn-sm" id="cloudFileBack">← Zurück zur Liste</button>
+        <button class="btn btn-sm btn-primary" id="cloudFileSave">Speichern</button>
+      </div>
+    </div>
+    ${f.error ? `<div class="note note-err">${esc(f.error)}</div>` : ''}
+    <textarea id="cloudFileText" class="cloud-editor" spellcheck="false"
+      aria-label="Inhalt von ${esc(f.open)}">${esc(f.text)}</textarea>
+    <div class="muted small" style="margin-top:8px">Gespeichert wird direkt auf dem Root-Server.
+      Läuft der Server, liest er die Datei meist erst beim nächsten Start neu ein.</div>`;
+  }
+  const teile = (f.path || '').split('/').filter(Boolean);
+  const krumen = ['<a href="#" data-cloud-dir="" class="crumb">Serverordner</a>']
+    .concat(teile.map((t, i) => `<span class="sep" aria-hidden="true">/</span>
+      <a href="#" data-cloud-dir="${esc(teile.slice(0, i + 1).join('/'))}" class="crumb">${esc(t)}</a>`)).join('');
+  const rows = f.entries === null
+    ? '<div class="muted small" style="padding:14px 2px">Wird geladen …</div>'
+    : (f.entries.length ? f.entries.map((e) => `
+        <div class="cl-frow">
+          <span class="f-ico" aria-hidden="true">${e.is_dir ? '📁' : (KIND_ICON[e.kind] || '📄')}</span>
+          <span class="f-name">${esc(e.name)}</span>
+          <span class="f-meta">${e.is_dir ? 'Ordner' : esc(fmtBytes(e.size))}${e.mtime ? ' · ' + esc(fmtDate(e.mtime)) : ''}</span>
+          <span class="btn-row">
+            ${e.is_dir ? `<button class="btn btn-sm" data-cloud-dir="${esc(e.path)}">Öffnen</button>`
+              : (e.editable ? `<button class="btn btn-sm" data-cloud-file="${esc(e.path)}">Bearbeiten</button>` : '')}
+            ${e.is_dir ? '' : `<button class="btn btn-sm" data-cloud-get="${esc(e.path)}" aria-label="${esc(e.name)} herunterladen">⬇</button>`}
+            <button class="btn btn-sm" data-cloud-ren="${esc(e.path)}" aria-label="${esc(e.name)} umbenennen">✎</button>
+            <button class="btn btn-sm btn-danger" data-cloud-del="${esc(e.path)}" aria-label="${esc(e.name)} löschen">🗑</button>
+          </span>
+        </div>`).join('')
+      : `<div class="empty-inline"><div class="ei-ico" aria-hidden="true">📂</div>
+           <div><b>Dieser Ordner ist leer.</b><p class="mb0">Lege einen Ordner an oder lade eine Datei
+             hierher – zum Beispiel ein Plugin nach <code>plugins</code>.</p></div></div>`);
+  return `
+  <div class="cl-files-bar">
+    <div class="crumbs">${krumen}</div>
+    <div class="btn-row">
+      <button class="btn btn-sm" id="cloudMkdir">＋ Ordner</button>
+      <button class="btn btn-sm" id="cloudPick">📎 Datei wählen</button>
+      <input type="file" id="cloudFileAdd" class="visually-hidden" tabindex="-1" aria-hidden="true">
+      <span class="muted small" id="cloudFileName">keine gewählt</span>
+      <button class="btn btn-sm btn-primary" id="cloudFileAddGo">Hochladen</button>
+    </div>
+  </div>
+  ${f.error ? `<div class="note note-err">${esc(f.error)}</div>` : ''}
+  <div class="cl-files">${rows}</div>
+  <div class="muted small" style="margin-top:10px">Der Server muss zum Ändern einzelner Dateien gestoppt sein –
+    sonst schreibt er sie gleich wieder um.</div>`;
+}
+
+/* ---------- Server auf diesem PC */
 
 function cloudLocalBox(d) {
   const rows = state.servers.map((s) => {
     const link = s.cloud || {};
     const hosted = !!s.cloud_locked;
     const busy = state.cloud.busy === s.id || s.installing;
-    return `<div class="wrow">
-      <div><div class="w-name">${typeTag(s)} ${esc(s.name)}
-        ${hosted ? `<span class="pill pill-amber">${esc(cloudStateText(link.state))}</span>` : '<span class="pill pill-grey">auf diesem PC</span>'}</div>
-        <div class="w-meta">${esc(s.version || '')} · ${gb(s.ram_mb)}${link.address ? ' · ' + esc(link.address) : ''}</div></div>
-      ${hosted
-        ? `<button class="btn btn-sm" data-cloud-pull-local="${esc(link.instance || '')}" ${link.instance && !busy ? '' : 'disabled'}>⬇ Zurück auf diesen PC holen</button>`
-        : `<button class="btn btn-sm" data-cloud-push="${esc(s.id)}" ${s.installed && !s.running && !busy ? '' : 'disabled'}
-             ${s.running ? 'title="Bitte den Server zuerst stoppen."' : ''}>⬆ Auf den Root-Server verschieben</button>`}
+    const wartet = link.state === 'awaiting_pull' || link.state === 'downloading';
+    return `<div class="loc-row ${hosted ? 'is-locked' : ''}">
+      <div class="loc-main">
+        <div class="w-name">${typeTag(s)} ${esc(s.name)}
+          ${hosted ? `<span class="pill ${wartet ? 'pill-amber' : 'pill-blue'}">${esc(cloudStateText(link.state))}</span>`
+            : '<span class="pill pill-grey">auf diesem PC</span>'}</div>
+        <div class="w-meta">${esc(s.version || '')} · ${esc(gb(s.ram_mb))}${link.address ? ' · ' + esc(link.address) : ''}</div>
+        ${hosted ? `<div class="loc-lock"><span aria-hidden="true">🔒</span>
+          ${wartet ? 'Warte auf die Rückholung – erst danach lässt sich die Kopie hier wieder starten.'
+            : 'Die Kopie auf diesem PC ist gesperrt: gespielt wird gerade auf dem Root-Server.'}</div>` : ''}
+      </div>
+      <div class="btn-row">
+        ${hosted
+          ? `<button class="btn btn-sm ${wartet ? 'btn-primary' : ''}" data-cloud-pull-local="${esc(link.instance || '')}"
+               ${link.instance && !busy ? '' : 'disabled'}>⬇ Zurück auf diesen PC holen</button>`
+          : `<button class="btn btn-sm" data-cloud-push="${esc(s.id)}" ${s.installed && !s.running && !busy ? '' : 'disabled'}
+               ${s.running ? 'title="Bitte den Server zuerst stoppen."' : (!s.installed ? 'title="Der Server ist noch nicht fertig eingerichtet."' : '')}>⬆ Auf den Root-Server verschieben</button>`}
+      </div>
     </div>`;
   }).join('');
+  return `<section class="card">
+    <div class="card-head"><h3>🖥 Server auf diesem PC</h3>
+      <span class="muted small">${state.servers.length || 'keine'}</span></div>
+    ${rows || `<div class="empty-inline"><div class="ei-ico" aria-hidden="true">🖥</div>
+      <div><b>Noch kein Server auf diesem PC.</b>
+        <p class="mb0">Lege links oben mit <b>„Neuer Server“</b> einen an – danach kannst du ihn hier
+          auf den Root-Server verschieben.</p></div></div>`}
+    <div class="note note-info mb0"><b>Ein Server ist immer nur an einer Stelle spielbar.</b>
+      Nach dem Verschieben ist die Kopie auf diesem PC gesperrt, bis du den Server zurückholst.
+      Beim Zurückholen wird der Ordner auf dem Root-Server erst gelöscht, wenn hier jede Datei mit
+      Prüfsumme angekommen ist. Der Ordner <code>backups</code> bleibt immer auf diesem PC.</div>
+  </section>`;
+}
+
+/* ---------- Zustand des Root-Servers */
+
+function cloudMachineBox(d) {
+  const m = d.machine || {};
+  const frei = Number(m.disk_free_bytes || 0);
+  const knapp = frei > 0 && frei < 5 * 1024 ** 3;
+  const sehrKnapp = frei > 0 && frei < 3 * 1024 ** 3;
+  const ramLauf = Number(m.ram_running_mb || 0), ramMasch = Number(m.ram_machine_mb || 0);
+  return `<section class="card cl-machine">
+    <div class="card-head"><h3>🖧 Zustand des Root-Servers</h3></div>
+    ${frei ? `<div class="ministat-row">
+      ${statBox('Platte frei', esc(m.disk_free_text || fmtBytes(frei)), sehrKnapp ? 'bad' : knapp ? 'warn' : 'ok')}
+      ${ramMasch ? statBox('Speicher in Betrieb', esc(fmtMb(ramLauf)) + ' <span class="mini">von ' + esc(fmtMb(ramMasch)) + '</span>') : ''}
+    </div>` : '<div class="muted small">Der Root-Server meldet gerade keine Zahlen.</div>'}
+    ${ramMasch ? meterBox('Arbeitsspeicher der Maschine', ramLauf, ramMasch,
+      `${esc(fmtMb(ramLauf))} belegt`, ramLauf / ramMasch > 0.85 ? 'warn' : '') : ''}
+    ${m.free_ports_java !== undefined ? `<div class="w-meta" style="margin-top:8px">
+      Freie Adressen: ${Number(m.free_ports_java || 0)} für Java, ${Number(m.free_ports_bedrock || 0)} für Bedrock.</div>` : ''}
+    ${sehrKnapp ? `<div class="note note-err mb0"><b>Die Platte wird eng.</b>
+      <p class="mb0">Unter 3 GB freiem Platz nimmt der Root-Server keinen Serverstart mehr an. Hole einen
+        Server auf diesen PC zurück oder sag dem Betreiber Bescheid.</p></div>`
+      : knapp ? `<div class="note note-warn mb0"><b>Auf der Platte wird es knapp.</b>
+      <p class="mb0">Eine gut erkundete Welt wiegt schnell mehrere Gigabyte. Ab 3 GB freiem Platz lehnt
+        der Root-Server neue Starts ab.</p></div>` : ''}
+  </section>`;
+}
+
+function cloudTipBox(d) {
+  const pull = cloudPullList();
+  if (pull.length) {
+    return `<section class="card"><div class="card-head"><h3>⬇ Als Nächstes</h3></div>
+      <p class="small">${pull.length === 1 ? 'Ein Server wartet' : pull.length + ' Server warten'} auf die Rückholung.
+        Solange er dort liegt, lässt sich die Kopie auf diesem PC nicht starten.</p>
+      <div class="btn-row">${pull.map((s) => `<button class="btn btn-sm btn-primary" data-cloud-pull="${esc(s.id)}">⬇ ${esc(s.name)} holen</button>`).join('')}</div>
+    </section>`;
+  }
+  return `<section class="card"><div class="card-head"><h3>💡 Gut zu wissen</h3></div>
+    <ul class="tips">
+      <li>Die Adresse bleibt einem Server für immer – auch wenn du ihn umbenennst. Deine Freunde müssen
+        nichts Neues eintippen.</li>
+      <li>Anlegen und Hochladen ist unbegrenzt. Begrenzt ist nur, wie viele Server <b>gleichzeitig
+        eingeschaltet</b> sein dürfen.</li>
+      <li>Beim Zurückholen wird jede Datei einzeln mit Prüfsumme verglichen. Erst danach verschwindet
+        der Ordner auf dem Root-Server.</li>
+      <li>Bricht eine Übertragung ab, geht es beim nächsten Anlauf an derselben Stelle weiter.</li>
+    </ul>
+  </section>`;
+}
+
+/* ---------- Anmeldung: Discord, danach einmal der Einladungscode */
+
+async function cloudStartLogin() {
+  const btn = $('#cloudLoginDiscord');
+  if (btn) btn.disabled = true;
+  state.cloud.login.error = '';
+  try {
+    const r = await api('cloud/login', { method: 'POST' });
+    state.cloud.login.pending = true;
+    state.cloud.login.url = r.url || '';
+    if (r.url) window.open(r.url, '_blank', 'noopener');
+    paintCloud();
+    clearInterval(state.timers.cloudLogin);
+    state.timers.cloudLogin = setInterval(cloudPollLogin, 2000);
+  } catch (e) {
+    state.cloud.login.error = e.message;
+    state.cloud.login.pending = false;
+    paintCloud();
+  }
+}
+
+async function cloudPollLogin() {
+  try {
+    const p = await api('cloud/login/poll');
+    if (p.pending) return;
+    clearInterval(state.timers.cloudLogin);
+    state.cloud.login.pending = false;
+    if (p.needs_invite) { await cloudAskInvite(p.discord); return; }
+    toast('Am Root-Server angemeldet.');
+    await loadCloud(true);
+  } catch (e) {
+    clearInterval(state.timers.cloudLogin);
+    state.cloud.login.pending = false;
+    state.cloud.login.error = e.message;
+    paintCloud();
+  }
+}
+
+/** Erstanmeldung: Discord hat geklappt, der Einladungscode fehlt noch. */
+async function cloudAskInvite(person) {
+  if (state.cloud.askingInvite) return;
+  state.cloud.askingInvite = true;
+  const name = (person || {}).name || '';
+  let fertig = false;
+  try {
+    const r = await dialog({
+      icon: '🎟', tone: '', title: 'Noch ein Schritt: dein Einladungscode',
+      sub: name ? `Discord-Konto: ${name}` : '',
+      confirmText: 'Konto anlegen', cancelText: 'Abbrechen',
+      html: `<p>Die Anmeldung bei Discord hat geklappt. Der Root-Server kennt dieses Konto aber noch nicht –
+        deshalb fragt er einmalig nach deinem Einladungscode.</p>
+        <p class="muted small">Den Code bekommst du vom Betreiber (im Discord oder persönlich). Er sieht aus wie
+        <code>ABCD-EFGH-IJKL</code>, gilt nur ein einziges Mal und läuft nach kurzer Zeit ab.</p>`,
+      fields: [{ id: 'cloudCode', label: 'Einladungscode', placeholder: 'ABCD-EFGH-IJKL', mono: true,
+                 maxlength: 14, aria: 'Einladungscode in der Form ABCD-EFGH-IJKL',
+                 hint: 'Groß- und Kleinschreibung ist egal – die Striche setzt das Programm selbst.' }],
+      validate: (v) => {
+        const roh = String(v.cloudCode || '').replace(/[^A-Za-z0-9]/g, '');
+        if (!roh) return 'Bitte trage den Einladungscode ein.';
+        if (roh.length < 12) return 'Der Code ist noch nicht vollständig – er besteht aus zwölf Zeichen, z. B. ABCD-EFGH-IJKL.';
+        return '';
+      },
+      bind: (ctx) => {
+        const el = $('#cloudCode', ctx.body);
+        if (!el) return;
+        el.oninput = () => {
+          const amEnde = el.selectionStart === el.value.length;
+          el.value = fmtCode(el.value);
+          if (amEnde) el.setSelectionRange(el.value.length, el.value.length);
+        };
+      },
+      onSubmit: async (v) => { await api('cloud/login/register', { method: 'POST', body: { code: v.cloudCode } }); },
+    });
+    fertig = !!r;
+  } finally { state.cloud.askingInvite = false; }
+  if (fertig) {
+    toast('Konto angelegt – du bist am Root-Server angemeldet.');
+  } else {
+    try { await api('cloud/login/abort', { method: 'POST' }); } catch { /* war schon weg */ }
+    toast('Anmeldung abgebrochen. Du kannst es jederzeit noch einmal versuchen.');
+  }
+  await loadCloud(true);
+}
+
+/* ---------- Konto-Einstellungen */
+
+async function openAccountDialog() {
+  const d = cloudData();
+  const st = { user: d.user || {}, sessions: null, sessHint: '', nameHint: '', linkHint: '' };
+  const laden = async (ctx) => {
+    try {
+      const r = await api('cloud/sessions');
+      st.sessions = r.supported === false ? [] : (r.sessions || []);
+      st.sessHint = r.supported === false ? (r.hint || '') : '';
+    } catch (e) { st.sessions = []; st.sessHint = e.message; }
+    ctx.redraw();
+  };
+  await dialog({
+    wide: true, icon: '', title: 'Konto-Einstellungen', confirmText: null, cancelText: 'Schließen',
+    body: () => accountBody(st),
+    bind: (ctx) => accountBind(st, ctx, laden),
+  });
+  await loadCloud(true);
+}
+
+function accountBody(st) {
+  const u = st.user || {};
+  const d = cloudData();
   return `
-  <div class="card">
-    <div class="card-head"><h3>🖥 Meine Server auf diesem PC</h3></div>
-    ${rows || '<div class="muted small">Noch kein Server auf diesem PC.</div>'}
-    <div class="note note-info" style="margin-bottom:0"><b>Ein Server ist immer nur an einer Stelle spielbar.</b>
-      Nach dem Verschieben ist die Kopie auf diesem PC gesperrt – sie lässt sich nicht starten, bis du den Server
-      zurückholst. Beim Zurückholen wird der Ordner auf dem Root-Server erst gelöscht, wenn hier jede Datei mit
-      Prüfsumme angekommen ist.</div>
+  <div class="acct-top">
+    ${cloudAvatar(u, 'av-64')}
+    <div>
+      <div class="acct-big">${esc(u.name || 'Konto')}</div>
+      <div class="muted small">${esc(u.role_text || ROLE_TEXT[u.role] || 'Benutzer')}
+        ${d.logged_in_at ? '· auf diesem PC ' + esc(fmtSince(d.logged_in_at)) + ' angemeldet' : ''}</div>
+      <div class="muted small">${u.created_at ? 'Konto angelegt am ' + esc(fmtDate(u.created_at)) : ''}
+        ${d.session_expires_at ? '· Sitzung gültig bis ' + esc(fmtDate(d.session_expires_at)) : ''}</div>
+    </div>
+  </div>
+
+  <h4 class="acct-h">Anzeigename</h4>
+  <div class="acct-line">
+    <input type="text" id="acctName" value="${esc(u.name || '')}" maxlength="32" aria-label="Anzeigename"
+      placeholder="z. B. Luca">
+    <button class="btn btn-sm btn-primary" id="acctNameSave">Speichern</button>
+  </div>
+  <div class="hint">2 bis 32 Zeichen. So stehst du in der Verwaltung des Betreibers.</div>
+  ${st.nameHint ? `<div class="note note-info">${esc(st.nameHint)}</div>` : ''}
+
+  <h4 class="acct-h">Discord</h4>
+  ${u.discord_linked
+    ? `<div class="acct-line acct-static">
+         <span class="pill pill-green">verknüpft</span>
+         <span>${esc(u.discord_name || u.name || '')}</span>
+       </div>
+       <div class="hint">Die Anmeldung läuft über dieses Discord-Konto. Dein Passwort sieht der Manager nie.</div>`
+    : `<p class="small">Dieses Konto ist noch nicht mit Discord verknüpft. Danach kannst du dich überall
+         mit einem Klick anmelden, ohne Einladungscode.</p>
+       <div class="btn-row"><button class="btn btn-sm" id="acctLink">🔗 Discord verknüpfen</button></div>`}
+  ${st.linkHint ? `<div class="note note-info">${esc(st.linkHint)}</div>` : ''}
+
+  <h4 class="acct-h">Aktive Sitzungen</h4>
+  ${st.sessions === null ? '<div class="muted small">Wird geladen …</div>'
+    : st.sessHint ? `<div class="note note-info mb0">${esc(st.sessHint)}</div>`
+      : (st.sessions.length ? `<div class="acct-sessions">${st.sessions.map((s) => `
+          <div class="acct-sess">
+            <div>
+              <div class="w-name">${esc(s.note || 'Unbenannte Sitzung')}</div>
+              <div class="w-meta">${s.created_at ? 'begonnen am ' + esc(fmtDate(s.created_at)) : ''}
+                ${s.last_seen ? '· zuletzt ' + esc(fmtDate(s.last_seen)) : ''}
+                ${s.expires_at ? '· gültig bis ' + esc(fmtDate(s.expires_at)) : ''}</div>
+            </div>
+            <button class="btn btn-sm btn-danger" data-sess="${Number(s.created_at) || 0}">Beenden</button>
+          </div>`).join('')}</div>`
+        : '<div class="muted small">Es ist keine weitere Sitzung offen.</div>')}
+
+  <div class="acct-foot">
+    <button class="btn btn-sm btn-red" id="acctLogout">Von diesem PC abmelden</button>
+    <span class="muted small">Gehostete Server laufen auf dem Root-Server weiter.</span>
   </div>`;
+}
+
+function accountBind(st, ctx, laden) {
+  if (st.sessions === null) laden(ctx);
+
+  const save = $('#acctNameSave', ctx.body);
+  if (save) save.onclick = async () => {
+    const wert = ($('#acctName', ctx.body).value || '').trim();
+    if (wert.length < 2 || wert.length > 32) { ctx.setError('Bitte einen Namen mit 2 bis 32 Zeichen eintragen.'); return; }
+    ctx.setError(''); save.disabled = true;
+    try {
+      const r = await api('cloud/account/name', { method: 'POST', body: { name: wert } });
+      if (r.supported === false) { st.nameHint = r.hint || 'Das kann dieser Root-Server noch nicht.'; }
+      else { st.user = { ...st.user, name: r.name || wert }; st.nameHint = ''; toast('Anzeigename gespeichert.'); }
+    } catch (e) { ctx.setError(e.message); }
+    save.disabled = false;
+    ctx.redraw();
+  };
+
+  const link = $('#acctLink', ctx.body);
+  if (link) link.onclick = async () => {
+    link.disabled = true; ctx.setError('');
+    try {
+      const r = await api('cloud/link/discord', { method: 'POST', body: {} });
+      if (r.supported === false) { st.linkHint = r.hint || 'Das kann dieser Root-Server noch nicht.'; }
+      else {
+        window.open(r.url, '_blank', 'noopener');
+        st.linkHint = 'Der Browser ist offen. Bestätige dort den Zugriff und klicke danach hier auf '
+          + '„Schließen“ und oben auf „Aktualisieren“ – dann steht die Verknüpfung.';
+      }
+    } catch (e) { ctx.setError(e.message); }
+    link.disabled = false;
+    ctx.redraw();
+  };
+
+  $$('[data-sess]', ctx.body).forEach((el) => el.onclick = async () => {
+    const ok = await askConfirm({
+      tone: 'danger', title: 'Diese Sitzung beenden?', confirmText: 'Sitzung beenden',
+      text: 'Das Gerät hinter dieser Sitzung wird abgemeldet und muss sich neu anmelden. '
+        + 'Ist es dieser PC, meldet sich der Manager gleich mit ab.',
+    });
+    if (!ok) return;
+    el.disabled = true; ctx.setError('');
+    try {
+      const r = await api('cloud/session/revoke', { method: 'POST', body: { created_at: Number(el.dataset.sess) } });
+      if (r.supported === false) { st.sessHint = r.hint || ''; ctx.redraw(); return; }
+      toast('Sitzung beendet.');
+      st.sessions = null;
+      ctx.redraw();
+    } catch (e) { ctx.setError(e.message); el.disabled = false; }
+  });
+
+  const out = $('#acctLogout', ctx.body);
+  if (out) out.onclick = async () => {
+    const ok = await askConfirm({
+      tone: 'danger', title: 'Vom Root-Server abmelden?', confirmText: 'Abmelden',
+      text: 'Dieser PC vergisst die Anmeldung. Gehostete Server laufen auf dem Root-Server weiter – '
+        + 'du kommst nur erst nach einer neuen Anmeldung wieder an sie heran.',
+    });
+    if (!ok) return;
+    try { await api('cloud/logout', { method: 'POST' }); state.cloud.open = null; } catch (e) { toast(e.message, true); }
+    ctx.close(null);
+    await loadCloud(true);
+  };
 }
 
 /* ---------- Fortschritt einer Übertragung */
 
-function cloudJobBox() {
-  const t = state.cloud.job;
-  if (!t) return '';
-  const job = t.job;
-  const steps = job ? job.steps.map((st) => `<div class="steprow ${st.state}"><span class="mark">${
-    st.state === 'done' ? '✓' : st.state === 'failed' ? '!' : ''}</span>${esc(st.text)}</div>`).join('') : '';
-  const failed = job && job.status === 'error', done = job && job.status === 'done';
-  return `
-  <div class="card">
-    <div class="card-head"><h3>${esc(t.label)}</h3>
-      ${done || failed ? '<button class="btn btn-sm" id="cloudJobClose">Schließen</button>' : ''}</div>
-    <div class="bar"><i style="width:${job ? job.pct : 0}%"></i></div>
-    <div class="muted small">${esc(job ? job.detail : 'Wird vorbereitet …')}</div>
-    <div class="steplist">${steps}</div>
-    ${failed ? `<div class="note note-err" style="margin-bottom:0"><b>Die Übertragung ist fehlgeschlagen.</b>
-        <p class="mb0">${esc(job.error)}</p></div>` : ''}
-    ${done ? '<div class="note note-ok" style="margin-bottom:0"><b>Fertig.</b></div>' : ''}
-  </div>`;
-}
-
 function startCloudJob(res, label) {
   state.cloud.job = { id: res.job_id, serverId: res.server_id || '', label, job: null };
-  if (state.view !== 'cloud') openCloud(); else { $('#view').innerHTML = renderCloud(); bindCloud(); }
+  state.cloud.rate = null;
+  if (state.view !== 'cloud') openCloud(); else paintCloud();
   clearInterval(state.timers.cloudJob);
   state.timers.cloudJob = setInterval(async () => {
     const t = state.cloud.job;
@@ -2244,7 +3148,7 @@ function startCloudJob(res, label) {
     try {
       const job = await api('job/' + t.id);
       t.job = job;
-      if (state.view === 'cloud') { const box = $('#view'); box.innerHTML = renderCloud(); bindCloud(); }
+      paintCloud();
       if (job.status !== 'running') {
         clearInterval(state.timers.cloudJob);
         state.cloud.busy = '';
@@ -2261,10 +3165,14 @@ function startCloudJob(res, label) {
 async function cloudUpload(serverId) {
   const s = state.servers.find((x) => x.id === serverId);
   if (!s) return;
-  if (!confirm(`„${s.name}“ auf den Root-Server verschieben?\n\n`
-    + 'Alle Dateien dieses Servers werden mit Prüfsumme übertragen. Danach ist die Kopie auf diesem PC '
-    + 'gesperrt – ein Server ist immer nur an einer Stelle spielbar. Du kannst ihn jederzeit zurückholen.\n\n'
-    + 'Der Ordner „backups“ bleibt auf diesem PC.')) return;
+  const ok = await askConfirm({
+    tone: 'danger', icon: '⬆', title: `„${s.name}“ auf den Root-Server verschieben?`,
+    confirmText: 'Jetzt verschieben',
+    text: 'Alle Dateien dieses Servers werden mit Prüfsumme übertragen. Danach ist die Kopie auf diesem PC '
+      + 'gesperrt – ein Server ist immer nur an einer Stelle spielbar. Zurückholen kannst du ihn jederzeit.'
+      + '\n\nDer Ordner „backups“ bleibt auf diesem PC.',
+  });
+  if (!ok) return;
   state.cloud.busy = serverId;
   try {
     const d = await api('cloud/upload', { method: 'POST', body: { server: serverId } });
@@ -2276,9 +3184,14 @@ async function cloudDownload(instance) {
   const d = cloudData();
   const s = (d.servers || []).find((x) => x.id === instance);
   const name = s ? s.name : 'Server';
-  if (!confirm(`„${name}“ auf diesen PC zurückholen?\n\n`
-    + 'Der Server wird auf dem Root-Server gestoppt, alle Dateien werden übertragen und einzeln geprüft. '
-    + 'Erst danach wird der Ordner auf dem Root-Server gelöscht und die Kopie auf diesem PC wieder freigegeben.')) return;
+  const ok = await askConfirm({
+    tone: 'danger', icon: '⬇', title: `„${name}“ auf diesen PC zurückholen?`,
+    confirmText: 'Jetzt zurückholen',
+    text: 'Der Server wird auf dem Root-Server gestoppt, alle Dateien werden übertragen und einzeln geprüft. '
+      + 'Erst danach wird der Ordner auf dem Root-Server gelöscht und die Kopie auf diesem PC wieder freigegeben.'
+      + '\n\nSpieler, die gerade online sind, fliegen dabei vom Server.',
+  });
+  if (!ok) return;
   state.cloud.busy = instance;
   try {
     const res = await api('cloud/download', { method: 'POST', body: { instance } });
@@ -2305,8 +3218,9 @@ async function cloudLoadLog() {
       state.cloud.log.next = d.next;
       const box = $('#cloudLog');
       if (box) {
+        const kleben = (box.scrollHeight - box.scrollTop - box.clientHeight) < 48;
         box.innerHTML = state.cloud.log.lines.map((l) => `<div class="${classify(l)}">${esc(l)}</div>`).join('');
-        box.scrollTop = box.scrollHeight;
+        if (kleben) box.scrollTop = box.scrollHeight;
       }
     } else if (d.next !== undefined) { state.cloud.log.next = d.next; }
   } catch { /* nächster Versuch */ }
@@ -2316,13 +3230,14 @@ async function cloudLoadFiles(path) {
   const open = state.cloud.open;
   if (!open) return;
   const f = state.cloud.files;
-  f.path = path || ''; f.open = null; f.error = ''; f.entries = null;
+  f.path = path || ''; f.open = null; f.error = ''; f.entries = null; f.dirty = false;
+  paintCloud();
   try {
     const d = await api(`cloud/files?instance=${encodeURIComponent(open.id)}&path=${encodeURIComponent(f.path)}`);
     f.entries = d.entries || [];
     f.path = d.path || f.path;
   } catch (e) { f.error = e.message; f.entries = []; }
-  if (state.view === 'cloud') { $('#view').innerHTML = renderCloud(); bindCloud(); }
+  paintCloud();
 }
 
 async function cloudOpenFile(path) {
@@ -2330,147 +3245,186 @@ async function cloudOpenFile(path) {
   const f = state.cloud.files;
   try {
     const d = await api(`cloud/file?instance=${encodeURIComponent(open.id)}&path=${encodeURIComponent(path)}`);
-    f.open = d.path || path; f.text = d.text || ''; f.error = '';
+    f.open = d.path || path; f.text = d.text || ''; f.error = ''; f.dirty = false;
   } catch (e) { f.error = e.message; }
-  if (state.view === 'cloud') { $('#view').innerHTML = renderCloud(); bindCloud(); }
+  paintCloud();
+}
+
+async function copyText(text, was = 'Adresse') {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(was + ' kopiert.');
+  } catch {
+    // Ohne Zwischenablage-Recht (älterer Browser): über ein unsichtbares Feld kopieren.
+    const el = document.createElement('textarea');
+    el.value = text; el.setAttribute('readonly', '');
+    el.style.position = 'fixed'; el.style.opacity = '0';
+    document.body.appendChild(el); el.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    el.remove();
+    if (ok) { toast(was + ' kopiert.'); return; }
+    // Auch das ging nicht: dann wenigstens gut lesbar zum Abtippen zeigen.
+    askNote({ icon: '⧉', title: 'Kopieren hat nicht geklappt',
+      text: 'Dieses Fenster darf nicht in die Zwischenablage schreiben. '
+        + 'Hier steht die ' + was.toLowerCase() + ' zum Markieren:',
+      html: `<p class="mb0"><code style="user-select:all">${esc(text)}</code></p>` });
+  }
 }
 
 /* ---------- Bindungen der Cloud-Seite */
 
 function bindCloud() {
-  const d = cloudData();
-  $('#cloudReload').onclick = () => loadCloud(true);
-  const out = $('#cloudLogout');
-  if (out) out.onclick = async () => {
-    if (!confirm('Vom Root-Server abmelden? Gehostete Server laufen dort weiter.')) return;
-    try { await api('cloud/logout', { method: 'POST' }); state.cloud.open = null; } catch (e) { toast(e.message, true); }
-    await loadCloud(true);
-  };
+  const reload = $('#cloudReload');
+  if (reload) reload.onclick = () => { toast('Wird aktualisiert …'); loadCloud(true); };
+  const acct = $('#cloudAcct');
+  if (acct) acct.onclick = openAccountDialog;
 
   const discord = $('#cloudLoginDiscord');
-  if (discord) discord.onclick = async () => {
-    discord.disabled = true;
-    state.cloud.login.error = '';
-    try {
-      const r = await api('cloud/login', { method: 'POST' });
-      state.cloud.login.pending = true;
-      state.cloud.login.url = r.url || '';
-      if (r.url) window.open(r.url, '_blank', 'noopener');
-      $('#view').innerHTML = renderCloud(); bindCloud();
-      clearInterval(state.timers.cloudLogin);
-      state.timers.cloudLogin = setInterval(async () => {
-        try {
-          const p = await api('cloud/login/poll');
-          if (!p.pending) {
-            clearInterval(state.timers.cloudLogin);
-            state.cloud.login.pending = false;
-            toast('Am Root-Server angemeldet.');
-            await loadCloud(true);
-          }
-        } catch (e) {
-          clearInterval(state.timers.cloudLogin);
-          state.cloud.login.pending = false;
-          state.cloud.login.error = e.message;
-          if (state.view === 'cloud') { $('#view').innerHTML = renderCloud(); bindCloud(); }
-        }
-      }, 2000);
-    } catch (e) {
-      state.cloud.login.error = e.message;
-      discord.disabled = false;
-      $('#view').innerHTML = renderCloud(); bindCloud();
-    }
+  if (discord) discord.onclick = cloudStartLogin;
+  const abbruch = $('#cloudLoginCancel');
+  if (abbruch) abbruch.onclick = async () => {
+    clearInterval(state.timers.cloudLogin);
+    state.cloud.login.pending = false;
+    try { await api('cloud/login/abort', { method: 'POST' }); } catch { /* war schon weg */ }
+    paintCloud();
   };
-  const invBtn = $('#cloudLoginInvite');
-  if (invBtn) invBtn.onclick = () => {
-    state.cloud.login.invite = !state.cloud.login.invite;
-    state.cloud.login.error = '';
-    $('#view').innerHTML = renderCloud(); bindCloud();
-  };
-  const invGo = $('#cloudInviteGo');
-  if (invGo) invGo.onclick = async () => {
-    invGo.disabled = true;
-    try {
-      await api('cloud/login/invite', { method: 'POST',
-        body: { code: $('#cloudInviteCode').value, name: $('#cloudInviteName').value } });
-      state.cloud.login.invite = false;
-      toast('Am Root-Server angemeldet.');
-      await loadCloud(true);
-    } catch (e) {
-      state.cloud.login.error = e.message; invGo.disabled = false;
-      $('#view').innerHTML = renderCloud(); bindCloud();
-    }
-  };
+
+  $$('[data-copy]').forEach((el) => el.onclick = () => copyText(el.dataset.copy, 'Adresse'));
 
   $$('[data-cloud-start]').forEach((el) => el.onclick = () => {
     state.cloud.busy = el.dataset.cloudStart; el.disabled = true;
     cloudSimple('cloud/start', { instance: el.dataset.cloudStart }, 'Der Server wird gestartet.');
   });
-  $$('[data-cloud-stop]').forEach((el) => el.onclick = () => {
-    state.cloud.busy = el.dataset.cloudStop; el.disabled = true;
-    cloudSimple('cloud/stop', { instance: el.dataset.cloudStop, announce_seconds: 10 });
+  $$('[data-cloud-stop]').forEach((el) => el.onclick = async () => {
+    const id = el.dataset.cloudStop;
+    const s = (cloudData().servers || []).find((x) => x.id === id) || {};
+    const ok = await askConfirm({
+      tone: 'danger', icon: '■', title: `„${s.name || 'Server'}“ stoppen?`, confirmText: 'Stoppen',
+      text: 'Die Spieler bekommen zehn Sekunden Vorwarnung, danach wird der Server sauber beendet '
+        + 'und die Welt gespeichert. Wer gerade spielt, fliegt dabei heraus.',
+    });
+    if (!ok) return;
+    state.cloud.busy = id; el.disabled = true;
+    cloudSimple('cloud/stop', { instance: id, announce_seconds: 10 });
   });
   $$('[data-cloud-pull]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPull));
   $$('[data-cloud-pull-local]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPullLocal));
   $$('[data-cloud-push]').forEach((el) => el.onclick = () => cloudUpload(el.dataset.cloudPush));
-  $$('[data-cloud-open]').forEach((el) => el.onclick = () => {
-    state.cloud.open = { id: el.dataset.cloudOpen, tab: 'console' };
-    state.cloud.log = { next: 0, lines: [], running: false };
-    $('#view').innerHTML = renderCloud(); bindCloud();
-    clearInterval(state.timers.cloudLog);
-    cloudLoadLog();
-    state.timers.cloudLog = setInterval(cloudLoadLog, 1500);
-  });
+
+  $$('[data-cloud-open]').forEach((el) => el.onclick = () => cloudOpenConsole(el.dataset.cloudOpen));
   $$('[data-cloud-files]').forEach((el) => el.onclick = () => {
     state.cloud.open = { id: el.dataset.cloudFiles, tab: 'files' };
     clearInterval(state.timers.cloudLog);
     cloudLoadFiles('');
+  });
+  $$('[data-cloud-tab]').forEach((el) => el.onclick = () => {
+    const open = state.cloud.open;
+    if (!open) return;
+    if (el.dataset.cloudTab === 'files') {
+      state.cloud.open = { id: open.id, tab: 'files' };
+      clearInterval(state.timers.cloudLog);
+      cloudLoadFiles('');
+    } else cloudOpenConsole(open.id);
   });
 
   const close = $('#cloudDetailClose');
   if (close) close.onclick = () => {
     state.cloud.open = null;
     clearInterval(state.timers.cloudLog);
-    $('#view').innerHTML = renderCloud(); bindCloud();
+    paintCloud();
   };
+
   const send = $('#cloudCmdSend');
   if (send) send.onclick = async () => {
     const input = $('#cloudCmd');
     const cmd = (input.value || '').trim();
     if (!cmd) return;
-    input.value = '';
+    input.value = ''; state.cloud.cmd = '';
     try { await api('cloud/command', { method: 'POST', body: { instance: state.cloud.open.id, command: cmd } }); }
     catch (e) { toast(e.message, true); }
     cloudLoadLog();
   };
   const cmd = $('#cloudCmd');
-  if (cmd) cmd.onkeydown = (e) => { if (e.key === 'Enter') send.click(); };
+  if (cmd) {
+    cmd.oninput = () => { state.cloud.cmd = cmd.value; };
+    cmd.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send.click(); } };
+  }
 
-  $$('[data-cloud-dir]').forEach((el) => el.onclick = () => cloudLoadFiles(el.dataset.cloudDir));
+  $$('[data-cloud-dir]').forEach((el) => el.onclick = (e) => { e.preventDefault(); cloudLoadFiles(el.dataset.cloudDir); });
   $$('[data-cloud-file]').forEach((el) => el.onclick = () => cloudOpenFile(el.dataset.cloudFile));
   $$('[data-cloud-del]').forEach((el) => el.onclick = async () => {
     const pfad = el.dataset.cloudDel;
-    if (!confirm(`„${pfad}“ auf dem Root-Server löschen? Das lässt sich nicht zurücknehmen.`)) return;
+    const ok = await askConfirm({
+      tone: 'danger', icon: '🗑', title: 'Auf dem Root-Server löschen?', confirmText: 'Endgültig löschen',
+      text: `„${pfad}“ wird auf dem Root-Server gelöscht. Bei einem Ordner verschwindet alles darin mit. `
+        + 'Das lässt sich nicht zurücknehmen – es gibt dort keinen Papierkorb.',
+    });
+    if (!ok) return;
     el.disabled = true;
     try {
-      await api('cloud/file/delete', { method: 'POST',
-        body: { instance: state.cloud.open.id, path: pfad } });
+      await api('cloud/file/delete', { method: 'POST', body: { instance: state.cloud.open.id, path: pfad } });
       toast('Gelöscht.');
       await cloudLoadFiles(state.cloud.files.path);
     } catch (e) { toast(e.message, true); el.disabled = false; }
   });
+  $$('[data-cloud-ren]').forEach((el) => el.onclick = async () => {
+    const pfad = el.dataset.cloudRen;
+    const alt = pfad.split('/').pop();
+    const neu = await askInput({
+      icon: '✎', title: 'Umbenennen', label: 'Neuer Name', value: alt,
+      text: `„${alt}“ bekommt auf dem Root-Server einen neuen Namen. Der Ordner bleibt derselbe.`,
+      confirmText: 'Umbenennen', maxlength: 120,
+      validate: (v) => {
+        const n = String(v.mdlInput || '').trim();
+        if (!n) return 'Bitte einen Namen eintragen.';
+        if (/[\\/:*?"<>|]/.test(n)) return 'Diese Zeichen gehen nicht: \\ / : * ? " < > |';
+        return '';
+      },
+    });
+    if (!neu || neu === alt) return;
+    const teile = pfad.split('/'); teile.pop();
+    try {
+      await api('cloud/file/rename', { method: 'POST',
+        body: { instance: state.cloud.open.id, path: pfad, new_path: teile.concat(neu).join('/') } });
+      toast('Umbenannt.');
+      await cloudLoadFiles(state.cloud.files.path);
+    } catch (e) { toast(e.message, true); }
+  });
+  const mk = $('#cloudMkdir');
+  if (mk) mk.onclick = async () => {
+    const name = await askInput({
+      icon: '📁', title: 'Neuen Ordner anlegen', label: 'Name des Ordners',
+      placeholder: 'z. B. plugins', confirmText: 'Anlegen', maxlength: 120,
+      text: 'Der Ordner entsteht an der Stelle, die gerade offen ist.',
+      validate: (v) => (String(v.mdlInput || '').trim() ? '' : 'Bitte einen Namen eintragen.'),
+    });
+    if (!name) return;
+    const p = state.cloud.files.path ? state.cloud.files.path + '/' + name : name;
+    try {
+      await api('cloud/file/mkdir', { method: 'POST', body: { instance: state.cloud.open.id, path: p } });
+      toast('Ordner angelegt.');
+      await cloudLoadFiles(state.cloud.files.path);
+    } catch (e) { toast(e.message, true); }
+  };
   $$('[data-cloud-get]').forEach((el) => el.onclick = async () => {
-    const pfad = el.dataset.cloudGet;
     el.disabled = true;
     try {
       const r = await api('cloud/file/download', { method: 'POST',
-        body: { instance: state.cloud.open.id, path: pfad } });
+        body: { instance: state.cloud.open.id, path: el.dataset.cloudGet } });
       toast(`Liegt jetzt hier: ${r.local}`);
     } catch (e) { toast(e.message, true); }
     el.disabled = false;
   });
+  const wahl = $('#cloudFileAdd');
+  const pick = $('#cloudPick');
+  if (pick && wahl) pick.onclick = () => wahl.click();
+  if (wahl) wahl.onchange = () => {
+    const n = $('#cloudFileName');
+    if (n) n.textContent = wahl.files && wahl.files[0] ? wahl.files[0].name : 'keine gewählt';
+  };
   const add = $('#cloudFileAddGo');
   if (add) add.onclick = async () => {
-    const wahl = $('#cloudFileAdd');
     const datei = wahl && wahl.files && wahl.files[0];
     if (!datei) { toast('Bitte zuerst eine Datei auswählen.', true); return; }
     add.disabled = true;
@@ -2484,35 +3438,64 @@ function bindCloud() {
       }
       const ordner = state.cloud.files.path ? state.cloud.files.path + '/' : '';
       await api('cloud/file/upload', { method: 'POST',
-        body: { instance: state.cloud.open.id, name: datei.name,
-                path: ordner + datei.name, inhalt: btoa(roh) } });
+        body: { instance: state.cloud.open.id, name: datei.name, path: ordner + datei.name, inhalt: btoa(roh) } });
       toast('Hochgeladen.');
       await cloudLoadFiles(state.cloud.files.path);
     } catch (e) { toast(e.message, true); }
     add.disabled = false;
   };
-  const up = $('#cloudFileUp');
-  if (up) up.onclick = (e) => {
-    e.preventDefault();
-    const parts = (state.cloud.files.path || '').split('/');
-    parts.pop();
-    cloudLoadFiles(parts.join('/'));
-  };
   const back = $('#cloudFileBack');
-  if (back) back.onclick = () => cloudLoadFiles(state.cloud.files.path);
+  if (back) back.onclick = async () => {
+    if (state.cloud.files.dirty && !(await askConfirm({
+      tone: 'danger', title: 'Ungespeicherte Änderungen verwerfen?', confirmText: 'Verwerfen',
+      text: 'In dieser Datei stehen Änderungen, die noch nicht auf dem Root-Server gespeichert sind.',
+    }))) return;
+    cloudLoadFiles(state.cloud.files.path);
+  };
+  const text = $('#cloudFileText');
+  if (text) text.oninput = () => { state.cloud.files.text = text.value; state.cloud.files.dirty = true; };
   const save = $('#cloudFileSave');
   if (save) save.onclick = async () => {
     save.disabled = true;
     try {
       await api('cloud/file', { method: 'POST', body: { instance: state.cloud.open.id,
         path: state.cloud.files.open, content: $('#cloudFileText').value } });
+      state.cloud.files.dirty = false;
       toast('Gespeichert.');
     } catch (e) { toast(e.message, true); }
     save.disabled = false;
   };
 
+  const resume = $('#cloudResume');
+  if (resume) resume.onclick = () => {
+    const t = cloudData().transfer || {};
+    if (t.kind === 'upload') cloudUpload(t.local); else cloudDownload(t.instance);
+  };
+  const abortT = $('#cloudAbortT');
+  if (abortT) abortT.onclick = async () => {
+    const t = cloudData().transfer || {};
+    const ok = await askConfirm({
+      tone: 'danger', title: 'Übertragung verwerfen?', confirmText: 'Verwerfen',
+      text: 'Die angefangene Übertragung wird auf dem Root-Server abgebrochen. Der Server bleibt auf '
+        + 'diesem PC spielbar. Beim nächsten Anlauf beginnt die Übertragung von vorn.',
+    });
+    if (!ok) return;
+    try { await api('cloud/abort', { method: 'POST', body: { server: t.local } }); toast('Verworfen.'); }
+    catch (e) { toast(e.message, true); }
+    await loadCloud(true);
+  };
+
   const jc = $('#cloudJobClose');
-  if (jc) jc.onclick = () => { state.cloud.job = null; $('#view').innerHTML = renderCloud(); bindCloud(); };
+  if (jc) jc.onclick = () => { state.cloud.job = null; state.cloud.rate = null; paintCloud(); };
+}
+
+function cloudOpenConsole(id) {
+  state.cloud.open = { id, tab: 'console' };
+  state.cloud.log = { next: 0, lines: [], running: false };
+  paintCloud();
+  clearInterval(state.timers.cloudLog);
+  cloudLoadLog();
+  state.timers.cloudLog = setInterval(cloudLoadLog, 1500);
 }
 
 /* ---------- Karte in der Übersicht eines lokalen Servers */
@@ -2549,7 +3532,8 @@ function cloudServerCard(s) {
         : '<b>Die Kopie auf diesem PC ist gesperrt</b> und lässt sich nicht starten – gespielt wird auf dem Root-Server. Hole den Server zurück, wenn du hier weiterspielen willst.'}
     </div>
     ${link.address ? `<div class="addr addr-pub"><div><div class="a-k">Für Freunde</div>
-      <div class="a-v">${esc(link.address)}</div></div><span class="pill pill-green">Root</span></div>` : ''}
+      <div class="a-v">${esc(link.address)}</div></div>
+      <button class="btn btn-sm" data-copy="${esc(link.address)}" aria-label="Adresse kopieren">⧉ Kopieren</button></div>` : ''}
     <div class="btn-row">
       <button class="btn btn-sm btn-primary" data-cloud-pull-local="${esc(link.instance || '')}" ${link.instance && !s.installing ? '' : 'disabled'}>⬇ Zurück auf diesen PC holen</button>
       <button class="btn btn-sm" data-cloud-goto="1">Cloud öffnen</button></div></div>`;
@@ -2559,7 +3543,9 @@ function bindCloudServerCard(s) {
   $$('[data-cloud-goto]').forEach((el) => el.onclick = () => openCloud());
   $$('[data-cloud-push]').forEach((el) => el.onclick = () => cloudUpload(el.dataset.cloudPush));
   $$('[data-cloud-pull-local]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPullLocal));
+  $$('[data-copy]').forEach((el) => el.onclick = () => copyText(el.dataset.copy, 'Adresse'));
 }
+
 
 /* ------------------------------------------------------------------ Hilfe */
 
@@ -2575,7 +3561,11 @@ async function init() {
   $('#btnNew').onclick = startWizard;
   const quit = $('#btnQuit');
   if (quit) quit.onclick = async () => {
-    if (!confirm('Manager beenden? Alle laufenden Server werden dabei sauber gestoppt.')) return;
+    if (!(await askConfirm({
+      tone: 'danger', title: 'Manager beenden?', confirmText: 'Beenden',
+      text: 'Alle laufenden Server werden vorher sauber gestoppt und die Welten gespeichert. '
+        + 'Danach ist kein Server mehr erreichbar, bis du das Programm wieder startest.',
+    }))) return;
     try {
       await api('shutdown', { method: 'POST' });
       clearInterval(state.timers.status); stopConsolePolling(); clearInterval(state.timers.xbox); clearInterval(state.timers.xboxJob);

@@ -81,6 +81,8 @@ Programm den Start der lokalen Kopie und weist darauf hin.
 | `POST /api/auth/invite` | Einladungscode einlösen, Konto anlegen |
 | `GET /api/auth/discord/start` | Anmeldung über Discord beginnen (liefert URL + Zustand) |
 | `GET /api/auth/discord/callback` | Rückleitung von Discord, liefert Sitzungstoken |
+| `GET /api/auth/discord/poll` | Das Programm auf dem PC holt das Token ab (Zustand + Geheimnis) |
+| `POST /api/auth/discord/register` | Merkzettel + Einladungscode → Konto und Sitzung (zweiter Schritt, wenn Discord geklappt hat, es das Konto hier aber noch nicht gibt) |
 | `POST /api/auth/logout` | Sitzung beenden |
 | `GET /api/me` | Konto, Pässe, Grenzen, laufende Server, freier Arbeitsspeicher |
 | `GET /api/servers` | Eigene Instanzen mit Zustand |

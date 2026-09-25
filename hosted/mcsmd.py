@@ -1617,7 +1617,41 @@ def h_discord_callback(req: Req):
         ergebnis = oauth.complete(state, req.q("code", ""), error=req.q("error", ""),
                                   error_description=req.q("error_description", ""))
         flow = ergebnis.flow or flow
+    except oauth.OAuthFehler as exc:
+        _login_setzen(state, fehler=exc.message)
+        log_event(f"Anmeldung über Discord gescheitert: {exc.message}")
+        return _discord_fehlerseite(exc.message, flow=flow, ziel=ziel, status=exc.status)
+    except ValueError as exc:
+        _login_setzen(state, fehler=str(exc))
+        return _discord_fehlerseite(str(exc), flow=flow, ziel=ziel)
+
+    try:
         anmeldung = oauth.anmelden(ergebnis, note=_discord_notiz(req, str(vorgang.get("device") or "")))
+    except oauth.EinladungNoetig:
+        # Discord hat geklappt, aber dieses Konto gibt es hier noch nicht. Statt einer Fehlerseite
+        # bekommt der Gast einen Merkzettel: Er trägt gleich seinen Einladungscode nach, ohne sich
+        # noch einmal bei Discord anzumelden.
+        zettel, gueltig = oauth.registrierung_starten(ergebnis.identitaet)
+        log_event("Discord-Anmeldung ohne Konto – Einladungscode wird nachgefragt.")
+        offen = {"pending_invite": zettel, "gueltig_sekunden": gueltig,
+                 "discord": ergebnis.identitaet.as_dict()}
+        if flow == oauth.FLOW_ADMIN:
+            _login_setzen(state, ergebnis=offen)
+            url = (_admin_ziel(ziel) + "#registrierung=" + urllib.parse.quote(zettel)
+                   + "&name=" + urllib.parse.quote(ergebnis.identitaet.anzeigename or ""))
+            return Raw(b"", "text/html; charset=utf-8", 302,
+                       {"Location": url, "Set-Cookie": [_anmelde_cookie_loeschen()]})
+        if _login_setzen(state, ergebnis=offen):
+            return Raw(_seite("Fast geschafft",
+                              "<p>Die Anmeldung bei Discord hat geklappt. Es fehlt noch dein "
+                              "Einladungscode – den trägst du jetzt im Programm auf deinem PC "
+                              "ein. Dieses Fenster kann zu.</p>").encode("utf-8"),
+                       "text/html; charset=utf-8")
+        return Raw(_seite("Fast geschafft",
+                          "<p>Die Anmeldung bei Discord hat geklappt, aber hier fehlt noch ein "
+                          "Konto. Bitte im Programm auf deinem PC noch einmal auf „Mit Discord "
+                          "anmelden“ klicken und dann den Einladungscode eintragen.</p>").encode("utf-8"),
+                   "text/html; charset=utf-8")
     except oauth.OAuthFehler as exc:
         _login_setzen(state, fehler=exc.message)
         log_event(f"Anmeldung über Discord gescheitert: {exc.message}")
@@ -1657,6 +1691,27 @@ def h_discord_callback(req: Req):
                       f"<p>Er gilt {max(1, gueltig // 60)} Minuten und nur einmal. Danach kann "
                       f"dieses Fenster geschlossen werden.</p>").encode("utf-8"),
                "text/html; charset=utf-8")
+
+
+@route("POST", r"^(?:/api)?/auth/discord/register$", auth=False)
+def h_discord_register(req: Req):
+    """Zweiter Schritt der Erstanmeldung: Einladungscode zum vorgemerkten Discord-Konto."""
+    data = req.json()
+    note = str(data.get("note") or "")[:SESSION_NOTE_MAX] or "Verwaltung im Browser"
+    zettel = str(data.get("zettel") or data.get("ticket") or "")
+    try:
+        # Erst die gemerkte Identität lesen (der Zettel wird dabei nicht verbraucht), damit der
+        # Discord-Name auch dann am Konto landet, wenn der Code passt.
+        identitaet = oauth.registrierung_lesen(zettel)
+        anmeldung = oauth.registrierung_abschliessen(zettel, str(data.get("code") or ""), note=note)
+    except oauth.OAuthFehler as exc:
+        raise ApiError(exc.message, exc.status) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 400) from exc
+    _nach_anmeldung(anmeldung, identitaet)
+    BREMSE.freigeben(req.herkunft, "anmeldung")
+    log_event(f"Neues Konto über Discord und Einladung angelegt: {anmeldung.user.get('id')}.")
+    return anmeldung.as_dict()
 
 
 @route("GET", r"^(?:/api)?/auth/discord/poll$", auth=False)

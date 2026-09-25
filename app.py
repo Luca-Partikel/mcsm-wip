@@ -532,6 +532,15 @@ def api_cloud_login_poll(_body, _query) -> dict:
     return cloud.login_poll()
 
 
+def api_cloud_login_register(body, _query) -> dict:
+    """Zweiter Schritt der Erstanmeldung: Einladungscode zum vorgemerkten Discord-Konto."""
+    return cloud.login_register(str(body.get("code", "")), str(body.get("note", "")))
+
+
+def api_cloud_login_abort(_body, _query) -> dict:
+    return cloud.login_abort()
+
+
 def api_cloud_login_invite(body, _query) -> dict:
     """Ersatzweg mit Einladungscode, solange Discord auf dem Root-Server nicht eingerichtet ist."""
     return cloud.login_invite(str(body.get("code", "")), str(body.get("name", "")))
@@ -540,6 +549,27 @@ def api_cloud_login_invite(body, _query) -> dict:
 def api_cloud_logout(_body, _query) -> dict:
     log.info("Abmeldung vom Root-Server.")
     return cloud.logout()
+
+
+# -- Konto-Einstellungen (Anzeigename, Discord-Verknüpfung, Sitzungen)
+# Die letzten drei Wege gibt es auf dem Root-Server vielleicht noch nicht; core/cloud.py meldet
+# das als {"supported": false, "hint": …} statt als Fehler, damit der Dialog stehen bleibt.
+
+def api_cloud_sessions(_body, _query) -> dict:
+    return cloud.sessions()
+
+
+def api_cloud_account_name(body, _query) -> dict:
+    return cloud.set_name(str(body.get("name", "")))
+
+
+def api_cloud_session_revoke(body, _query) -> dict:
+    return cloud.revoke_session(body.get("created_at", 0), str(body.get("note", "")))
+
+
+def api_cloud_link_discord(body, _query) -> dict:
+    """Adresse zum nachträglichen Verknüpfen – die Oberfläche öffnet sie im Browser."""
+    return cloud.discord_link_start(str(body.get("ziel", "")))
 
 
 def api_cloud_servers(_body, query) -> dict:
@@ -766,9 +796,15 @@ ROUTES = {
     ("GET", "cloud/files"): api_cloud_files,
     ("GET", "cloud/file"): api_cloud_file_get,
     ("GET", "cloud/login/poll"): api_cloud_login_poll,
+    ("GET", "cloud/sessions"): api_cloud_sessions,
     ("POST", "cloud/login"): api_cloud_login,
+    ("POST", "cloud/login/register"): api_cloud_login_register,
+    ("POST", "cloud/login/abort"): api_cloud_login_abort,
     ("POST", "cloud/login/invite"): api_cloud_login_invite,
     ("POST", "cloud/logout"): api_cloud_logout,
+    ("POST", "cloud/account/name"): api_cloud_account_name,
+    ("POST", "cloud/session/revoke"): api_cloud_session_revoke,
+    ("POST", "cloud/link/discord"): api_cloud_link_discord,
     ("POST", "cloud/start"): api_cloud_start,
     ("POST", "cloud/stop"): api_cloud_stop,
     ("POST", "cloud/command"): api_cloud_command,

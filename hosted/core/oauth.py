@@ -71,6 +71,11 @@ LOCAL_PORT_MAX = 65535
 # zehn Minuten sind großzügig und trotzdem kurz genug.
 STATE_TTL_SECONDS = 600
 STATES_MAX = 500                     # Obergrenze, damit niemand den Speicher volllaufen lässt
+#: Wer sich mit Discord anmeldet, aber hier noch kein Konto hat, bekommt einen kurzlebigen
+#: Merkzettel. Damit trägt er anschließend seinen Einladungscode nach, ohne sich noch einmal
+#: bei Discord anzumelden. Nur im Arbeitsspeicher – ein Neustart macht ihn ungültig.
+REGISTRIERUNG_TTL_SECONDS = 900
+REGISTRIERUNGEN_MAX = 200
 
 # Abholcode für das Programm auf dem PC (Notweg, wenn die Rückleitung auf 127.0.0.1 nicht geht).
 ABHOL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # ohne I, O, 0, 1
@@ -235,6 +240,9 @@ _creds_quelle = ""
 
 _states_lock = threading.RLock()
 _states: dict[str, _Zustand] = {}
+
+_reg_lock = threading.RLock()
+_registrierungen: dict[str, tuple[Identitaet, int]] = {}
 
 _abhol_lock = threading.RLock()
 _abholungen: dict[str, _Abholung] = {}
@@ -905,6 +913,53 @@ def anmelden(ergebnis: Ergebnis | Identitaet, *, invite_code: str | None = None,
         raise OAuthFehler(str(exc)) from None
     return Anmeldung(user=konto.user, token=token, expires_at=int(sitzung.get("expires_at") or 0),
                      neu=konto.neu, admin_vergeben=konto.admin_vergeben)
+
+
+def registrierung_starten(identitaet: Identitaet, *, now: int | None = None) -> tuple[str, int]:
+    """Merkzettel für „Discord da, Einladungscode fehlt noch“. Rückgabe: (Zettel, Gültigkeit in s)."""
+    stamp = _now(now)
+    zettel = secrets.token_urlsafe(24)
+    with _reg_lock:
+        for key, (_, ende) in list(_registrierungen.items()):
+            if stamp >= ende:
+                _registrierungen.pop(key, None)
+        while len(_registrierungen) >= REGISTRIERUNGEN_MAX:
+            aeltester = min(_registrierungen, key=lambda k: _registrierungen[k][1])
+            _registrierungen.pop(aeltester, None)
+        _registrierungen[zettel] = (identitaet, stamp + REGISTRIERUNG_TTL_SECONDS)
+    return zettel, REGISTRIERUNG_TTL_SECONDS
+
+
+def registrierung_lesen(zettel: str, *, now: int | None = None) -> Identitaet:
+    """Identität zum Merkzettel – ohne ihn zu verbrauchen (für die Anzeige „Hallo <Name>“)."""
+    stamp = _now(now)
+    with _reg_lock:
+        eintrag = _registrierungen.get(str(zettel or ""))
+        if not eintrag or stamp >= eintrag[1]:
+            _registrierungen.pop(str(zettel or ""), None)
+            raise OAuthZustandFehler(
+                "Diese Anmeldung ist abgelaufen. Bitte noch einmal auf „Mit Discord anmelden“ klicken.")
+        return eintrag[0]
+
+
+def registrierung_abschliessen(zettel: str, invite_code: str, *, note: str = "",
+                               days: int | None = None, now: int | None = None) -> "Anmeldung":
+    """Merkzettel + Einladungscode = Konto und Sitzung. Der Zettel wird dabei verbraucht."""
+    identitaet = registrierung_lesen(zettel, now=now)
+    anmeldung = anmelden(identitaet, invite_code=invite_code, note=note, days=days, now=now)
+    with _reg_lock:
+        _registrierungen.pop(str(zettel or ""), None)
+    return anmeldung
+
+
+def registrierungen_aufraeumen(*, now: int | None = None) -> int:
+    """Abgelaufene Merkzettel wegwerfen. Rückgabe: Anzahl."""
+    stamp = _now(now)
+    with _reg_lock:
+        alt = [k for k, (_, ende) in _registrierungen.items() if stamp >= ende]
+        for k in alt:
+            _registrierungen.pop(k, None)
+        return len(alt)
 
 
 def verknuepfen(user_id: str, identitaet: Identitaet) -> dict:
