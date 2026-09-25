@@ -34,7 +34,10 @@ import org.bukkit.scoreboard.ScoreboardManager;
  */
 public final class SidebarManager implements Runnable {
 
-    public static final String DEFAULT_TITLE = "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>";
+    public static final String DEFAULT_TITLE =
+            "<gray>✦</gray> <gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient> <gray>✦</gray>";
+    /** Dünne Trennlinie in der Breite der Leiste. */
+    private static final String TRENNER = "<dark_gray><strikethrough>              </strikethrough></dark_gray>";
     private static final String OBJECTIVE = "mcsm_sidebar";
     /** Unsichtbare, eindeutige Kennungen der Zeilen (reine Farbcodes). */
     private static final String[] SLOTS = new String[16];
@@ -183,18 +186,51 @@ public final class SidebarManager implements Runnable {
     private List<String> lines(Player player) {
         World world = player.getWorld();
         Location loc = player.getLocation();
+        // Aufbau: dünne Trennlinie, dann Blöcke mit Überschrift in Grün und Wert in Weiß.
+        // Leerzeilen zwischen den Blöcken geben Luft – das Ganze soll wie eine Karte wirken,
+        // nicht wie eine Liste aus Schlüssel und Wert.
         List<String> out = new ArrayList<>();
-        out.add("<dark_gray>―――――――――――</dark_gray>");
-        out.add("<gray>Spieler</gray> <white>" + plugin.vanish().visibleOnline() + "/"
-                + Bukkit.getMaxPlayers() + "</white>");
-        out.add("<gray>Spielzeit</gray> <white>" + playtime(player) + "</white>");
-        out.add("<gray>Welt</gray> <white>" + world.getName() + "</white>");
-        out.add("<gray>Ort</gray> <white>" + loc.getBlockX() + " " + loc.getBlockY() + " "
-                + loc.getBlockZ() + "</white>");
-        out.add("<gray>Uhrzeit</gray> <white>" + clock(world.getTime()) + "</white>");
-        out.add("<gray>TPS</gray> " + metrics.tpsColored());
-        out.add("<dark_gray>―――――――――――</dark_gray>");
+        out.add(TRENNER);
+        out.add(" <green>❖</green> <gray>Welt</gray>");
+        out.add("  <white>" + weltName(world) + "</white> <dark_gray>·</dark_gray> <white>"
+                + clock(world.getTime()) + "</white> " + wetter(world));
+        out.add("  <dark_gray>x</dark_gray> <white>" + loc.getBlockX() + "</white>"
+                + " <dark_gray>y</dark_gray> <white>" + loc.getBlockY() + "</white>"
+                + " <dark_gray>z</dark_gray> <white>" + loc.getBlockZ() + "</white>");
+        out.add("");
+        out.add(" <green>❖</green> <gray>Du</gray>");
+        out.add("  <white>" + playtime(player) + "</white> <dark_gray>gespielt</dark_gray>");
+        out.add("");
+        out.add(" <green>❖</green> <gray>Server</gray>");
+        out.add("  <white>" + plugin.vanish().visibleOnline() + "</white><dark_gray>/</dark_gray><gray>"
+                + Bukkit.getMaxPlayers() + "</gray> <dark_gray>online</dark_gray>");
+        out.add("  " + metrics.tpsColored() + " <dark_gray>TPS</dark_gray>");
+        out.add(TRENNER);
+        out.add("<dark_gray>" + plugin.settings().sponsorText + "</dark_gray>");
         return out;
+    }
+
+    /** Weltname ohne technische Zusätze: „world_nether" wird zu „Nether". */
+    private static String weltName(World world) {
+        switch (world.getEnvironment()) {
+            case NETHER: return "Nether";
+            case THE_END: return "Ende";
+            default: break;
+        }
+        String n = world.getName();
+        return n.length() > 14 ? n.substring(0, 13) + "…" : n;
+    }
+
+    /** Kleines Zeichen für Wetter und Tageszeit. */
+    private static String wetter(World world) {
+        if (world.isThundering()) {
+            return "<red>☈</red>";
+        }
+        if (world.hasStorm()) {
+            return "<aqua>☂</aqua>";
+        }
+        long t = world.getTime();
+        return t >= 13000L && t < 23000L ? "<aqua>☾</aqua>" : "<yellow>☀</yellow>";
     }
 
     /** Gespielte Zeit des Spielers als "4h 12m". */

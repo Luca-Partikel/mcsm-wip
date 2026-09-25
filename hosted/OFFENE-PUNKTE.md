@@ -81,3 +81,22 @@ nicht erst in der Tabelle.
 5. **Im Programm abschaltbar.** Je Server eine Einstellung „Ruhezustand bei Leerstand" (an/aus) und die
    Wartezeit in Minuten. Standard an, 15 Minuten. In der Übersicht ein eigener Zustand „schläft"
    neben „läuft" und „gestoppt".
+
+## 5. Eine einzige Serverliste – Cloud ist nur ein Merkmal, kein eigener Ort
+
+**Beanstandung des Betreibers (mit Bildschirmfoto):** Die Seitenleiste trennt heute „MEINE SERVER" und
+„ROOT-SERVER", und die Cloud-Seite listet Server gleich zweimal auf („Server auf dem Root-Server" und
+„Server auf diesem PC"). Das ist doppelt und verwirrend.
+
+**So soll es sein:**
+
+* **Alle Server stehen unter „Meine Server"** – eine einzige Liste, egal wo sie gerade laufen.
+  Jeder Eintrag trägt eine kleine Pille **„Cloud"** oder **„Lokal"**. Sonst nichts Besonderes.
+* **Ein Klick öffnet immer dieselbe Serverseite** mit denselben Reitern und derselben Bedienung
+  (siehe Punkt 1). Ob der Server auf dem PC oder auf dem Root läuft, ändert nur, wohin die Befehle gehen –
+  und steht als Pille im Kopf der Seite.
+* **Die Cloud-Seite behält nur die Übersicht:** Konto, Pass mit Restlaufzeit und Auslastung, Zustand des
+  Root-Servers (Platte, Arbeitsspeicher, freie Adressen), laufende Übertragungen, Hinweise.
+  **Keine Serverlisten mehr** – die stehen in der Seitenleiste.
+* Der Wechsel zwischen den Orten (verschieben / zurückholen) gehört an den Server selbst, nicht in eine
+  eigene Liste.

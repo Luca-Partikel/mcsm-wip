@@ -20,7 +20,8 @@ from .version import __version__
 
 JAR_SRC = store.BASE / "assets" / "MCSMCompanion.jar"
 SPONSOR_TEXT = "Sponsored by Novelnia"
-MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore")
+MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore", "tips",
+           "motd_line", "motd_eigen")
 # Schlüssel früherer Versionen, die aus vorhandenen config.yml entfernt werden
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
 SUSPICIOUS_HINT = ("Ein installiertes Plugin sieht nach Manipulation aus (gefälschte Spielerzahlen/Ping). "
@@ -86,6 +87,11 @@ def managed_values(cfg: dict) -> dict[str, str]:
         "mode": _yaml("local"),
         "sponsor_text": _yaml(SPONSOR_TEXT),
         "hardcore": _yaml(bool(cfg.get("hardcore"))),
+        # Rotierende Tipps im Chat – im Programm abschaltbar.
+        "tips": _yaml(cfg.get("companion_tips", True) is not False),
+        # Zeile 2 der Serverlisten-Anzeige – Zeile 1 baut das Plugin selbst.
+        "motd_line": _yaml(str(cfg.get("motd") or "")),
+        "motd_eigen": _yaml(True),
     }
 
 

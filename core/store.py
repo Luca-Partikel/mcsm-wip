@@ -50,6 +50,7 @@ DEFAULTS = {
     "public_ip": "",            # nur Bedrock: öffentliche IPv4 für NetherNet (leer = vom Router abfragen)
     "public_address": "",       # Anzeige für Freunde: MyFRITZ!-Name oder feste IP (leer = automatisch ermitteln)
     "auto_portmap": True,       # Portfreigabe beim Serverstart per UPnP anfordern (immer an, nicht in der Oberfläche)
+    "companion_tips": True,   # nur Paper: rotierende Tipps des Begleit-Plugins im Chat
     "hardcore": False,          # nur Paper: MCSM-Hardcore des Companion-Plugins (1 Leben, Grab, Totem)
     "geyser": True,             # nur Java: Bedrock-Crossplay aktivieren
     "autostart": False,
@@ -258,7 +259,8 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     cfg["difficulty"] = df if df in VALID_DIFFICULTIES else "easy"
 
     for flag in ("online_mode", "allow_cheats", "pvp", "geyser", "autostart", "eula_accepted",
-                 "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore"):
+                 "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore",
+                 "companion_tips"):
         if flag in raw:
             cfg[flag] = bool(raw[flag])
     if modpack:

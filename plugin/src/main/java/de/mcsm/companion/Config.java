@@ -56,6 +56,8 @@ public final class Config {
     public String tablistHeader = DEFAULT_HEADER;
     public String tablistFooter = DEFAULT_FOOTER;
     public String motdLine = "";
+    /** Setzt das Plugin die Serverlisten-Anzeige selbst? (Zeile 1 fest, Zeile 2 = motd_line) */
+    public boolean motdEigen = true;
     public int maxHomes = 3;
     /** MCSM-Hardcore-Modus laut Manager (Laufzeitzustand siehe HardcoreManager/hardcore.yml). */
     public boolean hardcore = false;
@@ -119,6 +121,7 @@ public final class Config {
             tablistFooter = DEFAULT_SPONSOR.equals(sponsorText) ? DEFAULT_FOOTER : SPONSOR_FOOTER;
         }
         motdLine = str(y, "motd_line", "");
+        motdEigen = y.getBoolean("motd_eigen", true);
         maxHomes = Math.max(0, y.getInt("max_homes", 3));
         hardcore = y.getBoolean("hardcore", false);
         adminVanishGamemode = parseGameMode(y.getString("admin.vanish_gamemode"), GameMode.CREATIVE);

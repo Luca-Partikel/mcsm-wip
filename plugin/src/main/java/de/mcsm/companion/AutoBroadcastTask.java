@@ -35,7 +35,9 @@ public final class AutoBroadcastTask implements Runnable {
     @Override
     public void run() {
         YamlConfiguration y = plugin.settings().raw();
-        if (!y.getBoolean("features.broadcast", true)) {
+        // „tips“ setzt der Manager (Schalter im Programm), features.broadcast bleibt als
+        // zweiter Schalter für alle, die die Datei von Hand pflegen.
+        if (!y.getBoolean("tips", true) || !y.getBoolean("features.broadcast", true)) {
             return;
         }
         long minutes = Math.max(1L, y.getLong("broadcast.interval_minutes", 10L));

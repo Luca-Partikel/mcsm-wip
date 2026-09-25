@@ -22,8 +22,11 @@ death_prefix: "<red>☠</red> "
 tablist_header: "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>\n<gray>Online <white><online></white>/<white><max></white></gray>"
 tablist_footer: "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MinecraftManager</gray>"
 
-# Optional: eigene MOTD-Zeile (MiniMessage). Leer = MOTD des Servers unverändert lassen.
-motd_line: ""
+# Serverlisten-Anzeige (MOTD). Zeile 1 setzt das Plugin fest: ✦ MCSM ¦ <Servername>.
+# Zeile 2 steht hier und ist frei wählbar (MiniMessage), z. B. ein Hinweis zum Zustand.
+motd_line: "<gray>Willkommen! Viel Spaß beim Spielen.</gray>"
+# Auf false stellen, wenn die MOTD aus server.properties unverändert bleiben soll.
+motd_eigen: true
 
 # Maximale Homes für Spieler ohne OP bzw. ohne mcsm.home.unlimited
 max_homes: 3
@@ -174,6 +177,18 @@ clock:
   symbol_night: "<aqua>☾</aqua>"
   symbol_rain: "<gray>☂</gray>"
   symbol_storm: "<red>☈</red>"
+
+# Speichern übernimmt das Plugin statt Minecraft: der eingebaute Autosave schreibt alle Welten
+# im selben Tick weg und ruckelt auf großen Welten spürbar. Hier wird je Welt ein Tick Abstand
+# gelassen. Beim Beenden des Plugins wird der eingebaute Autosave wieder eingeschaltet.
+autosave: true
+# Abstand in Minuten (1 bis 180)
+autosave_minutes: 10
+# Eingebauten Autosave abschalten (false = beide speichern, meist unnötig)
+autosave_vanilla_aus: true
+
+# Rotierende Tipps im Chat an- oder abschalten (im Programm unter „Einstellungen“).
+tips: true
 
 # Rotierende Hinweise im Chat. Platzhalter: <server_name>, <online>, <max>
 broadcast:

@@ -52,6 +52,7 @@ public final class CompanionPlugin extends JavaPlugin {
     private SleepManager sleep;
     private SidebarManager sidebar;
     private ClockTask clock;
+    private AutoSaveTask autosave;
     private AutoBroadcastTask broadcast;
 
     // Moderation: Sperren, Kicks, Stummschaltungen, Verwarnungen
@@ -98,6 +99,7 @@ public final class CompanionPlugin extends JavaPlugin {
         sidebar.load();
         clock = new ClockTask(this);
         clock.load();
+        autosave = new AutoSaveTask(this);
         broadcast = new AutoBroadcastTask(this);
 
         // Moderation (mutes.yml und warns.yml lesen; die Sperren selbst liegen in banned-players.json)
@@ -110,6 +112,7 @@ public final class CompanionPlugin extends JavaPlugin {
 
         PluginManager pm = Bukkit.getPluginManager();
         pm.registerEvents(new ChatListener(this), this);
+        pm.registerEvents(autosave, this);
         pm.registerEvents(new JoinQuitListener(this), this);
         pm.registerEvents(new DeathListener(this), this);
         pm.registerEvents(new PingListener(this), this);
@@ -163,6 +166,8 @@ public final class CompanionPlugin extends JavaPlugin {
         Bukkit.getScheduler().runTaskTimer(this, sleep, 40L, 20L);                       // jede Sekunde
         Bukkit.getScheduler().runTaskTimer(this, sidebar, 60L, 20L);                     // jede Sekunde
         Bukkit.getScheduler().runTaskTimer(this, clock, 40L, 20L);                       // Uhr in der Actionbar
+        Bukkit.getScheduler().runTaskTimer(this, autosave, 600L, 600L);                  // eigenes Speichern (alle 30 s prüfen)
+        Bukkit.getScheduler().runTask(this, autosave::applyConfig);                      // Welten sind dann geladen
         Bukkit.getScheduler().runTaskTimer(this, afk, 100L, 100L);                       // alle 5 s
         Bukkit.getScheduler().runTaskTimer(this, broadcast, 200L, 100L);                 // alle 5 s
         Bukkit.getScheduler().runTaskTimer(this, metrics, 200L, 100L);                   // alle 5 s
@@ -221,6 +226,10 @@ public final class CompanionPlugin extends JavaPlugin {
         if (stats != null) {
             stats.shutdown();
         }
+        if (autosave != null) {
+            // Zuerst alles wegschreiben, dann den eingebauten Autosave zurückgeben.
+            autosave.shutdown();
+        }
         if (hardcore != null) {
             hardcore.shutdown();
         }
@@ -254,6 +263,7 @@ public final class CompanionPlugin extends JavaPlugin {
         stats.run();
         sidebar.load();
         clock.load();
+        autosave.applyConfig();
         bans.load();                 // mutes.yml und warns.yml neu lesen, abgelaufene aufräumen
         whitelist.applyConfig();     // Ablehnungstext der Freigabeliste neu bauen
         if (settings.featTablist) {
@@ -422,6 +432,10 @@ public final class CompanionPlugin extends JavaPlugin {
 
     public ClockTask clock() {
         return clock;
+    }
+
+    public AutoSaveTask autosave() {
+        return autosave;
     }
 
     /** Moderation: Sperren, Kicks, Stummschaltungen und Verwarnungen. */

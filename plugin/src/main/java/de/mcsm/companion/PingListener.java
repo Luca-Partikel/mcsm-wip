@@ -20,8 +20,12 @@ public final class PingListener implements Listener {
     @EventHandler(priority = EventPriority.NORMAL)
     public void onPing(PaperServerListPingEvent event) {
         Config cfg = plugin.settings();
-        if (!cfg.motdLine.isBlank()) {
-            event.motd(Msg.mm(cfg.motdLine, Msg.text("server_name", cfg.serverName)));
+        // Zweizeilige Serverlisten-Anzeige: oben immer Kennung und Servername im Stil des Plugins,
+        // unten der frei wählbare Text (z. B. „Aktuell im Aufbau“ oder ein Hinweis zum Zustand).
+        if (cfg.motdEigen) {
+            String zweite = cfg.motdLine.isBlank() ? "" : "\n" + cfg.motdLine;
+            event.motd(Msg.mm(Msg.MOTD_KOPF + zweite,
+                              Msg.text("server_name", cfg.serverName)));
         }
         int hidden = 0;
         for (Player v : plugin.vanish().vanishedPlayers()) {

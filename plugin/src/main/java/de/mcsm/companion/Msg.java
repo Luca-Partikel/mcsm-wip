@@ -7,10 +7,15 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
-/** MiniMessage-Helfer mit dem einheitlichen Präfix "[MCSM]". */
+/** MiniMessage-Helfer mit dem einheitlichen Präfix "✦ MCSM ¦". */
 public final class Msg {
 
-    public static final String PREFIX = "<gray>[</gray><green>MCSM</green><gray>]</gray> ";
+    public static final String PREFIX =
+            "<gray>✦</gray> <green><bold>MCSM</bold></green> <dark_gray>¦</dark_gray> <white>";
+    /** Erste Zeile der Serverlisten-Anzeige – gleiche Handschrift wie das Präfix. */
+    public static final String MOTD_KOPF =
+            "<gray>✦</gray> <green><bold>MCSM</bold></green> <dark_gray>¦</dark_gray> <white><server_name></white>";
+
     private static final MiniMessage MM = MiniMessage.miniMessage();
 
     private Msg() {
