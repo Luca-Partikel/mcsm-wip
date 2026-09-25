@@ -421,6 +421,11 @@ def apply_config(cfg: dict, initial: bool = False) -> None:
             # Ab 1.21.9 sind das Gamerules (werden nach dem Start gesetzt, s. Instance._pump).
             updates["pvp"] = _bool(cfg["pvp"])
             updates["enable-command-block"] = _bool(cfg["allow_cheats"])
+        if cfg.get("geyser") and not modpacks.is_modpack(cfg):
+            # Bedrock-Spieler kommen über Floodgate herein und haben keine Mojang-Chatsignatur.
+            # Steht „enforce-secure-profile" auf true, verwirft der Server ihre Chatnachrichten –
+            # sie können dann zwar spielen, aber nichts schreiben. Deshalb bei Crossplay aus.
+            updates["enforce-secure-profile"] = "false"
     if initial:
         updates.update(_INITIAL_PROPS[cfg["type"]])
     patch_properties(props, updates)
@@ -537,7 +542,8 @@ PROPS_META = {
         "player-idle-timeout": {"label": "Kick bei Inaktivität (Min.)", "desc": "0 = nie.", "type": "int", "min": 0, "max": 1440},
         "op-permission-level": {"label": "OP-Rechte-Stufe", "desc": "1–4, 4 = alles.", "type": "int", "min": 1, "max": 4},
         "hide-online-players": {"label": "Spielerliste verbergen", "desc": "", **_YESNO},
-        "enforce-secure-profile": {"label": "Signierte Chats erzwingen", "desc": "Bei Crossplay-Problemen auf nein.", **_YESNO},
+        "enforce-secure-profile": {"label": "Signierte Chats erzwingen",
+                              "desc": "Muss bei Crossplay auf nein stehen – sonst können Bedrock-Spieler nicht im Chat schreiben. Der Manager setzt das automatisch.", **_YESNO},
         "enable-query": {"label": "Query-Protokoll", "desc": "Für Server-Listen-Abfragen.", **_YESNO},
         "enable-rcon": {"label": "RCON (Fernsteuerung)", "desc": "Nur aktivieren, wenn du es brauchst.", **_YESNO},
         "network-compression-threshold": {"label": "Netzwerk-Kompression ab (Bytes)", "desc": "", "type": "int", "min": -1, "max": 65535},
@@ -1437,6 +1443,9 @@ class Instance:
                 cmd = [str(java), f"-Xms{max(512, ram // 2)}M", f"-Xmx{ram}M",
                        "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
                        "-Dstdin.encoding=UTF-8", *flags, "-jar", "server.jar", "nogui"]
+                if cfg.get("geyser"):
+                    # Sicherstellen, dass Bedrock-Spieler im Chat schreiben dürfen (siehe apply_config).
+                    patch_properties(sdir / "server.properties", {"enforce-secure-profile": "false"})
                 if companion.applies(cfg):
                     # Begleit-Plugin vor jedem Start neu bereitstellen – auch wenn es gelöscht wurde.
                     try:
