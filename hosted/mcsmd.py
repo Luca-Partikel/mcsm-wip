@@ -93,6 +93,7 @@ MAX_JSON_BYTES = 1_000_000                  # größere Anfragekörper braucht k
 UNAUTH_LIMIT = 64 * 1024                    # ohne gültige Anmeldung wird nur so viel eingelesen
 MAX_WORKERS = 32                            # so viele Anfragen werden gleichzeitig bearbeitet
 CHUNK_LIMIT = transfer.MAX_CHUNK_BYTES      # 16 MB, wie im Übertragungsmodul
+BUNDLE_LIMIT = transfer.BUNDLE_MAX_BYTES + 65536    # Paket mit vielen kleinen Dateien + tar-Kopf
 TICK_SECONDS = 60                           # Takt der Überwachungsschleife
 WARN_MINUTES = 10                           # so früh wird der Ablauf angekündigt
 HOUSEKEEPING_SECONDS = 3600                 # Sitzungen, Übertragungen, Größen
@@ -2260,11 +2261,119 @@ def h_upload_chunk(req: Req, iid: str):
     return result
 
 
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/upload/bundle$", limit=BUNDLE_LIMIT)
+def h_upload_bundle(req: Req, iid: str):
+    """Ein Paket (tar-Strom) mit vielen kleinen Dateien in **einer** Anfrage annehmen.
+
+    92 % der Dateien einer Instanz sind kleiner als 1 MB; einzeln kostet jede von ihnen eine
+    eigene Anfrage. Ausgepackt wird in ``transfer.write_bundle`` – mit denselben Prüfungen wie
+    bei einem einzelnen Stück (Pfad, Größe, Prüfsumme, keine Verknüpfungen).
+    """
+    inst = req.instance(iid)
+    session = _session_of(req, inst, req.header("X-MCSM-Session", req.q("session", "")))
+    if not req.body:
+        raise ApiError("Das Paket enthält keine Daten.", 400)
+    ergebnis = session.write_bundle(req.body)
+    return ergebnis
+
+
 @route("GET", r"^/api/servers/([A-Za-z0-9._-]{1,64})/upload/status$")
 def h_upload_status(req: Req, iid: str):
     inst = req.instance(iid)
     session = _session_of(req, inst, req.q("session", ""))
-    return {"session": session.status()}
+    # Der PC schickt mehrere Dateien gleichzeitig und bündelt die kleinen – er darf deshalb eine
+    # längere Liste der offenen Dateien anfordern, als die Voreinstellung nennt.
+    return {"session": session.status(missing_limit=req.qint("missing", 50))}
+
+
+def _kern_beschaffen_worker(inst: dict, version: str, geyser: bool, job: dict) -> None:
+    """Nach einer Übertragung das Nachladbare beschaffen: Java und den Serverkern.
+
+    ``libraries``, ``versions``, ``cache``, ``logs`` und der Serverkern kommen nicht über die
+    Leitung des Benutzers (``paths.nachladbar``) – sonst wären es 56 % der Daten. Genau das fehlt
+    also nach einer Übertragung, und genau das holt dieser Vorgang: dieselbe Paper-Version, die
+    der Server auf dem PC hatte, dazu die passende Java-Laufzeit und – falls gewünscht –
+    Geyser/Floodgate.
+
+    Anders als beim Einrichten (`_install_worker`) wird ``server.properties`` **nicht** angefasst:
+    die gerade hochgeladenen Einstellungen des Benutzers bleiben, wie sie sind.
+    """
+    iid = str(inst.get("id"))
+
+    def status(text: str) -> None:
+        job["step"] = str(text)
+
+    def progress(done: int, total: int) -> None:
+        job["done"] = int(done)
+        job["total"] = int(total)
+
+    try:
+        folder = ensure_instance_dir(inst)
+        if str(inst.get("type")) == "bedrock":
+            status("Bedrock-Server wird geladen …")
+            info = sources_linux.install_bedrock(version, folder, progress=progress, status=status)
+            write_install_info(folder, {"version": info.get("version", version),
+                                        "binary": info.get("binary", "bedrock_server")})
+        else:
+            major = offline_java_major(version)
+            status(f"Java {major} wird eingerichtet …")
+            sources_linux.ensure_java(major, progress=progress, status=status)
+            status(f"Paper {version} wird geladen …")
+            info = sources_linux.install_paper(version, folder, True,
+                                               progress=progress, status=status)
+            if int(info.get("java_major") or 0) and int(info["java_major"]) != major:
+                status(f"Java {info['java_major']} wird nachgeladen …")
+                sources_linux.ensure_java(int(info["java_major"]), progress=progress, status=status)
+            write_install_info(folder, {"version": info.get("version", version),
+                                        "build": info.get("build", ""),
+                                        "jar": info.get("jar", "server.jar"),
+                                        "java_major": int(info.get("java_major") or major),
+                                        "java_flags": list(info.get("java_flags") or [])})
+            if geyser:
+                status("Crossplay (Geyser, Floodgate, Via*) wird eingerichtet …")
+                sources_linux.install_crossplay(folder, progress=progress, status=status)
+        try:
+            instances.set_version(iid, version)
+        except ValueError:
+            pass
+        try:
+            instances.set_size(iid, transfer.dir_stats(folder)["bytes"])
+        except (ValueError, OSError):
+            pass
+        job["result"] = {"version": version, "geyser": geyser}
+        job["state"] = "fertig"
+        job["step"] = "Der Server ist auf dem Root-Server startklar."
+        log_event(f"Instanz {iid}: Serverkern nach der Übertragung beschafft (Version {version}).")
+    except Exception as exc:                                            # noqa: BLE001
+        job["state"] = "fehler"
+        job["error"] = (f"Der Serverkern konnte auf dem Root-Server nicht beschafft werden: "
+                        f"{exc} Die Dateien sind angekommen – der Start braucht aber noch "
+                        f"„Einrichten“.")
+        log_event(f"Beschaffen für {iid} gescheitert: {exc}")
+    finally:
+        job["finished_at"] = store_hosted.now()
+
+
+def _kern_job_starten(inst: dict, version: str, geyser: bool) -> dict | None:
+    """Vorgang „Serverkern beschaffen“ anstoßen (nach einer Instanz-Übertragung)."""
+    version = str(version or "").strip()
+    if not version:
+        return None
+    if str(inst.get("type")) != "bedrock":
+        try:
+            version = sources_linux.check_version(version)
+        except sources_linux.SourceError:
+            return None
+    iid = str(inst.get("id"))
+    try:
+        job = job_new_exclusive("beschaffen", iid, owner=str(inst.get("owner") or ""))
+    except ApiError:
+        return None                    # es läuft schon ein Vorgang – der bringt das mit
+    thread = threading.Thread(target=_kern_beschaffen_worker,
+                              args=(dict(inst), version, bool(geyser), job),
+                              daemon=True, name=f"beschaffen-{iid}")
+    thread.start()
+    return dict(job)
 
 
 @route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/upload/finish$")
@@ -2275,11 +2384,20 @@ def h_upload_finish(req: Req, iid: str):
     hashes = bool(data.get("hashes", True))
     report = session.finish(hashes=hashes)
     folder = instance_dir(inst)
+    kern_job = None
     if str(session.data.get("purpose") or "files") == "instance":
         if str(inst.get("state")) == "uploading":
             instances.set_state(iid, "hosted")
             ensure_marke(instances.get_instance(iid) or inst)
             schreibe_routen(f"Instanz {iid} liegt jetzt auf dem Root")
+        # Was der Root selbst laden kann, wurde nicht übertragen – jetzt holen, **bevor** jemand
+        # auf „Starten“ drückt. Die Version nennt das Programm auf dem PC: es muss dieselbe sein
+        # wie dort. Ohne Angabe (älterer Programmstand) geschieht nichts – dann richtet der
+        # Benutzer wie bisher über „Einrichten“ ein.
+        if str(data.get("version") or ""):
+            kern_job = _kern_job_starten(instances.get_instance(iid) or inst,
+                                         str(data.get("version")),
+                                         bool(data.get("geyser", has_geyser(folder))))
     try:
         instances.set_size(iid, transfer.dir_stats(folder)["bytes"])
     except (ValueError, OSError):
@@ -2287,7 +2405,7 @@ def h_upload_finish(req: Req, iid: str):
     transfer.forget_session(session.id)
     log_event(f"Übertragung {session.id} abgeschlossen ({report['files']} Dateien, "
               f"{transfer.human(report['bytes'])}).")
-    return {"ok": True, "report": report,
+    return {"ok": True, "report": report, "job": kern_job,
             "server": server_view(instances.get_instance(iid) or inst)}
 
 
@@ -2378,6 +2496,34 @@ def h_download(req: Req, iid: str):
     return Raw(data, headers={"X-MCSM-Path": urllib.parse.quote(rel),
                               "X-MCSM-Offset": str(offset),
                               "X-MCSM-Length": str(len(data))})
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/download/bundle$")
+def h_download_bundle(req: Req, iid: str):
+    """Viele **kleine** Dateien in einem tar-Strom ausliefern (Rückholung).
+
+    Das Gegenstück zu ``upload/bundle``: der PC nennt bis zu ``transfer.BUNDLE_MAX_FILES`` Pfade
+    und bekommt sie in **einer** Antwort. Prüfsummen stehen absichtlich **nicht** im Kopf: der PC
+    hat das Manifest dieser Instanz und prüft jede Datei des Pakets gegen seinen eigenen Eintrag.
+    (Eine Liste mit 400 Prüfsummen wäre auch als Kopfzeile zu lang für den Vorschaltdienst.)
+    """
+    inst, folder = _instance_root(req, iid)
+    data = req.json()
+    roh = data.get("paths")
+    if not isinstance(roh, list) or not roh:
+        raise ApiError("Es fehlt die Liste der Dateien („paths“).", 400)
+    if len(roh) > transfer.BUNDLE_MAX_FILES:
+        raise ApiError(f"Ein Paket umfasst höchstens {transfer.BUNDLE_MAX_FILES} Dateien.", 400)
+    namen = [str(p) for p in roh if isinstance(p, str)]
+    grant_group_for(inst)          # 0600-Dateien des Servers lesbar machen
+    try:
+        paket, enthalten = transfer.pack_files(folder, namen)
+    except OSError as exc:
+        raise ApiError("Der Ordner des Servers kann nicht gelesen werden.", 400) from exc
+    if not enthalten:
+        raise ApiError("Von diesen Dateien passt keine in ein Paket – bitte einzeln holen.", 409)
+    return Raw(paket, headers={"X-MCSM-Count": str(len(enthalten)),
+                               "X-MCSM-Bytes": str(sum(e["size"] for e in enthalten))})
 
 
 @route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/release$")

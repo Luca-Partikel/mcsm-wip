@@ -17,13 +17,17 @@ Sicherheit
 from __future__ import annotations
 
 import hashlib
+import http.client
+import io
 import json
 import logging
 import os
 import pathlib
 import re
+import ssl
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import urllib.error
@@ -55,13 +59,60 @@ MAX_FILE_BYTES = 6 * 1024 ** 3
 MAX_TOTAL_BYTES = 20 * 1024 ** 3
 CACHE_SECONDS = 5.0              # Konto/Serverliste kurz zwischenspeichern (die Oberfläche fragt oft)
 STOP_WAIT = 150                  # so lange auf das Stoppen eines entfernten Servers warten
-TRANSFER_TRIES = 5               # so oft einen abgerissenen Übertragungsschritt neu versuchen
+
+# --------------------------------------------------------------- Tempo der Übertragung
+#
+# Gemessen wurde eine Leitung mit 55 Mbit/s (64 MB in 9,3 s); 630 MB müssten also anderthalb
+# Minuten dauern. Gebraucht hat es ein Vielfaches. Vier Ursachen und was dagegen getan wird:
+#
+# 1. **Nachladbares** (libraries, versions, cache, logs, Serverkern) waren 56 % der Daten. Sie
+#    gehen nicht mehr über die Leitung; der Root holt sie selbst (`NACHLADBAR_DIRS`).
+# 2. Für **jede** Anfrage baute `urllib` eine neue TLS-Verbindung auf. Jetzt bleibt eine
+#    Verbindung offen und wird wiederverwendet (`_Kanal`).
+# 3. Eine Datei nach der anderen ließ die Leitung zwischen den Anfragen leerlaufen. Jetzt gehen
+#    mehrere Dateien gleichzeitig (`PARALLEL`).
+# 4. 92 % aller Dateien sind kleiner als 1 MB. Sie gehen jetzt gebündelt als tar-Strom
+#    (`BUNDLE_*`) – ein Paket statt hunderter Einzelanfragen.
+
+#: So viele Dateien gehen gleichzeitig über die Leitung (einstellbar, 1 bis 8).
+PARALLEL = max(1, min(8, int(os.environ.get("MCSM_TRANSFER_PARALLEL") or 4)))
+#: Bis zu dieser Größe wandert eine Datei in ein Paket statt in eigene Anfragen.
+BUNDLE_SMALL_BYTES = 1024 * 1024
+#: So groß darf ein Paket höchstens werden (muss zu hosted/core/transfer.py passen).
+BUNDLE_MAX_BYTES = 24 * 1024 * 1024
+#: So viele Dateien stecken höchstens in einem Paket (dito).
+BUNDLE_MAX_FILES = 400
+#: So viele offene Dateien lässt sich das Programm je Runde nennen.
+MISSING_BATCH = 400
+#: Wachsende Pause zwischen den Versuchen – aber niemals aufgeben (Punkt 3 der Beanstandungen).
+RETRY_FIRST_WAIT = 2
+RETRY_MAX_WAIT = 60
+#: So oft wird eine **einzelne** Datei (Plugin nachlegen, Protokoll holen) versucht. Dort wartet
+#: jemand vor dem Bildschirm; eine Übertragung im Hintergrund versucht es dagegen unbegrenzt.
+TRANSFER_TRIES = 5
 
 # Verwaltungsdateien der Gegenseite (paths.RESERVED_NAMES) und Teil-Dateien gehören nie ins Manifest.
 RESERVED_NAMES = {".mcsm", "mcsm.json", "mcsm-instanz.json"}
 PART_SUFFIX = ".mcsmpart"
-# Ordner, die auf dem PC bleiben: Sicherungen sind lokal gemeint und würden die Übertragung vervielfachen.
+# Ordner, die auf dem PC bleiben: Sicherungen sind lokal gemeint und würden die Übertragung
+# vervielfachen (Gegenstück: paths.NUR_LOKAL_DIRS auf dem Root-Server).
 SKIP_TOP_DIRS = {"backups"}
+
+# Was der Root-Server selbst beschaffen kann, geht nicht über die Leitung. **Maßgeblich** ist
+# hosted/core/paths.py (`NACHLADBAR_DIRS`, `NACHLADBAR_FILES`); hier steht dieselbe Liste noch
+# einmal, weil das Programm auf dem PC die Module des Root-Servers nicht mitbringt. Ein Selbsttest
+# (hosted/tests/test_transfer.py) vergleicht beide Listen Zeichen für Zeichen.
+NACHLADBAR_DIRS = {
+    "libraries", "versions", "cache", ".paper-remapped", "bundler",
+    "logs", "crash-reports", "debug",
+    "definitions", "minecraftpe", "treatments", "internalstorage", "world_templates",
+    "premium_cache",
+}
+NACHLADBAR_FILES = {
+    "server.jar", "paper.jar", "build.txt",
+    "bedrock_server", "bedrock_server.exe", "bedrock_server_how_to.html",
+    "release-notes.txt", "profanity_filter.wlist", "dedicated_server.txt",
+}
 # Namensregeln von hosted/core/paths.py, damit ein Pfad auf beiden Seiten gültig ist.
 _BAD_CHARS = set('<>:"|?*\\')
 _DEVICE_NAMES = {"con", "prn", "aux", "nul", "clock$",
@@ -300,6 +351,130 @@ def _curl_call(method: str, url: str, headers: dict, body: bytes | None,
                 pass
 
 
+# --------------------------------------------------------------------------- Eine Verbindung
+#
+# `urllib.request.urlopen` baut für **jede** Anfrage eine neue TCP- und TLS-Verbindung auf. Bei
+# einer Instanz mit 246 Dateien, von denen 92 % kleiner als 1 MB sind, kostet das mehr Zeit als
+# die Daten selbst: Handschlag, Zertifikatsprüfung und Anlauf des Fensters fallen jedes Mal neu an.
+#
+# Deshalb hält dieses Modul offene Verbindungen vor und benutzt sie wieder (HTTP/1.1
+# Keep-Alive, `http.client`). Weil mehrere Dateien gleichzeitig gehen, ist es ein kleiner Vorrat
+# und nicht eine einzelne Verbindung – jeder Faden nimmt sich eine und gibt sie zurück.
+#
+# Wird eine zurückgelegte Verbindung von der Gegenseite inzwischen geschlossen (nginx tut das nach
+# einer Weile), merkt man das erst beim nächsten Gebrauch. Dann wird **einmal** frisch verbunden;
+# erst wenn auch das scheitert, gilt der Root-Server als nicht erreichbar.
+
+POOL_IDLE = 40                   # Sekunden: länger unbenutzte Verbindungen werden weggeworfen
+POOL_MAX = 10                    # so viele Verbindungen bleiben höchstens liegen
+
+_pool: list[tuple[float, object]] = []
+_pool_lock = threading.Lock()
+_proxy_info: dict = {}
+
+
+def _proxy_aktiv() -> bool:
+    """Ist für HTTPS ein Vermittlungsrechner (Proxy) eingestellt?
+
+    ``http.client`` kennt keine Proxys. Wo einer eingestellt ist (Firmennetz), bleibt es beim Weg
+    über ``urllib`` – lieber langsam als überhaupt nicht.
+    """
+    if "wert" not in _proxy_info:
+        try:
+            proxies = urllib.request.getproxies()
+        except Exception:                                  # noqa: BLE001 - nie am Proxy scheitern
+            proxies = {}
+        _proxy_info["wert"] = bool(proxies.get("https") or proxies.get("http"))
+    return bool(_proxy_info["wert"])
+
+
+def _neue_verbindung(timeout: int):
+    teile = urllib.parse.urlsplit(BASE_URL)
+    host = teile.hostname or ""
+    port = teile.port
+    if teile.scheme == "http":
+        return http.client.HTTPConnection(host, port, timeout=timeout)
+    return http.client.HTTPSConnection(host, port, timeout=timeout,
+                                       context=ssl.create_default_context())
+
+
+def _hole_verbindung(timeout: int) -> tuple[object, bool]:
+    """Eine Verbindung aus dem Vorrat (``False``) oder eine frische (``True``)."""
+    grenze = time.time() - POOL_IDLE
+    with _pool_lock:
+        while _pool:
+            seit, conn = _pool.pop()
+            if seit >= grenze:
+                try:
+                    conn.sock.settimeout(timeout)          # type: ignore[union-attr]
+                except (AttributeError, OSError):
+                    pass
+                return conn, False
+            _schliesse(conn)
+    return _neue_verbindung(timeout), True
+
+
+def _gib_verbindung(conn) -> None:
+    with _pool_lock:
+        if len(_pool) >= POOL_MAX:
+            _schliesse(conn)
+            return
+        _pool.append((time.time(), conn))
+
+
+def _schliesse(conn) -> None:
+    try:
+        conn.close()
+    except Exception:                                      # noqa: BLE001 - beim Schließen egal
+        pass
+
+
+def close_connections() -> None:
+    """Alle offenen Verbindungen zum Root-Server schließen (Abmelden, Ende einer Übertragung)."""
+    with _pool_lock:
+        liegend = list(_pool)
+        _pool.clear()
+    for _seit, conn in liegend:
+        _schliesse(conn)
+
+
+def _keep_alive(status: int, kopf: dict, resp) -> bool:
+    """Darf diese Verbindung danach weiterbenutzt werden?"""
+    if getattr(resp, "will_close", True):
+        return False
+    verbindung = str(kopf.get("Connection") or kopf.get("connection") or "").lower()
+    return "close" not in verbindung and status != 101
+
+
+def _http_call(method: str, url: str, headers: dict, body: bytes | None,
+               timeout: int) -> tuple[int, bytes, dict]:
+    """Ein Aufruf über eine (möglichst schon offene) Verbindung."""
+    teile = urllib.parse.urlsplit(url)
+    ziel = teile.path + (("?" + teile.query) if teile.query else "")
+    letzte: BaseException | None = None
+    for _versuch in (1, 2):
+        conn, frisch = _hole_verbindung(timeout)
+        try:
+            conn.request(method, ziel, body=body, headers=headers)      # type: ignore[union-attr]
+            resp = conn.getresponse()                                  # type: ignore[union-attr]
+            daten = resp.read()
+            kopf = {k.title(): v for k, v in resp.getheaders()}
+            if _keep_alive(resp.status, kopf, resp):
+                _gib_verbindung(conn)
+            else:
+                _schliesse(conn)
+            return int(resp.status), daten, kopf
+        except (http.client.HTTPException, OSError, ValueError) as exc:
+            _schliesse(conn)
+            letzte = exc
+            if sources._is_cert_error(exc):                             # noqa: SLF001
+                raise
+            if frisch:
+                break
+            # Eine zurückgelegte Verbindung war schon geschlossen – einmal frisch versuchen.
+    raise CloudError(f"Der Root-Server ist nicht erreichbar: {letzte}") from letzte
+
+
 def _raw_call(method: str, url: str, headers: dict, body: bytes | None,
               timeout: int) -> tuple[int, bytes, dict]:
     """Ein Aufruf: (Status, Rumpf, Kopfzeilen). Bei Zertifikatsfehlern über curl."""
@@ -307,6 +482,18 @@ def _raw_call(method: str, url: str, headers: dict, body: bytes | None,
     if _ssl_broken or sources._ssl_broken:             # noqa: SLF001 – einmal kaputt, immer curl
         status, data = _curl_call(method, url, headers, body, timeout)
         return status, data, {}
+    if not _proxy_aktiv():
+        try:
+            return _http_call(method, url, headers, body, timeout)
+        except (ssl.SSLError, OSError) as exc:
+            if not sources._is_cert_error(exc):                          # noqa: SLF001
+                raise CloudError(f"Der Root-Server ist nicht erreichbar: {exc}") from exc
+            if sources._windows_curl():                                  # noqa: SLF001
+                _ssl_broken = True
+                close_connections()
+                status, data = _curl_call(method, url, headers, body, timeout)
+                return status, data, {}
+            raise CloudError(sources.CERT_HINT) from exc
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
@@ -964,8 +1151,9 @@ def remote_file_upload(remote_id: str, quelle, ziel: str = "", *, progress=None)
     try:
         offen = session.get("missing") or [{"path": rel, "offset": 0}]
         versatz = int((offen[0] or {}).get("offset") or 0) if offen else 0
-        counter = {"sent": versatz}
-        _upload_file(remote_id, sid, pfad, rel, versatz, size, counter, size, progress)
+        fortschritt = _Fortschritt({}, "Hochladen", size, rueckruf=progress)
+        fortschritt.basis(versatz)
+        _upload_file(remote_id, sid, pfad, rel, versatz, size, fortschritt)
         fertig = _api("POST", f"/api/servers/{urllib.parse.quote(remote_id)}/upload/finish",
                       body={"session": sid, "hashes": True}, timeout=300)
     except BaseException:
@@ -1070,6 +1258,22 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def _nachladbar(rel: str) -> bool:
+    """Kann der Root-Server das selbst beschaffen? Dann geht es nicht über die Leitung.
+
+    Dieselbe Entscheidung trifft ``paths.nachladbar`` auf dem Root-Server – für das Manifest der
+    Rückholung. Beide Listen müssen gleich sein, sonst gälte beim Zurückholen als „fehlt“, was
+    nie hochgeladen wurde.
+    """
+    teile = [t.lower() for t in str(rel or "").replace("\\", "/").strip("/").split("/")
+             if t not in ("", ".")]
+    if not teile:
+        return False
+    if teile[0] in NACHLADBAR_DIRS:
+        return True
+    return len(teile) == 1 and teile[0] in NACHLADBAR_FILES
+
+
 def _usable_rel(rel: str) -> bool:
     """Pfad, den beide Seiten annehmen (hosted/core/paths.py)."""
     if not rel or len(rel) > MAX_REL_LEN:
@@ -1096,10 +1300,17 @@ def _usable_rel(rel: str) -> bool:
 
 
 def build_manifest(folder: pathlib.Path, *, progress=None) -> dict:
-    """Manifest eines lokalen Serverordners – Format wie hosted/core/transfer.py."""
+    """Manifest eines lokalen Serverordners – Format wie hosted/core/transfer.py.
+
+    Was der Root-Server selbst beschaffen kann (``_nachladbar``), kommt gar nicht erst hinein:
+    an einem echten Server waren ``libraries``, ``cache``, ``versions`` und ``logs`` zusammen
+    56 % der Daten. Der Root lädt sie in Sekunden, die Leitung des Benutzers braucht Minuten
+    dafür. Übergangen wird das **still** – es fehlt nichts, es gehört nur nicht dazu.
+    """
     folder = pathlib.Path(folder)
     files: list[dict] = []
     skipped: list[str] = []
+    ausgelassen = 0
     total = 0
     stack = [folder]
     while stack:
@@ -1110,6 +1321,9 @@ def build_manifest(folder: pathlib.Path, *, progress=None) -> dict:
             continue
         for entry in entries:
             rel = entry.relative_to(folder).as_posix()
+            if _nachladbar(rel):
+                ausgelassen += 1
+                continue
             if entry.is_symlink():
                 skipped.append(rel)
                 continue
@@ -1146,7 +1360,8 @@ def build_manifest(folder: pathlib.Path, *, progress=None) -> dict:
                 progress(total, 0)
     files.sort(key=lambda e: e["path"])
     return {"version": MANIFEST_VERSION, "created_at": int(time.time()), "file_count": len(files),
-            "total_bytes": total, "files": files, "skipped": skipped[:50]}
+            "total_bytes": total, "files": files, "skipped": skipped[:50],
+            "nachladbar": ausgelassen}
 
 
 def verify_folder(folder: pathlib.Path, manifest: dict, *, progress=None) -> dict:
@@ -1185,6 +1400,213 @@ def human(size) -> str:
             return f"{text} {unit}".replace(".", ",")
         size /= 1024
     return f"{size:.1f} TB"
+
+
+# --------------------------------------------------------------------------- Abbruch und Geduld
+
+class TransferAbgebrochen(CloudError):
+    """Der Benutzer hat die Übertragung abgebrochen – kein Fehler der Gegenstelle."""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message or "Die Übertragung wurde abgebrochen.", 0)
+
+
+_abbruch: dict[str, threading.Event] = {}
+
+
+def _abbruch_event(local_id: str) -> threading.Event:
+    with _lock:
+        ereignis = _abbruch.get(str(local_id))
+        if ereignis is None:
+            ereignis = threading.Event()
+            _abbruch[str(local_id)] = ereignis
+        return ereignis
+
+
+def _pruefe_abbruch(local_id: str) -> None:
+    if _abbruch_event(local_id).is_set():
+        raise TransferAbgebrochen()
+
+
+def _warte_geduldig(versuch: int, local_id: str, job: dict | None = None,
+                    grund: str = "") -> None:
+    """Wachsende Pause vor dem nächsten Versuch – aufgegeben wird nie, abgebrochen schon.
+
+    Früher gab das Programm nach fünf Versuchen auf und die Übertragung blieb liegen. Eine
+    Leitung, die kurz weg ist, darf eine Übertragung von 600 MB nicht beenden: die Pause wächst
+    von zwei Sekunden bis auf eine Minute und bleibt dann dabei.
+    """
+    pause = min(RETRY_MAX_WAIT, RETRY_FIRST_WAIT * (2 ** max(0, versuch - 1)))
+    if job is not None:
+        job["detail"] = (f"Verbindung unterbrochen – neuer Versuch in {int(pause)} s "
+                         f"({versuch}. Anlauf). {grund}".strip())
+    ereignis = _abbruch_event(local_id)
+    if ereignis.wait(pause):
+        raise TransferAbgebrochen()
+
+
+def _dauer_text(sekunden: float) -> str:
+    """„40 s“, „4 min“, „1 h 05 min“ – für die geschätzte Restzeit."""
+    sekunden = int(max(0, sekunden))
+    if sekunden < 90:
+        return f"{sekunden} s"
+    if sekunden < 3600:
+        return f"{sekunden // 60} min"
+    return f"{sekunden // 3600} h {sekunden % 3600 // 60:02d} min"
+
+
+class _Fortschritt:
+    """Fortschritt einer Übertragung mit Geschwindigkeit und geschätzter Restzeit.
+
+    Die Angaben stehen im Vorgang (``job``) **und** in ``data/cloud.json``. So sieht man sie auch
+    dann noch, wenn man den Bereich wechselt, und das Programm weiß nach einem Neustart, dass
+    eine Übertragung offen ist.
+    """
+
+    def __init__(self, job: dict, label: str, total: int, *, merken: dict | None = None,
+                 rueckruf=None) -> None:
+        self.job = job
+        self.label = str(label)
+        self.total = max(0, int(total or 0))
+        self.merken = dict(merken or {})
+        self.rueckruf = rueckruf        # zusätzlich melden (einzelne Datei in der Oberfläche)
+        self.gesendet = 0
+        self.beginn = time.time()
+        self.proben: list[tuple[float, int]] = [(self.beginn, 0)]
+        self._lock = threading.Lock()
+        self._anzeige = 0.0
+        self._gemerkt = 0.0
+
+    def basis(self, bytes_schon_da: int) -> None:
+        """Was die Gegenseite schon hat (nach einer Wiederaufnahme)."""
+        with self._lock:
+            self.gesendet = max(self.gesendet, int(bytes_schon_da or 0))
+            jetzt = time.time()
+            self.proben = [(jetzt, self.gesendet)]
+        self.zeige(erzwingen=True)
+
+    def dazu(self, bytes_neu: int) -> None:
+        if bytes_neu <= 0:
+            return
+        with self._lock:
+            self.gesendet += int(bytes_neu)
+        self.zeige()
+
+    def tempo(self) -> float:
+        """Bytes je Sekunde über die letzten Sekunden (0, solange es zu früh ist)."""
+        with self._lock:
+            if len(self.proben) < 2:
+                return 0.0
+            (t1, b1), (t2, b2) = self.proben[0], self.proben[-1]
+        return (b2 - b1) / (t2 - t1) if t2 > t1 and b2 > b1 else 0.0
+
+    def zeige(self, *, erzwingen: bool = False) -> None:
+        jetzt = time.time()
+        with self._lock:
+            self.proben.append((jetzt, self.gesendet))
+            while len(self.proben) > 2 and jetzt - self.proben[0][0] > 20:
+                self.proben.pop(0)
+            gesendet = self.gesendet
+            zu_frueh = (jetzt - self._anzeige) < 0.4
+        if zu_frueh and not erzwingen:
+            return
+        self._anzeige = jetzt
+        tempo = self.tempo()
+        rest = max(0, self.total - gesendet)
+        text = f"{self.label}: {gesendet / 1048576:.1f} / {self.total / 1048576:.1f} MB"
+        if tempo > 0:
+            text += f" · {tempo / 1048576:.1f} MB/s · noch etwa {_dauer_text(rest / tempo)}"
+        self.job["detail"] = text
+        self.job["done"] = gesendet
+        self.job["total"] = self.total
+        self.job["speed_bps"] = int(tempo)
+        self.job["speed_text"] = f"{tempo / 1048576:.1f} MB/s".replace(".", ",") if tempo else ""
+        self.job["eta_seconds"] = int(rest / tempo) if tempo > 0 else 0
+        self.job["eta_text"] = _dauer_text(rest / tempo) if tempo > 0 else ""
+        if self.rueckruf is not None:
+            try:
+                self.rueckruf(gesendet, self.total)
+            except Exception:                          # noqa: BLE001 - Anzeige darf nie stören
+                pass
+        if self.merken and (erzwingen or jetzt - self._gemerkt > 3.0):
+            self._gemerkt = jetzt
+            angabe = dict(self.merken)
+            angabe.update({"done_bytes": gesendet, "speed_bps": int(tempo),
+                           "eta_seconds": int(rest / tempo) if tempo > 0 else 0,
+                           "updated": int(jetzt)})
+            _transfer_merken(angabe)
+
+
+def _transfer_merken(angabe: dict | None) -> None:
+    """Die offene Übertragung in ``data/cloud.json`` festhalten (oder den Eintrag löschen)."""
+    if angabe is None:
+        _update_state(lambda d: d.pop("transfer", None))
+        return
+    _update_state(lambda d: d.__setitem__("transfer", dict(angabe)))
+
+
+def _parallel(auftraege: list, ausfuehren, anzahl: int, local_id: str) -> None:
+    """Mehrere Aufträge gleichzeitig abarbeiten; der erste Fehler beendet die Runde.
+
+    Die Reihenfolge der Wiederaufnahme bleibt heil: ein Auftrag ist immer eine **ganze** Datei
+    (oder ein Paket). Zwei Stücke derselben Datei gleichzeitig gibt es nicht – der Versatz käme
+    sonst durcheinander.
+    """
+    if not auftraege:
+        return
+    if len(auftraege) == 1 or anzahl <= 1:
+        for auftrag in auftraege:
+            _pruefe_abbruch(local_id)
+            ausfuehren(auftrag)
+        return
+    rest = list(auftraege)
+    schloss = threading.Lock()
+    fehler: list[BaseException] = []
+
+    def arbeiter() -> None:
+        while True:
+            with schloss:
+                if fehler or not rest:
+                    return
+                auftrag = rest.pop(0)
+            try:
+                _pruefe_abbruch(local_id)
+                ausfuehren(auftrag)
+            except BaseException as exc:                # noqa: BLE001 - wird weitergereicht
+                with schloss:
+                    fehler.append(exc)
+                return
+
+    faeden = [threading.Thread(target=arbeiter, daemon=True, name="mcsm-transfer")
+              for _ in range(min(int(anzahl), len(auftraege)))]
+    for faden in faeden:
+        faden.start()
+    for faden in faeden:
+        faden.join()
+    if fehler:
+        raise fehler[0]
+
+
+def _pakete_bilden(dateien: list[tuple[str, dict]], *, max_bytes: int = BUNDLE_MAX_BYTES,
+                   max_files: int = BUNDLE_MAX_FILES) -> list[list[tuple[str, dict]]]:
+    """Kleine Dateien zu Paketen bündeln (Größe und Anzahl begrenzt).
+
+    Ein tar-Eintrag kostet einen Kopf von 512 Bytes und füllt auf ein Vielfaches von 512 auf –
+    das wird mitgerechnet, damit ein Paket die Grenze der Gegenseite nicht überschreitet.
+    """
+    pakete: list[list[tuple[str, dict]]] = []
+    laufend: list[tuple[str, dict]] = []
+    belegt = 1024
+    for rel, eintrag in dateien:
+        braucht = 1024 + ((int(eintrag["size"]) + 511) // 512) * 512
+        if laufend and (belegt + braucht > max_bytes or len(laufend) >= max_files):
+            pakete.append(laufend)
+            laufend, belegt = [], 1024
+        laufend.append((rel, eintrag))
+        belegt += braucht
+    if laufend:
+        pakete.append(laufend)
+    return pakete
 
 
 # --------------------------------------------------------------------------- Hochladen (PC → Root)
@@ -1246,7 +1668,8 @@ def _begin_upload(cfg: dict, rid: str, manifest: dict) -> dict:
         except CloudError:
             pass                                       # abgelaufen oder weg: neu anmelden
     data = _api("POST", f"/api/servers/{urllib.parse.quote(rid)}/upload/begin",
-                body={"manifest": {k: v for k, v in manifest.items() if k != "skipped"},
+                body={"manifest": {k: v for k, v in manifest.items()
+                                   if k not in ("skipped", "nachladbar")},
                       "purpose": "instance"}, timeout=120)
     session = data.get("session") or {}
     if not session.get("id"):
@@ -1258,6 +1681,7 @@ def _upload_work(job: dict, cfg: dict) -> None:
     folder = store.server_dir(cfg["id"])
     if not folder.is_dir():
         raise CloudError("Den Ordner dieses Servers gibt es auf dem PC nicht.")
+    _abbruch_event(cfg["id"]).clear()
 
     manager._step(job, 0, "Dateien werden gelesen und geprüft …")       # noqa: SLF001
     manifest = build_manifest(folder, progress=manager._progress_cb(job, "Gelesen"))  # noqa: SLF001
@@ -1267,86 +1691,209 @@ def _upload_work(job: dict, cfg: dict) -> None:
     manager._step(job, 1, "Server wird auf dem Root-Server angemeldet …")            # noqa: SLF001
     rid = _ensure_remote_instance(cfg)
 
-    manager._step(job, 2, f"{manifest['file_count']} Dateien, {human(manifest['total_bytes'])}")
+    manager._step(job, 2, f"{manifest['file_count']} Dateien, {human(manifest['total_bytes'])}"
+                          + (f" (dazu {manifest['nachladbar']} Einträge, die der Root-Server "
+                             f"selbst lädt)" if manifest.get("nachladbar") else ""))
     session = _begin_upload(cfg, rid, manifest)
     sid = str(session["id"])
     _set_link(cfg, instance=rid, session=sid, state="uploading")
-    _update_state(lambda d: d.__setitem__("transfer", {
-        "kind": "upload", "local": cfg["id"], "instance": rid, "session": sid,
-        "files": manifest["file_count"], "bytes": manifest["total_bytes"],
-        "started": int(time.time())}))
+    merken = {"kind": "upload", "local": cfg["id"], "instance": rid, "session": sid,
+              "name": cfg.get("name") or "", "files": manifest["file_count"],
+              "bytes": manifest["total_bytes"], "started": int(time.time())}
+    _transfer_merken(merken)
 
     manager._step(job, 3, "Übertragung läuft …")                                     # noqa: SLF001
     total = int(manifest["total_bytes"])
-    progress = manager._progress_cb(job, "Hochladen")                               # noqa: SLF001
+    fortschritt = _Fortschritt(job, "Hochladen", total, merken=merken)
     index = {e["path"]: e for e in manifest["files"]}
-    counter = {"sent": 0}
-    tries = 0
+    versuch = 0
+    stillstand = 0
     while True:
-        data = _api("GET", f"/api/servers/{urllib.parse.quote(rid)}/upload/status",
-                    query={"session": sid})
+        _pruefe_abbruch(cfg["id"])
+        try:
+            data = _api("GET", f"/api/servers/{urllib.parse.quote(rid)}/upload/status",
+                        query={"session": sid, "missing": MISSING_BATCH})
+        except AuthError:
+            raise
+        except CloudError as exc:
+            if exc.status in (403, 404, 409):
+                raise
+            versuch += 1
+            _warte_geduldig(versuch, cfg["id"], job, str(exc))
+            continue
         session = data.get("session") or {}
         if session.get("complete"):
             break
         if str(session.get("state")) != "open":
             raise CloudError("Die Übertragung wurde auf dem Root-Server beendet – bitte erneut "
                              "beginnen.")
-        open_files = session.get("missing") or ([session["next"]] if session.get("next") else [])
-        if not open_files:
+        offen = session.get("missing") or ([session["next"]] if session.get("next") else [])
+        if not offen:
             raise CloudError("Der Root-Server nennt keine offenen Dateien, meldet die Übertragung "
                              "aber auch nicht als fertig.")
-        before = int(session.get("received_bytes") or 0)
-        counter["sent"] = before                       # der Root kennt den Stand – auch nach Abbruch
+        vorher = int(session.get("received_bytes") or 0)
+        fortschritt.basis(vorher)      # der Root kennt den Stand – auch nach einem Abbruch
         try:
-            for item in open_files:
-                rel = str(item.get("path") or "")
-                entry = index.get(rel)
-                if entry is None:
-                    raise CloudError(f"Der Root-Server verlangt die unbekannte Datei „{rel}“.")
-                _upload_file(rid, sid, folder / rel, rel, int(item.get("offset") or 0),
-                             int(entry["size"]), counter, total, progress)
+            _upload_runde(rid, sid, folder, index, offen, fortschritt, cfg["id"], session)
+        except TransferAbgebrochen:
+            raise
+        except AuthError:
+            raise
         except CloudError as exc:
-            if exc.status in (401, 403, 404, 409):
+            if exc.status in (403, 404, 409):
                 raise
-            tries += 1
-            if tries >= TRANSFER_TRIES:
-                raise CloudError(f"Die Übertragung bricht immer wieder ab: {exc} Die bereits "
-                                 f"übertragenen Dateien bleiben erhalten – du kannst es später "
-                                 f"erneut versuchen.") from exc
-            job["detail"] = f"Verbindung unterbrochen – {tries + 1}. Versuch …"
-            time.sleep(2 * tries)
+            versuch += 1
+            _warte_geduldig(versuch, cfg["id"], job, str(exc))
             continue
-        data = _api("GET", f"/api/servers/{urllib.parse.quote(rid)}/upload/status",
-                    query={"session": sid})
-        if int((data.get("session") or {}).get("received_bytes") or 0) <= before \
-                and not (data.get("session") or {}).get("complete"):
-            tries += 1
-            if tries >= TRANSFER_TRIES:
-                raise CloudError("Die Übertragung kommt nicht voran – bitte später erneut "
-                                 "versuchen.")
+        versuch = 0
+        nachher = _api("GET", f"/api/servers/{urllib.parse.quote(rid)}/upload/status",
+                       query={"session": sid, "missing": 1}).get("session") or {}
+        if not nachher.get("complete") and int(nachher.get("received_bytes") or 0) <= vorher:
+            # Kein Abriss, aber auch kein Fortschritt: das ist kein Leitungsproblem, das wiederholt
+            # sich beliebig oft. Nach ein paar Anläufen lieber mit einem klaren Satz anhalten.
+            stillstand += 1
+            if stillstand >= 5:
+                raise CloudError("Die Übertragung kommt nicht voran: der Root-Server nimmt die "
+                                 "Dateien an, zählt aber nichts dazu. Bitte die Übertragung "
+                                 "abbrechen und neu beginnen.")
+            _warte_geduldig(stillstand, cfg["id"], job, "Der Root-Server meldet keinen Zuwachs.")
         else:
-            tries = 0
+            stillstand = 0
 
     manager._step(job, 4, "Übertragung wird abgeschlossen …")                        # noqa: SLF001
     data = _api("POST", f"/api/servers/{urllib.parse.quote(rid)}/upload/finish",
-                body={"session": sid, "hashes": True}, timeout=600)
+                body={"session": sid, "hashes": True,
+                      # Der Root beschafft jetzt, was nicht übertragen wurde: Serverkern und
+                      # Java in **derselben** Version wie auf dem PC, dazu Crossplay, wenn hier
+                      # eines eingerichtet ist.
+                      "version": str(cfg.get("version") or ""),
+                      "geyser": bool(cfg.get("geyser"))}, timeout=600)
     remote = data.get("server") or {}
     _set_link(cfg, instance=rid, session=None, state=str(remote.get("state") or "hosted"),
               name=str(remote.get("name") or cfg["name"]), address=address_of(remote),
               running=False)
-    _update_state(lambda d: d.pop("transfer", None))
+    _transfer_merken(None)
     _drop_cache()
+    close_connections()
     report = data.get("report") or {}
+    dauer = max(1e-6, time.time() - fortschritt.beginn)
     job["detail"] = (f"{report.get('files', manifest['file_count'])} Dateien "
                      f"({human(report.get('bytes', manifest['total_bytes']))}) liegen auf dem "
-                     f"Root-Server.")
-    log.info("Server „%s“ auf den Root-Server verschoben (%s Dateien).",
-                     cfg["name"], report.get("files", manifest["file_count"]))
+                     f"Root-Server – {human(total / dauer)}/s.")
+    _warte_auf_kern(job, rid, data.get("job"))
+    log.info("Server „%s“ auf den Root-Server verschoben (%s Dateien, %s, %.1f s).",
+             cfg["name"], report.get("files", manifest["file_count"]),
+             human(report.get("bytes", total)), dauer)
+
+
+def _warte_auf_kern(job: dict, rid: str, kern_job) -> None:
+    """Auf das Beschaffen des Serverkerns auf dem Root warten (Java, Paper-Jar, Crossplay).
+
+    ``libraries``, ``versions``, ``cache`` und der Serverkern werden nicht übertragen – der Root
+    lädt sie selbst. Das darf nicht erst beim ersten Start auffallen, deshalb wird hier gewartet,
+    solange es läuft. Geht dabei etwas schief, steht es im Vorgang; die Dateien sind trotzdem
+    angekommen.
+    """
+    kennung = str((kern_job or {}).get("id") or "")
+    if not kennung:
+        return
+    ende = time.time() + 900
+    while time.time() < ende:
+        try:
+            stand = (_api("GET", f"/api/jobs/{urllib.parse.quote(kennung)}",
+                          timeout=30).get("job") or {})
+        except CloudError:
+            return
+        zustand = str(stand.get("state") or "")
+        if zustand == "fertig":
+            job["detail"] = (str(job.get("detail") or "")
+                             + " Serverkern und Java liegen auf dem Root-Server bereit.")
+            return
+        if zustand == "fehler":
+            job["detail"] = (str(job.get("detail") or "") + " Hinweis: "
+                             + str(stand.get("error") or "Der Serverkern fehlt noch."))
+            return
+        job["detail"] = f"Auf dem Root-Server: {stand.get('step') or 'wird beschafft …'}"
+        time.sleep(2)
+
+
+def _upload_runde(rid: str, sid: str, folder: pathlib.Path, index: dict, offen: list,
+                  fortschritt: _Fortschritt, local_id: str, session: dict) -> None:
+    """Eine Runde: alle offenen Dateien schicken – kleine gebündelt, mehrere gleichzeitig."""
+    paket_geht = bool(session.get("bundle"))
+    klein_grenze = min(int(session.get("bundle_small_bytes") or BUNDLE_SMALL_BYTES),
+                       BUNDLE_SMALL_BYTES)
+    paket_bytes = min(int(session.get("bundle_max_bytes") or BUNDLE_MAX_BYTES), BUNDLE_MAX_BYTES)
+    paket_dateien = min(int(session.get("bundle_max_files") or BUNDLE_MAX_FILES), BUNDLE_MAX_FILES)
+    klein: list[tuple[str, dict]] = []
+    gross: list[tuple[str, dict, int]] = []
+    for item in offen:
+        rel = str(item.get("path") or "")
+        eintrag = index.get(rel)
+        if eintrag is None:
+            raise CloudError(f"Der Root-Server verlangt die unbekannte Datei „{rel}“.")
+        versatz = int(item.get("offset") or 0)
+        groesse = int(eintrag["size"])
+        # Nur eine noch gar nicht angefangene kleine Datei darf ins Paket: eine halb übertragene
+        # Datei muss bei ihrem Versatz weitergehen, sonst bricht die Wiederaufnahme.
+        if paket_geht and versatz == 0 and 0 < groesse <= klein_grenze:
+            klein.append((rel, eintrag))
+        else:
+            gross.append((rel, eintrag, versatz))
+
+    auftraege: list[tuple[str, object]] = []
+    for paket in _pakete_bilden(klein, max_bytes=paket_bytes, max_files=paket_dateien):
+        auftraege.append(("paket", paket))
+    for rel, eintrag, versatz in gross:
+        auftraege.append(("datei", (rel, eintrag, versatz)))
+
+    def ausfuehren(auftrag: tuple) -> None:
+        art, inhalt = auftrag
+        if art == "paket":
+            _upload_paket(rid, sid, folder, inhalt, fortschritt)       # type: ignore[arg-type]
+            return
+        rel, eintrag, versatz = inhalt                                 # type: ignore[misc]
+        _upload_file(rid, sid, folder / rel, rel, versatz, int(eintrag["size"]), fortschritt)
+
+    _parallel(auftraege, ausfuehren, PARALLEL, local_id)
+
+
+def _upload_paket(rid: str, sid: str, folder: pathlib.Path, dateien: list,
+                  fortschritt: _Fortschritt) -> None:
+    """Viele kleine Dateien als tar-Strom in **einer** Anfrage schicken."""
+    puffer = io.BytesIO()
+    mitgeschickt = 0
+    with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT,
+                      encoding="utf-8") as archiv:
+        for rel, eintrag in dateien:
+            pfad = folder / rel
+            try:
+                groesse = pfad.stat().st_size
+            except OSError as exc:
+                raise CloudError(f"Die Datei „{rel}“ gibt es auf dem PC nicht mehr – bitte die "
+                                 f"Übertragung neu beginnen.") from exc
+            if groesse != int(eintrag["size"]):
+                raise CloudError(f"Die Datei „{rel}“ hat sich seit dem Beginn der Übertragung "
+                                 f"geändert – bitte die Übertragung neu beginnen.")
+            inhalt = pfad.read_bytes()
+            if len(inhalt) != groesse:
+                raise CloudError(f"Die Datei „{rel}“ ließ sich nicht vollständig lesen.")
+            info = tarfile.TarInfo(rel)
+            info.size = len(inhalt)
+            info.mtime = int(eintrag.get("mtime") or time.time())
+            info.mode = 0o644
+            info.type = tarfile.REGTYPE
+            archiv.addfile(info, io.BytesIO(inhalt))
+            mitgeschickt += len(inhalt)
+    _api("POST", f"/api/servers/{urllib.parse.quote(rid)}/upload/bundle",
+         raw=puffer.getvalue(), timeout=TRANSFER_TIMEOUT,
+         query={"session": sid}, headers={"X-MCSM-Session": sid})
+    fortschritt.dazu(mitgeschickt)
 
 
 def _upload_file(rid: str, sid: str, path: pathlib.Path, rel: str, offset: int, size: int,
-                 counter: dict, total: int, progress) -> None:
-    """Eine Datei ab ``offset`` in Stücken hochladen; ``counter["sent"]`` zählt für den Fortschritt."""
+                 fortschritt: _Fortschritt) -> None:
+    """Eine Datei ab ``offset`` in Stücken hochladen und den Fortschritt fortschreiben."""
     if not path.is_file():
         raise CloudError(f"Die Datei „{rel}“ gibt es auf dem PC nicht mehr – bitte die Übertragung "
                          f"neu beginnen.")
@@ -1367,10 +1914,8 @@ def _upload_file(rid: str, sid: str, path: pathlib.Path, rel: str, offset: int, 
                                    "X-MCSM-Path": urllib.parse.quote(rel),
                                    "X-MCSM-Offset": str(offset)})
             reached = int(result.get("offset") or (offset + len(block)))
-            counter["sent"] += max(0, reached - offset)
+            fortschritt.dazu(max(0, reached - offset))
             offset = reached
-            if progress:
-                progress(min(counter["sent"], total), total)
             if result.get("done"):
                 return
 
@@ -1421,6 +1966,7 @@ def _pull_file(remote_id: str) -> pathlib.Path:
 def _download_work(job: dict, cfg: dict, rid: str) -> None:
     folder = store.server_dir(cfg["id"])
     folder.mkdir(parents=True, exist_ok=True)
+    _abbruch_event(cfg["id"]).clear()
 
     manager._step(job, 0, "Der Server wird auf dem Root-Server gestoppt …")          # noqa: SLF001
     detail = remote_detail(rid)
@@ -1437,73 +1983,43 @@ def _download_work(job: dict, cfg: dict, rid: str) -> None:
     if not isinstance(files, list):
         raise CloudError("Der Root-Server hat keine gültige Dateiliste geliefert.")
     _pull_file(rid).write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-    _update_state(lambda d: d.__setitem__("transfer", {
-        "kind": "download", "local": cfg["id"], "instance": rid,
-        "files": len(files), "bytes": int(manifest.get("total_bytes") or 0),
-        "started": int(time.time())}))
+    merken = {"kind": "download", "local": cfg["id"], "instance": rid,
+              "name": cfg.get("name") or "", "files": len(files),
+              "bytes": int(manifest.get("total_bytes") or 0), "started": int(time.time())}
+    _transfer_merken(merken)
 
     manager._step(job, 2, f"{len(files)} Dateien, {human(manifest.get('total_bytes'))}")
     total = int(manifest.get("total_bytes") or 0)
-    progress = manager._progress_cb(job, "Herunterladen")                           # noqa: SLF001
-    got = 0
+    merken.update({"files": len(files), "bytes": total})
+    fortschritt = _Fortschritt(job, "Herunterladen", total, merken=merken)
     unusable: list[str] = []
+    brauchbar: list[dict] = []
     for entry in files:
         rel = str(entry.get("path") or "")
-        size = int(entry.get("size") or 0)
         if not _usable_rel(rel):
-            unusable.append(rel)
+            unusable.append(rel)                 # Name, den Windows nicht speichern kann
             continue
-        target = folder / rel
-        part = target.with_name(target.name + PART_SUFFIX)
-        if target.is_file() and target.stat().st_size == size \
-                and sha256_file(target) == str(entry.get("sha256") or "").lower():
-            got += size
-            progress(got, total)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        offset = part.stat().st_size if part.is_file() else 0
-        if offset > size:
-            part.unlink(missing_ok=True)
-            offset = 0
-        tries = 0
-        while offset < size:
-            try:
-                block = _api("GET", f"/api/servers/{urllib.parse.quote(rid)}/download",
-                             query={"path": rel, "offset": offset,
-                                    "length": min(CHUNK_SIZE, size - offset)},
-                             want_bytes=True, timeout=TRANSFER_TIMEOUT)
-            except CloudError as exc:
-                if exc.status in (401, 403, 404):
-                    raise
-                tries += 1
-                if tries >= TRANSFER_TRIES:
-                    raise CloudError(f"„{rel}“ lässt sich nicht herunterladen: {exc} Die schon "
-                                     f"geholten Dateien bleiben erhalten – du kannst es später "
-                                     f"erneut versuchen.") from exc
-                job["detail"] = f"Verbindung unterbrochen – {tries + 1}. Versuch …"
-                time.sleep(2 * tries)
-                continue
-            if not block:
-                raise CloudError(f"Der Root-Server liefert für „{rel}“ keine Daten mehr.")
-            with part.open("ab") as fh:
-                fh.write(block)
-            offset += len(block)
-            got += len(block)
-            tries = 0
-            progress(min(got, total), total)
-        if size == 0:
-            part.write_bytes(b"")
-        digest = sha256_file(part)
-        if digest != str(entry.get("sha256") or "").lower():
-            part.unlink(missing_ok=True)
-            raise CloudError(f"Die Prüfsumme von „{rel}“ stimmt nicht – bitte die Rückholung "
-                             f"erneut starten.")
-        os.replace(str(part), str(target))
-        if entry.get("mtime"):
-            try:
-                os.utime(str(target), (int(entry["mtime"]), int(entry["mtime"])))
-            except OSError:
-                pass
+        brauchbar.append(entry)
+    offen, schon_da = _offene_dateien(folder, brauchbar, streng=True)
+    fortschritt.basis(schon_da)
+    paket_geht = True
+    versuch = 0
+    while offen:
+        _pruefe_abbruch(cfg["id"])
+        try:
+            paket_geht = _download_runde(rid, folder, offen, fortschritt, cfg["id"], paket_geht)
+        except TransferAbgebrochen:
+            raise
+        except AuthError:
+            raise
+        except CloudError as exc:
+            if exc.status in (403, 404):
+                raise
+            versuch += 1
+            _warte_geduldig(versuch, cfg["id"], job, str(exc))
+        else:
+            versuch = 0
+        offen, _fertig = _offene_dateien(folder, brauchbar, streng=False)
 
     manager._step(job, 3, "Alle Dateien werden geprüft …")                           # noqa: SLF001
     report = verify_folder(folder, manifest, progress=manager._progress_cb(job, "Geprüft"))  # noqa: SLF001
@@ -1517,6 +2033,171 @@ def _download_work(job: dict, cfg: dict, rid: str) -> None:
                      + (f" {len(unusable)} Datei(en) mit Namen, die Windows nicht erlaubt, "
                         f"blieben auf dem Root-Server." if unusable else ""))
     log.info("Server „%s“ vom Root-Server zurückgeholt (%s Dateien).", cfg["name"], len(files))
+
+
+def _offene_dateien(folder: pathlib.Path, eintraege: list[dict], *,
+                    streng: bool) -> tuple[list[dict], int]:
+    """Welche Dateien fehlen noch? Rückgabe ``(offene Einträge, schon vorhandene Bytes)``.
+
+    ``streng`` prüft zusätzlich die Prüfsumme – das lohnt einmal beim Aufsetzen auf eine
+    abgebrochene Rückholung. In den Runden danach genügt die Größe: jede Datei ist erst dann an
+    ihren endgültigen Namen gekommen, wenn ihre Prüfsumme gestimmt hat.
+    """
+    offen: list[dict] = []
+    da = 0
+    for eintrag in eintraege:
+        rel = str(eintrag.get("path") or "")
+        groesse = int(eintrag.get("size") or 0)
+        ziel = folder / rel
+        try:
+            passt = ziel.is_file() and ziel.stat().st_size == groesse
+        except OSError:
+            passt = False
+        if passt and streng and groesse:
+            passt = sha256_file(ziel) == str(eintrag.get("sha256") or "").lower()
+        if passt:
+            da += groesse
+            continue
+        offen.append(eintrag)
+    return offen, da
+
+
+def _download_runde(rid: str, folder: pathlib.Path, offen: list[dict],
+                    fortschritt: _Fortschritt, local_id: str, paket_geht: bool) -> bool:
+    """Eine Runde der Rückholung: kleine Dateien im Paket, große in Stücken, mehrere zugleich.
+
+    Rückgabe: ob der Root-Server Pakete kann (ein älterer Stand kennt die Route nicht – dann
+    läuft alles wie früher über einzelne Stücke).
+    """
+    klein: list[dict] = []
+    gross: list[dict] = []
+    for eintrag in offen:
+        groesse = int(eintrag.get("size") or 0)
+        teil = folder / (str(eintrag.get("path")) + PART_SUFFIX)
+        angefangen = teil.is_file()
+        if paket_geht and not angefangen and 0 < groesse <= BUNDLE_SMALL_BYTES:
+            klein.append(eintrag)
+        else:
+            gross.append(eintrag)
+
+    auftraege: list[tuple[str, object]] = []
+    for paket in _pakete_bilden([(str(e["path"]), e) for e in klein]):
+        auftraege.append(("paket", [e for _rel, e in paket]))
+    for eintrag in gross:
+        auftraege.append(("datei", eintrag))
+    kann_pakete = {"ja": paket_geht}
+
+    def ausfuehren(auftrag: tuple) -> None:
+        art, inhalt = auftrag
+        if art == "paket":
+            if not kann_pakete["ja"]:
+                for eintrag in inhalt:                                 # type: ignore[union-attr]
+                    _download_file(rid, folder, eintrag, fortschritt)
+                return
+            try:
+                _download_paket(rid, folder, inhalt, fortschritt)       # type: ignore[arg-type]
+            except CloudError as exc:
+                if exc.status not in (404, 405, 501):
+                    raise
+                # Älterer Root-Server: er kennt die Paketroute nicht. Einmal merken und ab jetzt
+                # wieder Datei für Datei holen.
+                kann_pakete["ja"] = False
+                for eintrag in inhalt:                                 # type: ignore[union-attr]
+                    _download_file(rid, folder, eintrag, fortschritt)
+            return
+        _download_file(rid, folder, inhalt, fortschritt)                # type: ignore[arg-type]
+
+    _parallel(auftraege, ausfuehren, PARALLEL, local_id)
+    return bool(kann_pakete["ja"])
+
+
+def _ablegen(folder: pathlib.Path, eintrag: dict, inhalt: bytes) -> None:
+    """Eine fertige Datei an ihren Platz legen (über eine Teil-Datei, damit nichts halb dasteht)."""
+    rel = str(eintrag.get("path") or "")
+    ziel = folder / rel
+    teil = ziel.with_name(ziel.name + PART_SUFFIX)
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    teil.write_bytes(inhalt)
+    os.replace(str(teil), str(ziel))
+    if eintrag.get("mtime"):
+        try:
+            os.utime(str(ziel), (int(eintrag["mtime"]), int(eintrag["mtime"])))
+        except OSError:
+            pass
+
+
+def _download_paket(rid: str, folder: pathlib.Path, eintraege: list[dict],
+                    fortschritt: _Fortschritt) -> None:
+    """Viele kleine Dateien in **einer** Anfrage holen (tar-Strom) und einzeln prüfen."""
+    namen = [str(e.get("path") or "") for e in eintraege]
+    index = {str(e.get("path") or ""): e for e in eintraege}
+    daten = _api("POST", f"/api/servers/{urllib.parse.quote(rid)}/download/bundle",
+                 body={"paths": namen}, want_bytes=True, timeout=TRANSFER_TIMEOUT)
+    if not daten:
+        raise CloudError("Der Root-Server hat ein leeres Paket geschickt.")
+    geholt = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(daten), mode="r|", encoding="utf-8") as archiv:
+            for mitglied in archiv:
+                if not mitglied.isfile():
+                    continue
+                eintrag = index.get(str(mitglied.name).replace("\\", "/"))
+                if eintrag is None or int(mitglied.size) != int(eintrag.get("size") or 0):
+                    continue                    # nicht angefordert oder inzwischen verändert
+                quelle = archiv.extractfile(mitglied)
+                inhalt = quelle.read(int(mitglied.size)) if quelle is not None else b""
+                if len(inhalt) != int(eintrag["size"]):
+                    continue
+                if hashlib.sha256(inhalt).hexdigest() != str(eintrag.get("sha256") or "").lower():
+                    raise CloudError(f"Die Prüfsumme von „{eintrag['path']}“ stimmt nicht – bitte "
+                                     f"die Rückholung erneut starten.")
+                _ablegen(folder, eintrag, inhalt)
+                geholt += len(inhalt)
+    except tarfile.TarError as exc:
+        raise CloudError(f"Das Paket vom Root-Server lässt sich nicht auspacken: {exc}") from exc
+    except OSError as exc:
+        raise CloudError(f"Die Dateien aus dem Paket lassen sich auf dem PC nicht "
+                         f"ablegen: {exc}") from exc
+    fortschritt.dazu(geholt)
+
+
+def _download_file(rid: str, folder: pathlib.Path, eintrag: dict,
+                   fortschritt: _Fortschritt) -> None:
+    """Eine einzelne Datei in Stücken holen, prüfen und ablegen (Wiederaufnahme über die Teil-Datei)."""
+    rel = str(eintrag.get("path") or "")
+    groesse = int(eintrag.get("size") or 0)
+    ziel = folder / rel
+    teil = ziel.with_name(ziel.name + PART_SUFFIX)
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    versatz = teil.stat().st_size if teil.is_file() else 0
+    if versatz > groesse:
+        teil.unlink(missing_ok=True)
+        versatz = 0
+    if versatz:
+        fortschritt.dazu(0)
+    while versatz < groesse:
+        block = _api("GET", f"/api/servers/{urllib.parse.quote(rid)}/download",
+                     query={"path": rel, "offset": versatz,
+                            "length": min(CHUNK_SIZE, groesse - versatz)},
+                     want_bytes=True, timeout=TRANSFER_TIMEOUT)
+        if not block:
+            raise CloudError(f"Der Root-Server liefert für „{rel}“ keine Daten mehr.")
+        with teil.open("ab") as fh:
+            fh.write(block)
+        versatz += len(block)
+        fortschritt.dazu(len(block))
+    if groesse == 0:
+        teil.write_bytes(b"")
+    if sha256_file(teil) != str(eintrag.get("sha256") or "").lower():
+        teil.unlink(missing_ok=True)
+        raise CloudError(f"Die Prüfsumme von „{rel}“ stimmt nicht – die Datei wird noch einmal "
+                         f"geholt.")
+    os.replace(str(teil), str(ziel))
+    if eintrag.get("mtime"):
+        try:
+            os.utime(str(ziel), (int(eintrag["mtime"]), int(eintrag["mtime"])))
+        except OSError:
+            pass
 
 
 def _verify_text(report: dict) -> str:
@@ -1582,17 +2263,119 @@ def release_async(remote_id: str) -> dict:
 
 
 def abort_transfer(local_id: str) -> dict:
-    """Laufende Übertragung auf dem Root abbrechen (fertige Dateien bleiben dort liegen)."""
+    """Laufende Übertragung abbrechen – der Knopf des Benutzers.
+
+    Zuerst wird der laufende Vorgang angehalten (er versucht es sonst unbegrenzt weiter), dann
+    die Gegenseite verständigt. Beim **Hochladen** wird die Übertragung auf dem Root verworfen
+    und der Server gilt wieder als „nur auf diesem PC“. Eine **Rückholung** wird nur angehalten:
+    die Dateien auf dem Root bleiben, die schon geholten Teil-Dateien auch – der nächste Anlauf
+    setzt dort auf.
+    """
     cfg = store.get(local_id)
     if cfg is None:
         raise CloudError("Diesen Server gibt es auf diesem PC nicht.")
+    _abbruch_event(local_id).set()
     link = link_of(cfg)
     rid, sid = str(link.get("instance") or ""), str(link.get("session") or "")
+    zustand = str(link.get("state") or "")
+    offen = _read_state().get("transfer") or {}
     if not (rid and sid):
+        if zustand in ("awaiting_pull", "downloading") or str(offen.get("kind")) == "download":
+            _transfer_merken(None)
+            _drop_cache()
+            return {"ok": True, "message": "Die Rückholung wurde angehalten. Die Dateien bleiben "
+                                           "auf dem Root-Server; der nächste Anlauf setzt dort "
+                                           "auf, wo dieser aufgehört hat."}
         raise CloudError("Für diesen Server läuft keine Übertragung.")
     _api("POST", f"/api/servers/{urllib.parse.quote(rid)}/upload/abort",
          body={"session": sid, "back_to_local": True})
     _set_link(cfg, session=None, state="local_only")
-    _update_state(lambda d: d.pop("transfer", None))
+    _transfer_merken(None)
     _drop_cache()
-    return {"ok": True}
+    close_connections()
+    return {"ok": True, "message": "Die Übertragung wurde abgebrochen."}
+
+
+# --------------------------------------------------------------------------- Selbstheilung
+#
+# Eine Übertragung von 600 MB überlebt einen Neustart des Programms: was offen ist, steht in
+# `data/cloud.json`. Kurz nach dem Start sieht dieser Faden nach und macht **von selbst** weiter –
+# der Benutzer muss nichts anklicken. Dasselbe passiert, wenn ein Vorgang unterwegs aufgibt
+# (z. B. weil der PC im Ruhezustand war): beim nächsten Blick läuft er wieder an.
+
+RESUME_FIRST = 8.0               # so lange nach dem Programmstart wird gewartet
+RESUME_EVERY = 30.0              # so oft wird danach nachgesehen
+RESUME_MAX_WAIT = 300.0          # so weit wächst die Pause nach missglückten Anläufen
+
+_resume = {"gestartet": False, "naechster": 0.0, "fehler": 0}
+
+
+def pending_transfer() -> dict:
+    """Die offene Übertragung aus ``data/cloud.json`` (leer, wenn keine offen ist)."""
+    angabe = _read_state().get("transfer")
+    return dict(angabe) if isinstance(angabe, dict) else {}
+
+
+def resume_pending() -> dict:
+    """Eine unterbrochene Übertragung fortsetzen. Gibt an, ob etwas angestoßen wurde."""
+    angabe = pending_transfer()
+    art = str(angabe.get("kind") or "")
+    local_id = str(angabe.get("local") or "")
+    rid = str(angabe.get("instance") or "")
+    if art not in ("upload", "download") or not local_id:
+        return {"resumed": False, "reason": "nichts offen"}
+    if not logged_in():
+        return {"resumed": False, "reason": "nicht angemeldet"}
+    cfg = store.get(local_id)
+    if cfg is None:
+        _transfer_merken(None)                 # der Server ist weg – der Eintrag ist wertlos
+        return {"resumed": False, "reason": "Server gibt es nicht mehr"}
+    if _abbruch_event(local_id).is_set():
+        return {"resumed": False, "reason": "abgebrochen"}
+    if manager.job_running(local_id) or manager.is_running(local_id):
+        return {"resumed": False, "reason": "läuft schon"}
+    if art == "upload":
+        job = upload_async(cfg)
+    else:
+        if not rid:
+            _transfer_merken(None)
+            return {"resumed": False, "reason": "keine Instanz vermerkt"}
+        job = download_async(rid)
+    log.info("Offene Übertragung wird von selbst fortgesetzt (%s, %s).", art, cfg.get("name"))
+    return {"resumed": True, "kind": art, "job": job.get("id"), "server": local_id}
+
+
+def _selbstheilung() -> None:
+    """Hintergrundfaden: sieht regelmäßig nach, ob eine Übertragung liegengeblieben ist."""
+    time.sleep(RESUME_FIRST)
+    while True:
+        try:
+            if time.time() >= float(_resume["naechster"]):
+                ergebnis = resume_pending()
+                if ergebnis.get("resumed"):
+                    _resume["fehler"] = 0
+                    _resume["naechster"] = time.time() + RESUME_EVERY
+                elif ergebnis.get("reason") in ("nichts offen", "läuft schon", "abgebrochen"):
+                    _resume["fehler"] = 0
+        except CloudError as exc:
+            _resume["fehler"] = int(_resume["fehler"]) + 1
+            pause = min(RESUME_MAX_WAIT, RESUME_EVERY * (2 ** min(4, int(_resume["fehler"]))))
+            _resume["naechster"] = time.time() + pause
+            log.info("Fortsetzen der Übertragung klappt noch nicht (%s) – erneut in %d s.",
+                     exc, int(pause))
+        except Exception:                      # noqa: BLE001 - dieser Faden darf nie sterben
+            log.exception("Fehler beim Fortsetzen einer Übertragung")
+            _resume["naechster"] = time.time() + RESUME_MAX_WAIT
+        time.sleep(RESUME_EVERY)
+
+
+def starte_selbstheilung() -> None:
+    """Den Hintergrundfaden einmalig starten (wird beim Laden dieses Moduls aufgerufen)."""
+    with _lock:
+        if _resume["gestartet"] or os.environ.get("MCSM_NO_AUTORESUME"):
+            return
+        _resume["gestartet"] = True
+    threading.Thread(target=_selbstheilung, daemon=True, name="mcsm-cloud-fortsetzen").start()
+
+
+starte_selbstheilung()

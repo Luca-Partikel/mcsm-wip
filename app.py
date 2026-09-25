@@ -26,7 +26,7 @@ import time
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
@@ -684,6 +684,577 @@ def api_cloud_file_download(body, query) -> dict:
     return cloud.remote_file_download(_cloud_instance(body, query), pfad, ziel)
 
 
+# -- Eine gehostete Instanz ganz normal bedienen (Übersicht, Einstellungen, Spieler)
+# Die Oberfläche zeigt für einen Server auf dem Root-Server dieselbe Seite mit denselben Reitern
+# wie für einen Server auf diesem PC – nur arbeiten sie gegen den Root. Starten, Stoppen, Konsole
+# und Dateien gibt es dafür schon oben; hier stehen die drei Gegenstücke, die noch fehlten:
+# der Zustand einer einzelnen Instanz, ihre Einstellungen (Ruhezustand, Arbeitsspeicher, Name),
+# server.properties als Formular und die Spielerverwaltung über die Konsole des Root-Servers.
+# Gesprochen wird weiter ausschließlich über core/cloud.py.
+
+#: Antworten des Root-Servers, die „diesen Weg gibt es hier (noch) nicht“ bedeuten.
+CLOUD_MISSING = (404, 405, 501)
+#: Ruhezustand bei Leerstand – dieselben Standardwerte wie auf dem Root-Server.
+HIBERNATION_DEFAULT = True
+HIBERNATION_MINUTES_DEFAULT = 15
+HIBERNATION_MINUTES_MIN = 5
+HIBERNATION_MINUTES_MAX = 1440
+#: So lange auf die Antwort des Konsolenbefehls „list“ vom Root-Server warten.
+HOSTED_LIST_WAIT = 4.0
+#: Kurz warten, bis der laufende Server seine Listen-Dateien neu geschrieben hat.
+HOSTED_SETTLE = 1.0
+#: Änderungen, die die Spielerverwaltung einer gehosteten Instanz kennt (wie lokal).
+HOSTED_PLAYER_ACTIONS = ("whitelist_on", "whitelist_off", "whitelist_add", "whitelist_remove",
+                         "ban", "unban", "kick")
+
+
+def _cloud_api(method: str, path: str, *, body=None, query: dict | None = None) -> dict:
+    """Aufruf an den Root-Server für Wege, die core/cloud.py noch nicht als Funktion anbietet.
+
+    Bietet core/cloud.py dafür etwas Öffentliches an (``api_call``), wird das genommen – hier soll
+    keine zweite Stelle mit Token, Zeitgrenzen und Zertifikaten entstehen.
+    """
+    call = getattr(cloud, "api_call", None) or getattr(cloud, "_api", None)
+    if not callable(call):
+        raise ApiError("Dieser Weg zum Root-Server steht in diesem Programm nicht zur Verfügung.", 501)
+    return call(method, path, body=body, query=query)
+
+
+def _cloud_frisch() -> None:
+    """Zwischenspeicher von core/cloud.py verwerfen, damit die Oberfläche sofort das Neue sieht."""
+    drop = getattr(cloud, "drop_cache", None) or getattr(cloud, "_drop_cache", None)
+    if callable(drop):
+        drop()
+
+
+def _cloud_route(remote_id: str, rest: str) -> str:
+    """Weg einer Instanz auf dem Root-Server, z. B. /api/servers/<id>/settings."""
+    return f"/api/servers/{quote(remote_id, safe='')}{rest}"
+
+
+def _zahl(value, default: int = 0) -> int:
+    """Ganze Zahl aus einer Angabe des Root-Servers – fehlt sie oder passt sie nicht, der Standard."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _hosted_remote(remote_id: str) -> dict:
+    """Datensatz einer Instanz vom Root-Server – frisch, ohne Zwischenspeicher."""
+    remote = cloud.remote_detail(remote_id)
+    if not remote:
+        raise ApiError("Diesen Server gibt es auf dem Root-Server nicht (mehr).", 404)
+    return remote
+
+
+def _hosted_kind(remote: dict) -> str:
+    """Art des Servers, wie core/manager.py und core/players.py sie kennen."""
+    return "bedrock" if str(remote.get("type") or "") == "bedrock" else "java"
+
+
+def _hosted_sleeping(remote: dict) -> bool:
+    """Schläft die Instanz? Das sagt der Root-Server selbst („sleeping“).
+
+    Fehlt die Angabe, wird sie nur dann abgeleitet, wenn der Root-Server den Ruhezustand
+    überhaupt kennt – sonst sähe jeder gestoppte Server aus wie ein schlafender.
+    """
+    if "sleeping" in remote:
+        return bool(remote.get("sleeping"))
+    if "hibernation" not in remote:
+        return False
+    return (str(remote.get("state") or "") == "hosted" and not remote.get("running")
+            and bool(remote.get("hibernation")))
+
+
+def _hosted_settings(remote: dict) -> dict:
+    """Einstellungen einer gehosteten Instanz für das Formular."""
+    schlaf = remote.get("hibernation")
+    minuten = remote.get("hibernation_minutes")
+    return {
+        "name": str(remote.get("name") or ""),
+        "type": _hosted_kind(remote),
+        "version": str(remote.get("version") or ""),
+        "ram_mb": _zahl(remote.get("ram_mb")),
+        "hibernation": HIBERNATION_DEFAULT if schlaf is None else bool(schlaf),
+        "hibernation_minutes": (HIBERNATION_MINUTES_DEFAULT if minuten is None
+                                else _zahl(minuten, HIBERNATION_MINUTES_DEFAULT)),
+        # Kennt der Root-Server den Ruhezustand noch nicht, sagt die Oberfläche das ruhig statt
+        # Werte anzuzeigen, die dort niemand liest.
+        "hibernation_known": schlaf is not None or minuten is not None,
+        "sleeping": _hosted_sleeping(remote),
+        "minutes_min": HIBERNATION_MINUTES_MIN,
+        "minutes_max": HIBERNATION_MINUTES_MAX,
+    }
+
+
+def api_cloud_instance(_body, query) -> dict:
+    """Ein einzelner Server auf dem Root-Server: Zustand, Spielerzahl, Adresse, Einstellungen."""
+    remote = _hosted_remote(_cloud_instance({}, query))
+    return {"server": remote, "settings": _hosted_settings(remote)}
+
+
+def api_cloud_settings(_body, query) -> dict:
+    """Einstellungen einer gehosteten Instanz lesen (Name, Arbeitsspeicher, Ruhezustand)."""
+    remote = _hosted_remote(_cloud_instance({}, query))
+    return {"server": remote, "settings": _hosted_settings(remote)}
+
+
+def api_cloud_settings_put(body, query) -> dict:
+    """Einstellungen einer gehosteten Instanz ändern (Name, Arbeitsspeicher, Ruhezustand)."""
+    remote_id = _cloud_instance(body, query)
+    payload: dict = {}
+    if "name" in body:
+        name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()
+        if not 2 <= len(name) <= 32 or any(ch < " " for ch in name):
+            raise ApiError("Bitte einen Namen mit 2 bis 32 Zeichen eintragen.")
+        payload["name"] = name
+    if "ram_mb" in body:
+        ram = _zahl(body.get("ram_mb"))
+        if not 512 <= ram <= 32768:
+            raise ApiError("Der Arbeitsspeicher muss zwischen 512 MB und 32 GB liegen.")
+        payload["ram_mb"] = ram
+    if "hibernation" in body:
+        payload["hibernation"] = bool(body.get("hibernation"))
+    if "hibernation_minutes" in body:
+        minuten = _zahl(body.get("hibernation_minutes"))
+        if not HIBERNATION_MINUTES_MIN <= minuten <= HIBERNATION_MINUTES_MAX:
+            raise ApiError(f"Die Wartezeit des Ruhezustands muss zwischen {HIBERNATION_MINUTES_MIN} "
+                           f"und {HIBERNATION_MINUTES_MAX} Minuten liegen.")
+        payload["hibernation_minutes"] = minuten
+    if not payload:
+        raise ApiError("Es wurde keine Einstellung übergeben.")
+    try:
+        data = _cloud_api("POST", _cloud_route(remote_id, "/settings"), body=payload)
+    except cloud.CloudError as exc:
+        if exc.status in CLOUD_MISSING:
+            return {"supported": False,
+                    "hint": "Dieser Root-Server kann die Einstellungen einer gehosteten Instanz "
+                            "noch nicht ändern. Bitte den Betreiber darum bitten."}
+        raise
+    _cloud_frisch()
+    roh = data.get("server") or {}
+    view = cloud.remote_view(roh) if roh else _hosted_remote(remote_id)
+    # Was der Root-Server nicht kennt, fehlt in seiner Antwort – die Oberfläche sagt es ruhig.
+    offen = [key for key in ("hibernation", "hibernation_minutes") if key in payload and key not in roh]
+    return {"ok": True, "server": view, "settings": _hosted_settings(view), "ignored": offen}
+
+
+# -- server.properties einer gehosteten Instanz (dasselbe Formular wie lokal)
+
+def _properties_from_text(text: str) -> list[tuple[str, str]]:
+    """server.properties aus Text lesen – dieselben Regeln wie manager.read_properties."""
+    out: list[tuple[str, str]] = []
+    for line in str(text or "").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            key, value = s.split("=", 1)
+            out.append((key.strip(), value.strip()))
+    return out
+
+
+def _properties_patch(text: str, values: dict) -> str:
+    """Werte ersetzen und alles andere (Kommentare, unbekannte Zeilen) unverändert stehen lassen."""
+    rest = dict(values)
+    out = []
+    for line in str(text or "").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            key = s.split("=", 1)[0].strip()
+            if key in rest:
+                out.append(f"{key}={rest.pop(key)}")
+                continue
+        out.append(line)
+    out.extend(f"{key}={value}" for key, value in rest.items())
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _props_fields(pairs: list[tuple[str, str]], kind: str) -> list[dict]:
+    """Beschriebene Felder für das Formular – dieselbe Tabelle wie bei lokalen Servern."""
+    meta = manager.PROPS_META.get(kind, {})
+    fields = []
+    for key, value in pairs:
+        known = meta.get(key)
+        if known:
+            fields.append({"key": key, "value": value, "known": True, **known})
+        else:
+            art = ("bool" if value in ("true", "false")
+                   else "int" if re.fullmatch(r"-?\d+", value) else "text")
+            fields.append({"key": key, "value": value, "known": False,
+                           "label": key, "desc": "", "type": art})
+    return fields
+
+
+def _hosted_read_text(remote_id: str, path: str) -> str | None:
+    """Textdatei vom Root-Server – None, wenn es sie dort nicht gibt."""
+    try:
+        return str(cloud.remote_file_read(remote_id, path).get("text") or "")
+    except cloud.CloudError as exc:
+        if exc.status in (400, 404):
+            return None
+        raise
+
+
+def api_cloud_props(_body, query) -> dict:
+    """server.properties einer gehosteten Instanz als Formular."""
+    remote_id = _cloud_instance({}, query)
+    remote = _hosted_remote(remote_id)
+    text = _hosted_read_text(remote_id, "server.properties")
+    return {"exists": text is not None, "running": bool(remote.get("running")),
+            "fields": _props_fields(_properties_from_text(text or ""), _hosted_kind(remote))}
+
+
+def api_cloud_props_put(body, query) -> dict:
+    """server.properties einer gehosteten Instanz speichern (nur bei gestopptem Server)."""
+    remote_id = _cloud_instance(body, query)
+    remote = _hosted_remote(remote_id)
+    if remote.get("running"):
+        raise ApiError("Bitte den Server auf dem Root-Server zuerst stoppen – ein laufender Server "
+                       "schreibt server.properties gleich wieder um.", 409)
+    values = body.get("values")
+    if not isinstance(values, dict):
+        raise ApiError("Ungültige Daten.")
+    meta = manager.PROPS_META.get(_hosted_kind(remote), {})
+    pruefen = getattr(manager, "validate_prop", None) or getattr(manager, "_validate_prop", None)
+    clean: dict[str, str] = {}
+    for key, value in values.items():
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", str(key)):
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        text = str(value).replace("\r", "").replace("\n", " ").strip()[:512]
+        known = meta.get(key)
+        if known:
+            if known.get("managed"):                  # setzt der Root-Server selbst (Port, Transport)
+                continue
+            if callable(pruefen):
+                try:
+                    pruefen(known, key, text)
+                except ValueError as exc:
+                    raise ApiError(str(exc)) from exc
+        clean[key] = text
+    if not clean:
+        raise ApiError("Es wurde keine Einstellung übergeben.")
+    alt = _hosted_read_text(remote_id, "server.properties")
+    if alt is None:
+        raise ApiError("Auf dem Root-Server gibt es noch keine server.properties – sie entsteht "
+                       "beim ersten Start.", 404)
+    neu = _properties_patch(alt, clean)
+    cloud.remote_file_write(remote_id, "server.properties", neu)
+    return {"ok": True, "fields": _props_fields(_properties_from_text(neu), _hosted_kind(remote))}
+
+
+# -- Spielerverwaltung einer gehosteten Instanz: Listen als Dateien, Befehle über die Konsole
+
+def _hosted_player_files(kind: str) -> tuple[str, str, str]:
+    """Freigabeliste, Sperrliste und IP-Sperren – dieselben Dateinamen wie auf dem PC."""
+    return (("allowlist.json" if kind == "bedrock" else "whitelist.json"),
+            "banned-players.json", "banned-ips.json")
+
+
+def _hosted_json_list(remote_id: str, name: str) -> tuple[list[dict], bool]:
+    """Liste aus einer Minecraft-Datei auf dem Root-Server – (Einträge, lesbar?).
+
+    Eine fehlende Datei gilt als leere Liste, eine unlesbare wird gemeldet: sonst sähen beide
+    gleich aus und ein Schreiben würde die bisherigen Einträge still wegwerfen.
+    """
+    text = _hosted_read_text(remote_id, name)
+    if text is None or not text.strip():
+        return [], True
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return [], False
+    if not isinstance(data, list):
+        return [], False
+    return [e for e in data if isinstance(e, dict)], True
+
+
+def _hosted_write_list(remote_id: str, name: str, entries: list[dict]) -> None:
+    """Liste als JSON auf den Root-Server schreiben (Minecraft-Format, mit Zeilenumbruch am Ende)."""
+    cloud.remote_file_write(remote_id, name,
+                            json.dumps(entries, indent=2, ensure_ascii=False) + "\n")
+
+
+def _hosted_cfg(remote: dict, remote_id: str) -> dict:
+    """Behelfs-Konfiguration für die Prüfungen aus core/players.py.
+
+    Nur Typ, Crossplay und – falls es sie gibt – die Kennung der lokalen Kopie: aus ihren Dateien
+    (usercache.json) kommt die Spieler-Nummer, ohne Mojang zu fragen.
+    """
+    local = next((cfg for cfg in store.all_servers()
+                  if str(cloud.link_of(cfg).get("instance") or "") == remote_id), None)
+    return {"id": str((local or {}).get("id") or ""), "type": _hosted_kind(remote),
+            "flavor": str(remote.get("flavor") or "paper"), "geyser": bool(remote.get("geyser")),
+            "name": str(remote.get("name") or "")}
+
+
+def _hosted_flag_key(kind: str) -> str:
+    """Schalter in server.properties, der die Freigabeliste ein- und ausschaltet."""
+    return "allow-list" if kind == "bedrock" else "white-list"
+
+
+def _hosted_list_enabled(remote_id: str, kind: str) -> bool:
+    """Ist die Freigabeliste auf dem Root-Server eingeschaltet?"""
+    text = _hosted_read_text(remote_id, "server.properties") or ""
+    values = dict(_properties_from_text(text))
+    return str(values.get(_hosted_flag_key(kind), "")).strip().lower() == "true"
+
+
+def _hosted_set_enabled(remote_id: str, kind: str, enabled: bool) -> None:
+    """Freigabeliste in server.properties ein- oder ausschalten (nur bei gestopptem Server)."""
+    text = _hosted_read_text(remote_id, "server.properties")
+    if text is None:
+        raise ApiError("Auf dem Root-Server gibt es noch keine server.properties – bitte den "
+                       "Server einmal starten.", 404)
+    cloud.remote_file_write(remote_id, "server.properties",
+                            _properties_patch(text, {_hosted_flag_key(kind): "true" if enabled else "false"}))
+
+
+def _hosted_online(remote_id: str, cfg: dict) -> tuple[list[str], bool]:
+    """Wer spielt gerade? Der Konsolenbefehl „list“ auf dem Root-Server, Antwort aus der Konsole."""
+    parse = getattr(players, "parse_list", None) or getattr(players, "_parse_list", None)
+    if not callable(parse):
+        return [], False
+    try:
+        marke = _zahl(cloud.remote_console(remote_id, 0, 1).get("next"))
+        cloud.remote_command(remote_id, "list")
+    except cloud.CloudError:
+        return [], False
+    ende = time.time() + HOSTED_LIST_WAIT
+    while True:
+        time.sleep(0.4)
+        try:
+            lines = [str(line) for line in (cloud.remote_console(remote_id, marke).get("lines") or [])]
+        except cloud.CloudError:
+            return [], False
+        names = parse(lines, cfg)
+        if names is not None:
+            return names, True
+        if time.time() >= ende:
+            return [], False
+
+
+def _ban_expired(raw: str) -> bool:
+    """Ist eine Sperre auf Zeit schon abgelaufen? Dieselbe Regel wie bei lokalen Servern."""
+    fn = getattr(players, "ban_expired", None) or getattr(players, "_expired", None)
+    return bool(fn(raw)) if callable(fn) else False
+
+
+def _hosted_players_view(remote_id: str, remote: dict, message: str = "", warn: bool = False,
+                         *, online: bool = True) -> dict:
+    """Gesamtbild der Spielerverwaltung – gleiche Felder wie players.overview für lokale Server."""
+    kind = _hosted_kind(remote)
+    bedrock = kind == "bedrock"
+    allow_file, ban_file, ban_ip_file = _hosted_player_files(kind)
+    running = bool(remote.get("running"))
+    roh, lesbar = _hosted_json_list(remote_id, allow_file)
+    broken = [] if lesbar else [allow_file]
+    allowed = sorted(({"name": str(e.get("name") or "").strip(), "uuid": str(e.get("uuid") or "")}
+                      for e in roh if str(e.get("name") or "").strip()),
+                     key=lambda e: e["name"].lower())
+    banned: list[dict] = []
+    banned_ips: list[dict] = []
+    if not bedrock:
+        roh_ban, lesbar_ban = _hosted_json_list(remote_id, ban_file)
+        if not lesbar_ban:
+            broken.append(ban_file)
+        for entry in roh_ban:
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            expires = str(entry.get("expires") or "forever")
+            banned.append({"name": name, "uuid": str(entry.get("uuid") or ""),
+                           "reason": str(entry.get("reason") or ""),
+                           "source": str(entry.get("source") or ""),
+                           "created": str(entry.get("created") or ""),
+                           "expires": expires, "expired": _ban_expired(expires)})
+        banned.sort(key=lambda e: e["name"].lower())
+        roh_ip, lesbar_ip = _hosted_json_list(remote_id, ban_ip_file)
+        if not lesbar_ip:
+            broken.append(ban_ip_file)
+        banned_ips = sorted(({"ip": str(e.get("ip") or "").strip(),
+                              "reason": str(e.get("reason") or ""),
+                              "source": str(e.get("source") or ""),
+                              "expires": str(e.get("expires") or "forever"),
+                              "expired": _ban_expired(str(e.get("expires") or "forever"))}
+                             for e in roh_ip if str(e.get("ip") or "").strip()),
+                            key=lambda e: e["ip"])
+    names: list[str] = []
+    known = False
+    if running and online:
+        names, known = _hosted_online(remote_id, _hosted_cfg(remote, remote_id))
+    return {"kind": kind, "hosted": True, "instance": remote_id, "running": running,
+            "enabled": _hosted_list_enabled(remote_id, kind),
+            "allowed": allowed, "banned": banned, "banned_ips": banned_ips, "bans": not bedrock,
+            "broken": broken, "online": names, "online_known": known,
+            "max_players": _zahl(remote.get("max_players")),
+            "message": message, "warn": warn}
+
+
+def api_cloud_players(_body, query) -> dict:
+    remote_id = _cloud_instance({}, query)
+    return _hosted_players_view(remote_id, _hosted_remote(remote_id))
+
+
+def _cmd_arg(name: str) -> str:
+    """Name als Befehlsargument – Gamertags mit Leerzeichen gehören in Anführungszeichen."""
+    return f'"{name}"' if " " in name else name
+
+
+def api_cloud_players_action(body, query) -> dict:
+    """Freigabeliste, Sperren und Rauswürfe auf dem Root-Server.
+
+    Läuft der Server, geht alles über seine Konsole; ist er gestoppt, schreibt das Programm die
+    Listen-Dateien auf dem Root-Server – genau wie es das lokal mit den Dateien auf dem PC tut.
+    """
+    remote_id = _cloud_instance(body, query)
+    remote = _hosted_remote(remote_id)
+    action = str(body.get("action") or "")
+    if action not in HOSTED_PLAYER_ACTIONS:
+        raise ApiError("Unbekannte Aktion.")
+    kind = _hosted_kind(remote)
+    bedrock = kind == "bedrock"
+    allow_file, ban_file, _ = _hosted_player_files(kind)
+    running = bool(remote.get("running"))
+    wort = "allowlist" if bedrock else "whitelist"
+    label = "Erlaubnisliste" if bedrock else "Freigabeliste"
+    cfg = _hosted_cfg(remote, remote_id)
+
+    def bild(text: str, warnen: bool = False, *, frisch: bool = False) -> dict:
+        return _hosted_players_view(remote_id, remote, text, warnen, online=frisch)
+
+    if action in ("ban", "unban") and bedrock:
+        raise ApiError("Der Bedrock-Server führt keine eigene Sperrliste. Nimm den Spieler aus der "
+                       "Erlaubnisliste und schalte sie ein – dann kommt er nicht mehr herein.")
+
+    if action in ("whitelist_on", "whitelist_off"):
+        an = action == "whitelist_on"
+        if running and bedrock:
+            raise ApiError("Die Erlaubnisliste eines Bedrock-Servers steht in server.properties – "
+                           "sie lässt sich nur bei gestopptem Server umschalten.", 409)
+        if running:
+            cloud.remote_command(remote_id, f"{wort} {'on' if an else 'off'}")
+            cloud.remote_command(remote_id, f"{wort} reload")
+            time.sleep(HOSTED_SETTLE)
+        else:
+            _hosted_set_enabled(remote_id, kind, an)
+        return bild(f"{label} ist jetzt {'eingeschaltet' if an else 'ausgeschaltet'}."
+                    + ("" if running else " Es gilt ab dem nächsten Start."))
+
+    try:
+        name = players.check_name(cfg, body.get("name", ""))
+    except ValueError as exc:
+        raise ApiError(str(exc)) from exc
+
+    if action == "whitelist_add":
+        if running:
+            cloud.remote_command(remote_id, f"{wort} add {_cmd_arg(name)}")
+            time.sleep(HOSTED_SETTLE)
+            out = bild(f"„{name}“ steht jetzt auf der {label}.")
+            if not any(e["name"].lower() == name.lower() for e in out["allowed"]):
+                out["message"] = (f"Der Server hat „{name}“ nicht aufgenommen – die Konsole zeigt, "
+                                  f"woran es lag (meist ein Tippfehler im Namen).")
+                out["warn"] = True
+            return out
+        entries, lesbar = _hosted_json_list(remote_id, allow_file)
+        if not lesbar:
+            raise ApiError(f"Die Datei {allow_file} auf dem Root-Server ist beschädigt. Bitte den "
+                           f"Server einmal starten und wieder stoppen – er schreibt sie dann neu.", 409)
+        if any(str(e.get("name") or "").lower() == name.lower() for e in entries):
+            return bild(f"„{name}“ steht bereits auf der {label}.")
+        if bedrock:
+            entries.append({"ignoresPlayerLimit": False, "name": name})
+        else:
+            if not players.JAVA_NAME_RE.fullmatch(name):
+                return bild(f"„{name}“ sieht nach einem Bedrock-Spieler aus (Crossplay). Dafür muss "
+                            f"der Server laufen – bitte starten und es dann noch einmal versuchen.", True)
+            try:
+                uuid, name = players.profile_for(cfg, name)
+            except ValueError as exc:
+                raise ApiError(str(exc)) from exc
+            entries.append({"uuid": uuid, "name": name})
+        _hosted_write_list(remote_id, allow_file, entries)
+        return bild(f"„{name}“ steht jetzt auf der {label}.")
+
+    if action == "whitelist_remove":
+        if running:
+            cloud.remote_command(remote_id, f"{wort} remove {_cmd_arg(name)}")
+            time.sleep(HOSTED_SETTLE)
+        else:
+            entries, lesbar = _hosted_json_list(remote_id, allow_file)
+            if not lesbar:
+                raise ApiError(f"Die Datei {allow_file} auf dem Root-Server ist beschädigt – bitte "
+                               f"den Server einmal starten und wieder stoppen.", 409)
+            bleibt = [e for e in entries if str(e.get("name") or "").lower() != name.lower()]
+            if len(bleibt) == len(entries):
+                return bild(f"„{name}“ stand nicht auf der {label}.")
+            _hosted_write_list(remote_id, allow_file, bleibt)
+        return bild(f"„{name}“ steht nicht mehr auf der {label}.")
+
+    if action == "ban":
+        grund = re.sub(r"[\x00-\x1f]", " ", str(body.get("reason") or "")).strip()[:120] \
+            or "Vom Serverbesitzer gesperrt."
+        dauer = str(body.get("duration") or "").strip().lower()
+        sekunden = 0 if dauer in ("", "forever", "dauerhaft") else players.DURATIONS.get(dauer, -1)
+        if sekunden < 0:
+            raise ApiError("Unbekannte Dauer – möglich sind 1h, 6h, 1d, 7d, 30d oder leer für dauerhaft.")
+        if running:
+            if sekunden:
+                raise ApiError("Eine Sperre auf Zeit kann der laufende Server nicht selbst setzen. "
+                               "Sperre dauerhaft – oder stoppe den Server, dann trägt das Programm "
+                               "die Frist ein.")
+            cloud.remote_command(remote_id, f"ban {_cmd_arg(name)} {grund}")
+            time.sleep(HOSTED_SETTLE)
+            out = bild(f"„{name}“ ist gesperrt.", frisch=True)
+            if not any(e["name"].lower() == name.lower() for e in out["banned"]):
+                out["message"] = (f"Der Server hat „{name}“ nicht gesperrt – die Konsole zeigt, "
+                                  f"woran es lag (der Name muss dem Server bekannt sein).")
+                out["warn"] = True
+            return out
+        try:
+            uuid, name = players.profile_for(cfg, name)
+        except ValueError as exc:
+            raise ApiError(str(exc)) from exc
+        entries, lesbar = _hosted_json_list(remote_id, ban_file)
+        if not lesbar:
+            raise ApiError(f"Die Datei {ban_file} auf dem Root-Server ist beschädigt – bitte den "
+                           f"Server einmal starten und wieder stoppen.", 409)
+        stempel = getattr(players, "stamp", None) or getattr(players, "_stamp", None)
+        jetzt = time.time()
+        entries = [e for e in entries if str(e.get("name") or "").lower() != name.lower()]
+        entries.append({"uuid": uuid, "name": name,
+                        "created": stempel(jetzt) if callable(stempel) else "",
+                        "source": "Server Manager",
+                        "expires": (stempel(jetzt + sekunden) if sekunden and callable(stempel)
+                                    else "forever"),
+                        "reason": grund})
+        _hosted_write_list(remote_id, ban_file, entries)
+        return bild(f"„{name}“ ist gesperrt." + (" Die Sperre endet von allein." if sekunden else ""))
+
+    if action == "unban":
+        if running:
+            cloud.remote_command(remote_id, f"pardon {_cmd_arg(name)}")
+            time.sleep(HOSTED_SETTLE)
+        else:
+            entries, lesbar = _hosted_json_list(remote_id, ban_file)
+            if not lesbar:
+                raise ApiError(f"Die Datei {ban_file} auf dem Root-Server ist beschädigt – bitte den "
+                               f"Server einmal starten und wieder stoppen.", 409)
+            bleibt = [e for e in entries if str(e.get("name") or "").lower() != name.lower()]
+            if len(bleibt) == len(entries):
+                return bild(f"„{name}“ war nicht gesperrt.")
+            _hosted_write_list(remote_id, ban_file, bleibt)
+        return bild(f"„{name}“ ist nicht mehr gesperrt.")
+
+    # kick
+    if not running:
+        return bild("Der Server auf dem Root-Server läuft gerade nicht – es ist niemand online.", True)
+    cloud.remote_command(remote_id, f"kick {_cmd_arg(name)}")
+    time.sleep(HOSTED_SETTLE)
+    return bild(f"„{name}“ wurde hinausgeworfen.", frisch=True)
+
+
 def api_cloud_upload(body, _query) -> dict:
     """„Auf den Root-Server verschieben“: ganzen Serverordner hochladen (Job)."""
     cfg = _require(store.get(str(body.get("server", ""))))
@@ -792,9 +1363,13 @@ ROUTES = {
     # Cloud (Root-Server)
     ("GET", "cloud/status"): api_cloud_status,
     ("GET", "cloud/servers"): api_cloud_servers,
+    ("GET", "cloud/instance"): api_cloud_instance,
     ("GET", "cloud/console"): api_cloud_console,
     ("GET", "cloud/files"): api_cloud_files,
     ("GET", "cloud/file"): api_cloud_file_get,
+    ("GET", "cloud/settings"): api_cloud_settings,
+    ("GET", "cloud/props"): api_cloud_props,
+    ("GET", "cloud/players"): api_cloud_players,
     ("GET", "cloud/login/poll"): api_cloud_login_poll,
     ("GET", "cloud/sessions"): api_cloud_sessions,
     ("POST", "cloud/login"): api_cloud_login,
@@ -808,6 +1383,9 @@ ROUTES = {
     ("POST", "cloud/start"): api_cloud_start,
     ("POST", "cloud/stop"): api_cloud_stop,
     ("POST", "cloud/command"): api_cloud_command,
+    ("POST", "cloud/settings"): api_cloud_settings_put,
+    ("POST", "cloud/props"): api_cloud_props_put,
+    ("POST", "cloud/players"): api_cloud_players_action,
     ("POST", "cloud/file"): api_cloud_file_put,
     ("POST", "cloud/file/delete"): api_cloud_file_delete,
     ("POST", "cloud/file/mkdir"): api_cloud_file_mkdir,

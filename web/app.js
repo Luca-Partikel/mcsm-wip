@@ -22,7 +22,19 @@ const state = {
   install: null,            // { serverId, jobId, job, after }
   xbox: null,               // Assistent für den Xbox-Freunde-Modus
   files: { path: '', showAll: false, open: null, mode: 'form', props: null, content: '', dirty: false },
-  players: { data: null, running: null },   // Spielerverwaltung: zuletzt geladenes Bild + Serverzustand dazu
+  players: { data: null, running: null, instance: '' },   // Spielerverwaltung: zuletzt geladenes Bild + Serverzustand dazu
+  // Gehosteter Server: derselbe Seitenaufbau, nur gegen den Root-Server (siehe „Gehostete Server“)
+  hosted: {
+    instance: '',             // Kennung der Instanz auf dem Root-Server
+    remote: null,             // letzter Datensatz vom Root (Zustand, Spieler, Adresse)
+    settings: null,           // Einstellungen der Instanz (Name, RAM, Ruhezustand)
+    props: null,              // server.properties vom Root-Server
+    error: '',
+    key: '',                  // gezeichneter Zustand: on | sleep | rest | off
+    log: { next: 0, lines: [] },
+    files: { path: '', entries: null, open: null, text: '', dirty: false, error: '', busy: false },
+  },
+  hostedView: false,          // zeigt die Serverseite gerade einen Server auf dem Root-Server?
   versions: { java: null, bedrock: null },
   consoleNext: 0,
   publicIp: null,
@@ -43,7 +55,8 @@ const state = {
     sig: '',                          // Fingerabdruck des zuletzt Gezeichneten (siehe cloudSig)
   },
   timers: { status: null, console: null, job: null, xbox: null, xboxJob: null,
-            cloud: null, cloudJob: null, cloudLog: null, cloudLogin: null, cloudTick: null },
+            cloud: null, cloudJob: null, cloudLog: null, cloudLogin: null, cloudTick: null,
+            hosted: null, hostedLog: null },
   xboxSig: '',
 };
 
@@ -343,14 +356,23 @@ function renderSidebar() {
   if (!state.servers.length) {
     list.innerHTML = '<div class="srv-empty">Noch kein Server – lege oben einen an.</div>';
   } else {
-    list.innerHTML = state.servers.map((s) => `
+    list.innerHTML = state.servers.map((s) => {
+      // Ein Server auf dem Root-Server steht hier ganz normal – mit kleinem Wolken-Zeichen und
+      // dem Zustand, den der Root-Server meldet (läuft / schläft / gestoppt).
+      const hosted = isHostedServer(s);
+      const punkt = hosted ? hostedState(s, hostedRemote(s)).dot
+        : (s.running ? 'dot-on' : (s.installed ? '' : 'dot-busy'));
+      return `
       <a class="srv-item ${state.view === 'server' && s.id === state.activeId ? 'active' : ''}" data-id="${s.id}">
         <span class="srv-main">
-          <span class="dot ${s.running ? 'dot-on' : (s.installed ? '' : 'dot-busy')}"></span>
+          <span class="dot ${punkt}"></span>
           <span class="srv-name">${esc(s.name)}</span>
         </span>
-        <span class="muted small">${typeTag(s)}</span>
-      </a>`).join('');
+        <span class="srv-tags muted small">${hosted
+          ? '<span class="srv-pill srv-pill-cloud" title="Läuft auf dem Root-Server">Cloud</span>'
+          : '<span class="srv-pill srv-pill-local" title="Läuft auf diesem PC">Lokal</span>'}${typeTag(s)}</span>
+      </a>`;
+    }).join('');
   }
   $$('.srv-item', list).forEach((el) => el.onclick = () => openServer(el.dataset.id));
   $$('.nav-item[data-help]').forEach((el) => el.classList.toggle('active', state.view === 'help' && el.dataset.help === state.help));
@@ -435,6 +457,7 @@ function pmHtml(d, removed = false) {
 function render() {
   const view = $('#view');
   stopConsolePolling();
+  stopHostedPolling();
   clearInterval(state.timers.xbox);
   if (state.view !== 'cloud') stopCloudPolling();
   switch (state.view) {
@@ -961,6 +984,8 @@ function openServer(id, tab = 'overview') {
   if (id !== state.activeId) {
     // Der Dateien-Tab darf nicht mit dem Ordner des vorherigen Servers weitermachen.
     Object.assign(state.files, { path: '', open: null, dirty: false, props: null, content: '' });
+    Object.assign(state.players, { data: null, running: null, instance: '' });
+    hostedReset('');
   }
   state.activeId = id;
   state.view = 'server';
@@ -973,6 +998,10 @@ window.openServer = openServer;
 function renderServer() {
   const s = server();
   if (!s) return renderWelcome();
+  state.hostedView = isHostedServer(s);
+  // Liegt der Server auf dem Root-Server, zeigt dieselbe Seite dieselben Reiter – sie arbeiten nur
+  // gegen den Root. Die Kopie auf diesem PC bleibt derweil unangetastet.
+  if (state.hostedView) return renderHostedServer(s);
   if (state.tab === 'players' && !playersApply(s)) state.tab = 'overview';   // Modpack-Server haben den Tab nicht
   const tabs = [['overview', 'Übersicht'], ['connect', 'Verbinden'],
     ...(playersApply(s) ? [['players', 'Spieler']] : []),
@@ -1323,7 +1352,7 @@ const fmtBanTime = (t) => {
   return m ? `${m[3]}.${m[2]}.${m[1]} um ${m[4]}:${m[5]} Uhr` : t;
 };
 
-function tabPlayers(s) {
+function tabPlayers(s, hosted = false) {
   const be = s.type === 'bedrock';
   return `
   <div class="note note-info" style="margin-top:0">
@@ -1331,7 +1360,8 @@ function tabPlayers(s) {
     alle anderen werden beim Beitreten abgewiesen. ${be
       ? 'Der Bedrock-Server führt keine eigene Sperrliste: Wer nicht mehr mitspielen soll, wird aus der Erlaubnisliste genommen.'
       : 'Sperren geht auch bei gestopptem Server – der Manager trägt sie dann direkt in die Serverdateien ein.'}
-    Läuft der Server, wirkt jede Änderung sofort.
+    ${hosted ? 'Läuft der Server, gehen die Änderungen über die Konsole des Root-Servers; ist er gestoppt, schreibt der Manager die Listen dort direkt.'
+      : 'Läuft der Server, wirkt jede Änderung sofort.'}
   </div>
   <div id="playersBox"><div class="card"><div class="muted small">Wird geladen …</div></div></div>`;
 }
@@ -1417,7 +1447,7 @@ function plOnlineCard(s, d) {
     : (rows || plHint('Gerade spielt niemand.'));
   const pill = !d.running ? ['pill-grey', 'Server aus']
     : !d.online_known ? ['pill-grey', 'unbekannt']
-    : [d.online.length ? 'pill-green' : 'pill-grey', `${d.online.length} von ${s.max_players}`];
+    : [d.online.length ? 'pill-green' : 'pill-grey', `${d.online.length} von ${d.max_players || s.max_players}`];
   return `<div class="card" style="margin-top:14px">
     <div class="card-head"><h3>🟢 Gerade online</h3><span class="pill ${pill[0]}">${pill[1]}</span></div>
     <div class="pl-list">${body}</div>
@@ -1426,9 +1456,10 @@ function plOnlineCard(s, d) {
   </div>`;
 }
 
-function renderPlayersBox(s, d) {
+function renderPlayersBox(s, d, hosted = false) {
   state.players.data = d;
   state.players.running = !!d.running;
+  if (hosted) state.players.instance = String(d.instance || hostedLink(s).instance || '');
   const box = $('#playersBox');
   if (!box) return;
   /* Beschädigte Serverdateien sähen sonst wie leere Listen aus – der Manager schreibt sie dann nicht. */
@@ -1440,29 +1471,35 @@ function renderPlayersBox(s, d) {
     Den Server einmal starten und wieder stoppen, dann schreibt er die Datei neu.</div>` : '';
   box.innerHTML = `${brokenNote}<div class="grid2" style="margin:0">${plAllowCard(s, d)}${plBanCard(s, d)}</div>${plOnlineCard(s, d)}`;
 
-  $$('[data-pl]', box).forEach((el) => el.onclick = () => playerAction(s, el.dataset.pl, { name: el.dataset.name || '' }));
+  $$('[data-pl]', box).forEach((el) => el.onclick = () => playerAction(s, el.dataset.pl, { name: el.dataset.name || '' }, hosted));
   const add = $('#plAddName', box);
-  const doAdd = () => playerAction(s, 'whitelist_add', { name: add.value });
+  const doAdd = () => playerAction(s, 'whitelist_add', { name: add.value }, hosted);
   $('#plAdd', box).onclick = doAdd;
   add.onkeydown = (e) => { if (e.key === 'Enter') doAdd(); };
   const ban = $('#plBan', box);
   if (ban) {
-    const doBan = () => playerAction(s, 'ban', { name: $('#plBanName', box).value, reason: $('#plBanReason', box).value, duration: $('#plBanDur', box).value });
+    const doBan = () => playerAction(s, 'ban', { name: $('#plBanName', box).value, reason: $('#plBanReason', box).value, duration: $('#plBanDur', box).value }, hosted);
     ban.onclick = doBan;
     $('#plBanName', box).onkeydown = (e) => { if (e.key === 'Enter') doBan(); };
   }
-  $('#plReload', box).onclick = () => loadPlayers(s);
+  $('#plReload', box).onclick = () => loadPlayers(s, hosted);
 }
 
-async function loadPlayers(s) {
+/* Weg der Spielerverwaltung: der eigene Server auf diesem PC oder die Instanz auf dem Root-Server. */
+const playersPath = (s, hosted) => hosted
+  ? `cloud/players?instance=${encodeURIComponent(hostedLink(s).instance || '')}`
+  : `servers/${s.id}/players`;
+
+async function loadPlayers(s, hosted = false) {
   const box = $('#playersBox');
   if (!box) return;
-  box.innerHTML = '<div class="card"><div class="muted small">Wird geladen …</div></div>';
-  try { renderPlayersBox(s, await api(`servers/${s.id}/players`)); }
+  box.innerHTML = `<div class="card"><div class="muted small">${hosted
+    ? 'Die Listen werden vom Root-Server geholt …' : 'Wird geladen …'}</div></div>`;
+  try { renderPlayersBox(s, await api(playersPath(s, hosted)), hosted); }
   catch (e) { box.innerHTML = `<div class="note note-err" style="margin-top:0">${esc(e.message)}</div>`; }
 }
 
-async function playerAction(s, action, body) {
+async function playerAction(s, action, body, hosted = false) {
   const box = $('#playersBox');
   if (!box) return;
   if (action === 'ban' && !(await askConfirm({
@@ -1472,9 +1509,11 @@ async function playerAction(s, action, body) {
   }))) return;
   $$('button', box).forEach((el) => el.disabled = true);       // kein zweiter Klick, solange der Server antwortet
   try {
-    const d = await api(`servers/${s.id}/players`, { method: 'POST', body: { action, ...body } });
+    const ziel = hosted ? 'cloud/players' : `servers/${s.id}/players`;
+    const rumpf = hosted ? { instance: hostedLink(s).instance || '', action, ...body } : { action, ...body };
+    const d = await api(ziel, { method: 'POST', body: rumpf });
     if (d.message) toast(d.message, !!d.warn);
-    renderPlayersBox(s, d);
+    renderPlayersBox(s, d, hosted);
   } catch (e) {
     toast(e.message, true);
     $$('button', box).forEach((el) => el.disabled = false);
@@ -1775,6 +1814,7 @@ function bindSettingsModpack(s) {
 function bindServer() {
   const s = server();
   if (!s) return;
+  if (isHostedServer(s)) return bindHostedServer(s);
   $$('.tab').forEach((el) => el.onclick = () => { state.tab = el.dataset.tab; render(); });
   $$('[data-tab-go]').forEach((el) => el.onclick = (e) => { e.preventDefault(); state.tab = el.dataset.tabGo; render(); });
   $$('[data-gohelp]').forEach((el) => el.onclick = (e) => { e.preventDefault(); showHelp(el.dataset.gohelp); });
@@ -1895,6 +1935,9 @@ function patchStatus() {
   if (state.view !== 'server') return;
   const s = server();
   if (!s) return;
+  // Zieht der Server auf den Root-Server um (oder zurück), wechselt die ganze Seite.
+  if (isHostedServer(s) !== state.hostedView) { render(); return; }
+  if (state.hostedView) { patchHostedStatus(); return; }
   const dot = $('[data-status="dot"]'), big = $('[data-status="big"]'), hdot = $('[data-status="hdot"]');
   if (dot) dot.className = 'dot ' + (s.running ? 'dot-on' : '');
   if (hdot) hdot.className = 'h-dot ' + (s.running ? 'on' : '');
@@ -1934,6 +1977,684 @@ function patchStatus() {
     const wasLocked = !!$('.note-warn.mb0');
     if (wasLocked !== (s.running || !!s.installing)) render();
   }
+}
+
+/* ==================================================================== Gehostete Server
+   Liegt ein Server auf dem Root-Server, zeigt die Serverseite dieselben Reiter und dieselbe
+   Bedienung wie bei einem Server auf diesem PC – nur arbeiten sie gegen den Root. Die Kopie auf
+   diesem PC bleibt derweil unangetastet und wird nicht gestartet; das steht als ruhiger Streifen
+   in der Übersicht, nicht als Sperrmeldung. */
+
+/* Zustände, in denen der Server auf dem Root-Server bedient wird. „uploading“, „awaiting_pull“
+   und „downloading“ gehören zur Übertragung – dort bleibt es beim Hinweis im Bereich „Cloud“. */
+const HOSTED_STATES = ['hosted', 'suspended'];
+const hostedLink = (s) => (s && s.cloud) || {};
+const isHostedServer = (s) => !!s && !!hostedLink(s).instance
+  && HOSTED_STATES.indexOf(String(hostedLink(s).state || '')) >= 0;
+
+/* Letzter bekannter Stand der Instanz: der eigene Takt dieser Seite, sonst die Cloud-Liste. */
+function hostedRemote(s) {
+  const id = hostedLink(s).instance;
+  if (!id) return null;
+  if (state.hosted.instance === id && state.hosted.remote) return state.hosted.remote;
+  return (cloudData().servers || []).find((x) => x.id === id) || null;
+}
+
+/* Schläft der Server? Das sagt der Root-Server selbst („sleeping“). Fehlt die Angabe, wird sie nur
+   abgeleitet, wenn er den Ruhezustand überhaupt kennt – sonst sähe jeder gestoppte Server aus wie
+   ein schlafender. */
+function hostedSleeping(r) {
+  if (!r) return false;
+  if (r.sleeping !== undefined) return !!r.sleeping;
+  if (r.hibernation === undefined) return false;
+  return String(r.state || '') === 'hosted' && !r.running && !!r.hibernation;
+}
+
+/* Haben wir überhaupt einen Stand vom Root-Server? Sonst gilt die Notiz am lokalen Server. */
+const hostedKnown = (r) => !!(r && r.running !== undefined);
+
+/* Zustand für Kopfzeile, Übersicht und Seitenleiste: läuft / schläft / ruht / gestoppt. */
+function hostedState(s, r) {
+  const link = hostedLink(s);
+  const kennt = hostedKnown(r);
+  const zustand = String((kennt && r.state) || link.state || '');
+  const laeuft = kennt ? !!r.running : !!link.running;
+  // Ohne frischen Stand ist das nur die letzte Notiz – das sagt die Zeile dann auch.
+  const alt = !kennt ? 'Letzter bekannter Stand – der Root-Server antwortet gerade nicht' : '';
+  if (laeuft) {
+    const dauer = firstNum([kennt && r.uptime, ((r || {}).live || {}).uptime]);
+    return { key: 'on', big: 'Online', pill: ['pill-green', 'läuft'], dot: 'dot-on',
+             sub: alt || (dauer ? 'Läuft auf dem Root-Server seit ' + fmtUptime(dauer)
+                                : 'Läuft auf dem Root-Server') };
+  }
+  if (hostedSleeping(r)) {
+    return { key: 'sleep', big: 'Schläft', pill: ['pill-sleep', 'schläft'], dot: 'dot-sleep',
+             sub: alt || 'Ruhezustand – startet von selbst, sobald jemand beitritt' };
+  }
+  if (zustand === 'suspended') {
+    return { key: 'rest', big: 'Ruht', pill: ['pill-amber', 'ruht'], dot: 'dot-busy',
+             sub: alt || 'Ohne gültigen Pass bleibt der Server auf dem Root-Server liegen' };
+  }
+  return { key: kennt ? 'off' : 'unbekannt', big: kennt ? 'Offline' : 'Unbekannt',
+           pill: ['pill-grey', kennt ? 'gestoppt' : 'unbekannt'], dot: kennt ? '' : 'dot-busy',
+           sub: alt || 'Gestoppt auf dem Root-Server – oben rechts starten' };
+}
+
+/* Ports, die der Root-Server gerade vergeben hat. */
+function hostedPorts(r) {
+  const live = (r && r.ports_live) || {};
+  const feste = (r && r.ports) || {};
+  const nimm = (k) => Number(live[k] || feste[k] || 0) || 0;
+  return { java: nimm('java'), bedrock: nimm('bedrock') };
+}
+
+/* Adresse zum Eintippen: die Unterdomäne vom Root-Server. Bedrock braucht den Port dazu, Java
+   nicht – dort hört der Verteiler auf dem Standardport. */
+function hostedAddress(s, r) {
+  const roh = String((r && r.address) || hostedLink(s).address || '').trim();
+  const m = /^(.+):(\d+)$/.exec(roh);
+  const host = m ? m[1] : roh;
+  const ports = hostedPorts(r);
+  const bedrock = String((r && r.type) || s.type) === 'bedrock';
+  const port = m ? Number(m[2]) : (bedrock ? ports.bedrock : ports.java) || Number((r && r.port) || 0);
+  return { host, port, bedrock, mitPort: !!(host && port && (bedrock || port !== 25565)),
+           full: host + (host && port && bedrock ? ':' + port : '') };
+}
+
+/* Zahlen für Übersicht und Auffrischen (reiner Text – wird mit textContent gesetzt). */
+function hostedStats(s, r) {
+  const st = hostedState(s, r);
+  const live = (r && r.live) || {};
+  const spieler = firstNum([r && r.players_online, live.players_online, r && r.players]);
+  const max = firstNum([r && r.players_max, live.players_max, r && r.max_players, s.max_players]);
+  const tps = firstNum([r && r.tps, live.tps]);
+  const dauer = firstNum([r && r.uptime, live.uptime]);
+  const belegt = firstNum([r && r.memory_mb, live.memory_mb]);
+  const ram = firstNum([r && r.ram_mb, live.ram_mb, s.ram_mb]) || 0;
+  const kennt = hostedKnown(r);
+  const laeuft = kennt && !!r.running;
+  return {
+    big: st.big, sub: st.sub,
+    players: !kennt ? '–'
+      : spieler === null ? (laeuft ? 'unbekannt' : '0' + (max ? ' / ' + max : ''))
+      : spieler + (max ? ' / ' + max : ''),
+    uptime: laeuft && dauer ? fmtUptime(dauer) : '–',
+    ram: laeuft && belegt ? fmtMb(belegt) + ' von ' + fmtMb(ram) : (ram ? fmtMb(ram) : '–'),
+    tps: tps === null ? '–' : komma(tps),
+    tpsTone: tps === null ? '' : (tps >= 19 ? 'ok' : tps >= 15 ? 'warn' : 'bad'),
+  };
+}
+
+/* ---------- Stand holen und im Takt halten */
+
+function hostedReset(instance) {
+  state.hosted.instance = instance || '';
+  state.hosted.remote = null;
+  state.hosted.settings = null;
+  state.hosted.props = null;
+  state.hosted.error = '';
+  state.hosted.key = '';
+  state.hosted.log = { next: 0, lines: [] };
+  state.hosted.files = { path: '', entries: null, open: null, text: '', dirty: false, error: '', busy: false };
+}
+
+async function loadHosted(s) {
+  const id = hostedLink(s).instance;
+  if (!id) return null;
+  if (state.hosted.instance !== id) hostedReset(id);
+  try {
+    const d = await api('cloud/instance?instance=' + encodeURIComponent(id));
+    state.hosted.remote = d.server || null;
+    state.hosted.settings = d.settings || null;
+    state.hosted.error = '';
+  } catch (e) { state.hosted.error = e.message; }
+  return state.hosted.remote;
+}
+
+function startHostedPolling() {
+  clearInterval(state.timers.hosted);
+  state.timers.hosted = setInterval(hostedTick, 5000);
+}
+
+function stopHostedPolling() {
+  clearInterval(state.timers.hosted); state.timers.hosted = null;
+  clearInterval(state.timers.hostedLog); state.timers.hostedLog = null;
+}
+
+async function hostedTick() {
+  if (state.view !== 'server') { stopHostedPolling(); return; }
+  const s = server();
+  if (!isHostedServer(s)) { stopHostedPolling(); render(); return; }
+  await loadHosted(s);
+  patchHostedStatus();
+}
+
+/* Nur Zahlen und Texte auffrischen. Ändert sich der Zustand (läuft/schläft/gestoppt), wird die
+   Seite ganz neu gezeichnet – dann stimmen auch Knöpfe und Hinweise wieder. */
+function patchHostedStatus() {
+  if (state.view !== 'server') return;
+  const s = server();
+  if (!s || !isHostedServer(s)) { render(); return; }
+  const r = hostedRemote(s) || {};
+  const st = hostedState(s, r);
+  if (st.key !== state.hosted.key) {
+    if (state.tab === 'players') state.players.data = null;      // Knöpfe hängen am Laufzustand
+    render();
+    return;
+  }
+  const werte = hostedStats(s, r);
+  $$('[data-hst]').forEach((el) => {
+    const wert = werte[el.dataset.hst];
+    if (wert !== undefined && el.textContent !== String(wert)) el.textContent = wert;
+  });
+  const fehler = $('#hostedError');
+  if (fehler) fehler.textContent = state.hosted.error || '';
+  renderSidebar();
+}
+
+/* Seite neu zeichnen, ohne dem Benutzer die Eingabe wegzunehmen. */
+function paintHosted() {
+  if (state.view !== 'server') return;
+  const s = server();
+  if (!s || !isHostedServer(s)) return;
+  if (modalOpen()) return;
+  const aktiv = document.activeElement;
+  if (aktiv && /^(INPUT|TEXTAREA|SELECT)$/.test(aktiv.tagName) && $('#view').contains(aktiv)) return;
+  const main = $('#main');
+  const oben = main ? main.scrollTop : 0;
+  $('#view').innerHTML = renderHostedServer(s);
+  bindHostedServer(s);
+  if (main) main.scrollTop = oben;
+}
+
+/* ---------- Die Seite */
+
+function renderHostedServer(s) {
+  const r = hostedRemote(s) || {};
+  const st = hostedState(s, r);
+  const werte = hostedStats(s, r);
+  state.hostedView = true;
+  state.hosted.key = st.key;
+  const laeuft = st.key === 'on';
+  const startbar = !laeuft && String(r.state || hostedLink(s).state || '') === 'hosted';
+  if (state.tab === 'players' && !playersApply(s)) state.tab = 'overview';
+  const tabs = [['overview', 'Übersicht'], ['connect', 'Verbinden'],
+    ...(playersApply(s) ? [['players', 'Spieler']] : []),
+    ['console', 'Konsole'], ['files', 'Dateien'], ['settings', 'Einstellungen']];
+  let body = '';
+  if (state.tab === 'overview') body = hostedOverview(s, r, st, werte);
+  else if (state.tab === 'connect') body = hostedConnect(s, r);
+  else if (state.tab === 'players') body = tabPlayers(s, true);
+  else if (state.tab === 'console') body = hostedConsoleTab(s, r);
+  else if (state.tab === 'files') body = hostedFilesTab(s, r);
+  else body = hostedSettings(s, r);
+  return `
+  <div class="head">
+    <div><h1>${esc(s.name)} <span class="cloud-tag" title="Läuft auf dem Root-Server">☁</span></h1>
+      <div class="head-sub"><span class="dot ${st.dot}"></span>
+        <span data-hst="sub">${esc(werte.sub)}</span>
+        · ${typeLabel(s)} · ${esc(r.version || s.version)}</div></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnStart" ${startbar ? '' : 'disabled'}
+        ${startbar ? '' : (laeuft ? 'title="Der Server läuft schon."' : 'title="In diesem Zustand lässt sich der Server auf dem Root-Server nicht starten."')}>▶ Starten</button>
+      <button class="btn btn-danger" id="btnStop" ${laeuft ? '' : 'disabled'}>■ Stoppen</button>
+    </div>
+  </div>
+  <div class="tabs">${tabs.map(([k, t]) => `<div class="tab ${state.tab === k ? 'active' : ''}" data-tab="${k}">${t}</div>`).join('')}</div>
+  <div class="page wide">
+    ${state.hosted.error ? `<div class="note note-warn" style="margin-top:0"><b>Der Root-Server antwortet gerade nicht.</b>
+      <p class="mb0" id="hostedError">${esc(state.hosted.error)}</p>
+      <p class="mb0 small">Angezeigt wird der letzte bekannte Stand. Der Manager fragt weiter nach.</p></div>` : ''}
+    ${body}
+  </div>`;
+}
+
+/* Der ruhige Streifen statt der alten Sperrmeldung. */
+function hostedStrip(s) {
+  const link = hostedLink(s);
+  return `<div class="hosted-strip">
+    <span class="hs-ico" aria-hidden="true">☁</span>
+    <div class="hs-txt"><b>Dieser Server läuft auf dem Root-Server.</b>
+      Bedient wird er von hier aus wie ein Server auf diesem PC; die Kopie auf diesem PC bleibt
+      unangetastet und wird nicht gestartet.</div>
+    <div class="btn-row">
+      <button class="btn btn-sm" data-cloud-pull-local="${esc(link.instance || '')}">⬇ Zurück auf diesen PC holen</button>
+      <button class="btn btn-sm" data-cloud-goto="1">Cloud öffnen</button>
+    </div>
+  </div>`;
+}
+
+function hostedAddrBlock(s, r) {
+  const a = hostedAddress(s, r);
+  if (!a.host) {
+    return `<div class="muted small">Die Adresse meldet der Root-Server, sobald der Server dort
+      eingerichtet ist.</div>`;
+  }
+  const zeile = (label, wert, pill) => `<div class="addr addr-pub">
+    <div><div class="a-k">${label}</div><div class="a-v">${esc(wert)}</div></div>
+    <button class="btn btn-sm" data-copy="${esc(wert)}" aria-label="${esc(wert)} kopieren">⧉ Kopieren</button>
+    ${pill ? `<span class="pill pill-green">${pill}</span>` : ''}</div>`;
+  const ports = hostedPorts(r);
+  const crossplay = !a.bedrock && (r.geyser || s.geyser) && ports.bedrock;
+  return zeile(a.bedrock ? 'Für deine Freunde · Bedrock (Konsole, Handy, Windows-App)'
+    : 'Für deine Freunde · Java Edition', a.host)
+    + (a.bedrock ? `<div class="muted small">Port <b>${ports.bedrock || a.port}</b> – in der Bedrock-App
+        stehen Adresse und Port in zwei Feldern.</div>`
+      : `<div class="muted small">Ohne Port – der Verteiler auf dem Root-Server hört auf dem
+        Standardport <b>25565</b>.</div>`)
+    + (crossplay ? zeile('Für Konsolen und Handys · Bedrock', a.host, 'UDP')
+      + `<div class="muted small">Port <b>${ports.bedrock}</b> (Crossplay über Geyser).</div>` : '');
+}
+
+function hostedOverview(s, r, st, werte) {
+  const set = state.hosted.settings || {};
+  const schlaf = set.hibernation_known === false ? null : (set.hibernation !== false);
+  const minuten = Number(set.hibernation_minutes || 15);
+  return `
+  <div class="dash">
+    <div class="hero">
+      <div>
+        <div class="h-status"><span class="h-dot ${st.key === 'on' ? 'on' : st.key === 'sleep' ? 'sleep' : ''}"></span>
+          <div><div class="h-big" data-hst="big">${esc(werte.big)}</div>
+          <div class="h-sub" data-hst="sub">${esc(werte.sub)}</div></div></div>
+        <div class="spacer"></div>
+        <div class="muted small">${typeLabel(s)} · Version <b>${esc(r.version || s.version)}</b>
+          · auf dem Root-Server${r.size_text ? ' · ' + esc(r.size_text) : ''}</div>
+        <div class="btn-row" style="margin-top:14px">
+          <button class="btn btn-sm" data-tab-go="console">🖥 Konsole</button>
+          <button class="btn btn-sm" data-tab-go="connect">🔗 Verbinden</button>
+          <button class="btn btn-sm" data-tab-go="files">📂 Dateien</button>
+          <button class="btn btn-sm" data-tab-go="settings">⚙ Einstellungen</button>
+        </div>
+      </div>
+      <div class="h-addr">${hostedAddrBlock(s, r)}</div>
+    </div>
+
+    ${hostedStrip(s)}
+
+    <div class="kpis">
+      <div class="stat"><div class="k">Spieler</div><div class="v" data-hst="players">${esc(werte.players)}</div></div>
+      <div class="stat"><div class="k">Laufzeit</div><div class="v" data-hst="uptime">${esc(werte.uptime)}</div></div>
+      <div class="stat"><div class="k">Arbeitsspeicher</div><div class="v sm" data-hst="ram">${esc(werte.ram)}</div></div>
+      <div class="stat ${werte.tpsTone}"><div class="k">TPS</div><div class="v" data-hst="tps">${esc(werte.tps)}</div></div>
+    </div>
+
+    <div class="grid2" style="margin:0">
+      <div class="card">
+        <div class="card-head"><h3>😴 Ruhezustand bei Leerstand</h3>
+          <span class="pill ${schlaf === null ? 'pill-grey' : schlaf ? 'pill-sleep' : 'pill-grey'}">${
+            schlaf === null ? 'unbekannt' : schlaf ? 'an · ' + minuten + ' Min.' : 'aus'}</span></div>
+        ${schlaf === null
+          ? `<p class="small mb0">Dieser Root-Server meldet noch nicht, ob er den Ruhezustand kennt.
+             Sobald er es tut, lässt er sich hier und in den <a href="#" data-tab-go="settings">Einstellungen</a> schalten.</p>`
+          : `<p class="small">${schlaf
+            ? `Ist ${minuten} Minuten lang niemand auf dem Server, speichert er die Welt und fährt herunter.
+               <b>Ein schlafender Server verbraucht kein Kontingent</b> – er gibt Platz und Arbeitsspeicher
+               in deinem Pass wieder frei. Beim Beitritt startet er von selbst.`
+            : 'Der Server bleibt eingeschaltet, auch wenn niemand spielt – er belegt dann dauerhaft einen Platz und den Arbeitsspeicher deines Passes.'}</p>
+             <div class="btn-row"><button class="btn btn-sm" data-tab-go="settings">Ruhezustand einstellen</button></div>`}
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>🖥 Konsole – letzte Zeilen</h3>
+          <button class="btn btn-sm" data-tab-go="console">Öffnen</button></div>
+        <div class="minilog" id="hostedMiniLog">${r.running ? 'Wird geladen …' : 'Der Server läuft gerade nicht.'}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------- Verbinden (ohne FritzBox und Portfreigabe – die gibt es auf dem Root nicht) */
+
+function hostedConnect(s, r) {
+  const a = hostedAddress(s, r);
+  const ports = hostedPorts(r);
+  const crossplay = !a.bedrock && (r.geyser || s.geyser) && ports.bedrock;
+  return `
+  <div class="grid2" style="margin-top:0">
+    <div>
+      <h2 style="margin-top:0">Adresse für deine Freunde</h2>
+      <p>Der Server läuft im Rechenzentrum – es braucht <b>keine Portfreigabe</b> und die Adresse
+         bleibt immer dieselbe, auch wenn dieser PC aus ist.</p>
+      ${hostedAddrBlock(s, r)}
+      <h2>So tragen deine Freunde ihn ein</h2>
+      ${a.bedrock || crossplay ? `<ul>
+        <li><b>Handy / Windows-App / Konsole:</b> <b>Spielen → Server → Server hinzufügen</b>,
+          Adresse <code>${esc(a.host)}</code>, Port <code>${ports.bedrock || a.port}</code>.</li>
+        <li><b>Xbox, PlayStation, Switch:</b> Konsolen haben kein Eingabefeld für Server. Am
+          einfachsten tritt jemand am Handy bei und die Konsole folgt über die Freundesliste –
+          oder über den DNS-Weg (<a href="#" data-gohelp="console">Hilfe</a>).</li>
+      </ul>` : ''}
+      ${!a.bedrock ? `<ul>
+        <li><b>Java Edition:</b> <b>Mehrspieler → Server hinzufügen</b> mit
+          <code>${esc(a.host)}</code> – ohne Port.</li>
+        ${isModpack(s) ? '<li>Mitspieler brauchen <b>dasselbe Modpack in derselben Version</b> in ihrem Launcher.</li>' : ''}
+      </ul>` : ''}
+    </div>
+    <div>
+      <h2 style="margin-top:0">Gut zu wissen</h2>
+      <div class="note note-info" style="margin-top:0"><b>Schlafender Server:</b> Ist der Server
+        eingeschlafen, steht er in der Serverliste trotzdem normal da. Der erste Beitritt weckt
+        ihn – der Spieler wird dabei freundlich getrennt („Der Server startet gerade“) und kommt
+        etwa eine Minute später herein.</div>
+      <div class="note note-info"><b>Keine Freigaben nötig:</b> Windows-Firewall und FritzBox
+        spielen hier keine Rolle. Diese Schritte gibt es nur für Server auf diesem PC.</div>
+      ${playersApply(s) ? `<div class="note note-info mb0"><b>Nur bestimmte Spieler?</b> Unter
+        <a href="#" data-tab-go="players">Spieler</a> lässt sich die
+        ${s.type === 'bedrock' ? 'Erlaubnisliste' : 'Freigabeliste'} einschalten – dann kommt nur
+        herein, wer darauf steht.</div>` : ''}
+    </div>
+  </div>`;
+}
+
+/* ---------- Konsole des Root-Servers */
+
+function hostedConsoleTab(s, r) {
+  const laeuft = !!r.running;
+  const schlaeft = hostedSleeping(r);
+  return `
+  <div class="console" id="console"></div>
+  <div class="cmd-row">
+    <input type="text" id="cmdInput" ${laeuft ? '' : 'disabled'}
+      placeholder="${laeuft ? 'Befehl eingeben, z. B. list  oder  say Hallo'
+        : schlaeft ? 'Der Server schläft – zum Senden zuerst starten' : 'Server starten, um Befehle zu senden'}">
+    <button class="btn" id="cmdSend" ${laeuft ? '' : 'disabled'}>Senden</button>
+  </div>
+  <p class="muted small">Die Befehle gehen an den Server auf dem Root-Server – dieselben wie bei einem
+     Server auf diesem PC. Nützlich: <code>list</code> (wer ist online) · <code>op Spielername</code> ·
+     <code>say Text</code> · ${s.type === 'bedrock' ? '<code>allowlist add Name</code>' : '<code>save-all</code> · <code>whitelist add Name</code>'}</p>`;
+}
+
+function hostedConsoleTick() {
+  const s = server();
+  if (!s || !isHostedServer(s) || state.tab !== 'console') return;
+  const id = hostedLink(s).instance;
+  const log = state.hosted.log;
+  api(`cloud/console?instance=${encodeURIComponent(id)}&since=${log.next}`).then((d) => {
+    if (d.next !== undefined) log.next = d.next;
+    if (!d.lines || !d.lines.length) return;
+    log.lines = log.lines.concat(d.lines).slice(-500);
+    const box = $('#console');
+    if (!box) return;
+    const kleben = (box.scrollHeight - box.scrollTop - box.clientHeight) < 60;
+    box.innerHTML = log.lines.map((l) => `<div class="${classify(l)}">${esc(l)}</div>`).join('');
+    if (kleben) box.scrollTop = box.scrollHeight;
+  }).catch(() => { /* nächster Versuch */ });
+}
+
+function startHostedConsole() {
+  const box = $('#console');
+  const log = state.hosted.log;
+  if (box) {
+    box.innerHTML = log.lines.length
+      ? log.lines.map((l) => `<div class="${classify(l)}">${esc(l)}</div>`).join('')
+      : '<div class="muted">Wird geladen …</div>';
+    box.scrollTop = box.scrollHeight;
+  }
+  clearInterval(state.timers.hostedLog);
+  hostedConsoleTick();
+  state.timers.hostedLog = setInterval(hostedConsoleTick, 1500);
+}
+
+async function loadHostedMiniLog(s) {
+  const box = $('#hostedMiniLog');
+  if (!box) return;
+  try {
+    const d = await api(`cloud/console?instance=${encodeURIComponent(hostedLink(s).instance)}&tail=10`);
+    const lines = d.lines || [];
+    if (lines.length) box.innerHTML = lines.map((l) => `<div class="${classify(l)}">${esc(l)}</div>`).join('');
+    else box.textContent = d.running ? 'Noch keine Ausgabe.' : 'Der Server läuft gerade nicht.';
+  } catch (e) { box.textContent = e.message; }
+}
+
+/* ---------- Dateien auf dem Root-Server (dieselbe Ansicht wie im Bereich „Cloud“) */
+
+function hostedFilesTab(s, r) {
+  return `
+  <div class="card cl-detail" style="margin-top:0">
+    ${cloudFilesPanel(s)}
+  </div>
+  <p class="muted small">Die Dateien liegen auf dem Root-Server: Welten, Plugins, Konfiguration.
+     Der Ordner <code>backups</code> deiner lokalen Kopie bleibt auf diesem PC.</p>`;
+}
+
+/* ---------- Einstellungen: Instanz auf dem Root und server.properties */
+
+function hostedSettings(s, r) {
+  const set = state.hosted.settings || {};
+  const d = cloudData();
+  const laeuft = !!r.running;
+  const ram = Number(set.ram_mb || r.ram_mb || s.ram_mb || 2048);
+  const budget = firstNum([d.ram_total_mb, (d.limits || {}).ram_total_mb]) || 0;
+  const belegt = firstNum([d.ram_used_mb]) || 0;
+  const bekannt = set.hibernation_known !== false;
+  const an = set.hibernation !== false;
+  const minuten = Number(set.hibernation_minutes || 15);
+  return `
+  <h2 style="margin-top:0">Server auf dem Root-Server</h2>
+  <div class="grid2" style="margin-top:0">
+    <div>
+      ${fieldInput('hs_name', 'Name des Servers', set.name || r.name || s.name,
+        { hint: 'Nur die Anzeige – die Adresse deiner Freunde bleibt gleich.' })}
+      <div class="field"><label for="hs_ram">Arbeitsspeicher: <b id="hs_ramLabel">${gb(ram)}</b></label>
+        <input type="range" id="hs_ram" min="1024" max="${Math.max(8192, budget || 8192)}" step="512" value="${ram}"
+          ${laeuft ? 'disabled' : ''}>
+        <div class="hint">${budget
+          ? `Dein Pass erlaubt zusammen <b>${fmtMb(budget)}</b> über alle <b>laufenden</b> Server; belegt sind gerade <b>${fmtMb(belegt)}</b>.`
+          : 'Wie viel erlaubt ist, sagt dein Pass im Bereich „Cloud“.'}
+          ${laeuft ? '<br><b>Der Server läuft – der Arbeitsspeicher lässt sich erst nach dem Stoppen ändern.</b>' : ''}</div></div>
+    </div>
+    <div>
+      <div class="card" style="margin:0">
+        <div class="card-head"><h3 style="margin:0">😴 Ruhezustand bei Leerstand</h3>
+          <span class="pill ${bekannt ? (an ? 'pill-sleep' : 'pill-grey') : 'pill-grey'}">${
+            bekannt ? (an ? 'an' : 'aus') : 'unbekannt'}</span></div>
+        ${fieldCheck('hs_hibernation', 'Ruhezustand einschalten',
+          'Ist eine Weile niemand auf dem Server, speichert er die Welt und fährt sauber herunter.', an)}
+        ${fieldInput('hs_minutes', 'Wartezeit in Minuten', minuten,
+          { type: 'number', min: set.minutes_min || 5, max: set.minutes_max || 1440,
+            hint: 'Standard: 15 Minuten. Nach einem Start gilt eine kurze Schonfrist, damit ein frisch geweckter Server nicht sofort wieder einschläft.' })}
+        <div class="note note-info mb0"><b>Ein schlafender Server verbraucht kein Kontingent.</b>
+          Er gibt Platz und Arbeitsspeicher in deinem Pass wieder frei, bleibt in der Serverliste
+          aber normal sichtbar – und <b>startet von selbst, sobald jemand beitritt</b>.</div>
+        ${bekannt ? '' : `<div class="note note-warn mb0" style="margin-top:10px">Dieser Root-Server
+          kennt den Ruhezustand noch nicht. Die Einstellung lässt sich speichern, wirkt aber erst,
+          wenn der Betreiber ihn nachgerüstet hat.</div>`}
+      </div>
+    </div>
+  </div>
+  <div class="btn-row"><button class="btn btn-primary" id="hsSave">Einstellungen speichern</button>
+    <span class="muted small" id="hsHint"></span></div>
+
+  <h2>Alle Optionen (server.properties)</h2>
+  ${laeuft ? `<div class="note note-warn" style="margin-top:0">Der Server läuft. Stoppe ihn, um
+     <code>server.properties</code> auf dem Root-Server zu ändern – ein laufender Server schreibt die
+     Datei sonst gleich wieder um.</div>` : ''}
+  <div id="hostedProps"><div class="muted small">server.properties wird vom Root-Server geholt …</div></div>
+
+  <h2>Auf diesen PC zurückholen</h2>
+  <p class="muted">Alle Dateien werden übertragen und einzeln mit Prüfsumme verglichen. Erst danach
+     wird der Ordner auf dem Root-Server gelöscht und die Kopie auf diesem PC wieder freigegeben.
+     Löschen und Neuinstallieren gibt es hier erst wieder, wenn der Server zurück ist.</p>
+  <div class="btn-row">
+    <button class="btn" data-cloud-pull-local="${esc(hostedLink(s).instance || '')}">⬇ Zurück auf diesen PC holen</button>
+    <button class="btn" data-cloud-goto="1">Bereich „Cloud“ öffnen</button>
+  </div>`;
+}
+
+function hostedPropsBox(laeuft) {
+  const p = state.hosted.props;
+  if (!p) return '<div class="muted small">server.properties wird vom Root-Server geholt …</div>';
+  if (p.error) return `<div class="note note-err mb0" style="margin-top:0">${esc(p.error)}</div>`;
+  if (!p.exists) {
+    return `<div class="muted small">Auf dem Root-Server gibt es noch keine <code>server.properties</code> –
+      sie entsteht beim ersten Start.</div>`;
+  }
+  const bekannt = (p.fields || []).filter((x) => x.known);
+  const andere = (p.fields || []).filter((x) => !x.known);
+  const row = (fd) => `<div class="prop"><div><div class="p-label">${esc(fd.label)}</div>
+    <div class="p-key">${esc(fd.key)}</div></div>
+    <div>${propControl(fd)}</div>${fd.desc ? `<div class="p-desc">${esc(fd.desc)}</div>` : ''}</div>`;
+  return `
+  <div class="editor-body" style="padding:0">
+    <div class="prop-group"><h4>Wichtige Einstellungen</h4>${bekannt.map(row).join('') || '<div class="muted small">–</div>'}</div>
+    <div class="prop-group"><h4>Weitere Einstellungen</h4>${andere.map(row).join('') || '<div class="muted small">–</div>'}</div>
+  </div>
+  <div class="btn-row"><button class="btn btn-primary" id="hpSave" ${laeuft ? 'disabled title="Server zuerst stoppen"' : ''}>💾 server.properties speichern</button>
+    <span class="muted small">Änderungen wirken nach dem nächsten Start des Servers.</span></div>`;
+}
+
+async function loadHostedProps(s) {
+  const box = $('#hostedProps');
+  if (!box) return;
+  try {
+    const d = await api('cloud/props?instance=' + encodeURIComponent(hostedLink(s).instance));
+    state.hosted.props = d;
+  } catch (e) { state.hosted.props = { error: e.message, fields: [], exists: false }; }
+  const neu = $('#hostedProps');
+  if (!neu) return;
+  const r = hostedRemote(s) || {};
+  neu.innerHTML = hostedPropsBox(!!r.running);
+  bindHostedProps(s);
+}
+
+function bindHostedProps(s) {
+  const speichern = $('#hpSave');
+  if (!speichern) return;
+  speichern.onclick = async () => {
+    const values = {};
+    $$('#hostedProps [data-key]:not([disabled])').forEach((el) => values[el.dataset.key] = el.value);
+    speichern.disabled = true;
+    try {
+      const d = await api('cloud/props', { method: 'POST',
+        body: { instance: hostedLink(s).instance, values } });
+      state.hosted.props = { exists: true, fields: d.fields || [] };
+      toast('server.properties auf dem Root-Server gespeichert. Wirkt nach dem nächsten Start.');
+    } catch (e) { toast(e.message, true); }
+    speichern.disabled = false;
+  };
+}
+
+/* ---------- Bindungen */
+
+function bindHostedServer(s) {
+  const r = hostedRemote(s) || {};
+  const id = hostedLink(s).instance;
+  $$('.tab').forEach((el) => el.onclick = () => {
+    if (el.dataset.tab === 'console') state.hosted.log = { next: 0, lines: [] };
+    state.tab = el.dataset.tab;
+    render();
+  });
+  $$('[data-tab-go]').forEach((el) => el.onclick = (e) => { e.preventDefault(); state.tab = el.dataset.tabGo; render(); });
+  $$('[data-gohelp]').forEach((el) => el.onclick = (e) => { e.preventDefault(); showHelp(el.dataset.gohelp); });
+  $$('[data-copy]').forEach((el) => el.onclick = () => copyText(el.dataset.copy, 'Adresse'));
+  $$('[data-cloud-goto]').forEach((el) => el.onclick = () => openCloud());
+  $$('[data-cloud-pull-local]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPullLocal));
+
+  const start = $('#btnStart');
+  if (start) start.onclick = async () => {
+    start.disabled = true;
+    try {
+      await api('cloud/start', { method: 'POST', body: { instance: id } });
+      toast('Der Server auf dem Root-Server wird gestartet …');
+      state.tab = 'console';
+      state.hosted.log = { next: 0, lines: [] };
+      await loadHosted(s);
+      render();
+    } catch (e) { toast(e.message, true); start.disabled = false; }
+  };
+  const stop = $('#btnStop');
+  if (stop) stop.onclick = async () => {
+    if (!(await askConfirm({
+      tone: 'danger', icon: '■', title: `„${s.name}“ auf dem Root-Server stoppen?`, confirmText: 'Stoppen',
+      text: 'Die Spieler bekommen zehn Sekunden Vorwarnung, danach wird der Server sauber beendet '
+        + 'und die Welt gespeichert. Wer gerade spielt, fliegt dabei heraus.',
+    }))) return;
+    stop.disabled = true;
+    try {
+      const d = await api('cloud/stop', { method: 'POST', body: { instance: id, announce_seconds: 10 } });
+      toast(d.message || 'Der Server wird gestoppt …');
+      await loadHosted(s);
+      patchHostedStatus();
+    } catch (e) { toast(e.message, true); stop.disabled = false; }
+  };
+
+  if (state.tab === 'overview') loadHostedMiniLog(s);
+
+  if (state.tab === 'players') {
+    if (!state.players.data || state.players.instance !== id) loadPlayers(s, true);
+    else renderPlayersBox(s, state.players.data, true);
+  }
+
+  if (state.tab === 'console') {
+    const senden = async () => {
+      const feld = $('#cmdInput');
+      const befehl = (feld.value || '').trim();
+      if (!befehl) return;
+      feld.value = '';
+      try { await api('cloud/command', { method: 'POST', body: { instance: id, command: befehl } }); }
+      catch (e) { toast(e.message, true); }
+      hostedConsoleTick();
+    };
+    const knopf = $('#cmdSend');
+    if (knopf) knopf.onclick = senden;
+    const feld = $('#cmdInput');
+    if (feld) feld.onkeydown = (e) => { if (e.key === 'Enter') senden(); };
+    startHostedConsole();
+  }
+
+  if (state.tab === 'files') {
+    bindRemoteFiles();
+    const f = state.hosted.files;
+    if (f.entries === null && f.open === null && !f.busy) cloudLoadFiles(f.path);
+  }
+
+  if (state.tab === 'settings') {
+    const schieber = $('#hs_ram');
+    const label = $('#hs_ramLabel');
+    if (schieber && label) schieber.oninput = () => label.textContent = gb(Number(schieber.value));
+    const speichern = $('#hsSave');
+    if (speichern) speichern.onclick = () => saveHostedSettings(s);
+    if (!state.hosted.props) loadHostedProps(s);
+    else { const box = $('#hostedProps'); if (box) { box.innerHTML = hostedPropsBox(!!r.running); bindHostedProps(s); } }
+  }
+
+  // Beim ersten Öffnen ist noch kein Stand da (die Cloud-Liste kommt nur jede Minute) – einmal
+  // gleich nachfragen, danach übernimmt der Takt.
+  if (!state.hosted.remote || state.hosted.instance !== id) {
+    loadHosted(s).then(patchHostedStatus).catch(() => {});
+  }
+  startHostedPolling();
+}
+
+async function saveHostedSettings(s) {
+  const knopf = $('#hsSave');
+  const body = { instance: hostedLink(s).instance };
+  const name = $('#hs_name');
+  const ram = $('#hs_ram');
+  const schlaf = $('#hs_hibernation');
+  const minuten = $('#hs_minutes');
+  if (name) body.name = name.value;
+  if (ram && !ram.disabled) body.ram_mb = Number(ram.value);
+  if (schlaf) body.hibernation = !!schlaf.checked;
+  if (minuten) body.hibernation_minutes = Number(minuten.value);
+  if (knopf) knopf.disabled = true;
+  try {
+    const d = await api('cloud/settings', { method: 'POST', body });
+    if (d.supported === false) {
+      toast(d.hint || 'Dieser Root-Server kann die Einstellungen noch nicht ändern.', true);
+    } else {
+      state.hosted.remote = d.server || state.hosted.remote;
+      state.hosted.settings = d.settings || state.hosted.settings;
+      toast('Einstellungen auf dem Root-Server gespeichert.');
+      if ((d.ignored || []).length) {
+        toast('Den Ruhezustand kennt dieser Root-Server noch nicht – der Rest ist gespeichert.', true);
+      }
+      await refresh().catch(() => {});
+      render();
+      return;
+    }
+  } catch (e) { toast(e.message, true); }
+  if (knopf) knopf.disabled = false;
 }
 
 /* ------------------------------------------------------------------ Assistent: Xbox-Freunde-Modus */
@@ -2270,7 +2991,8 @@ function cloudSig() {
     d.logged_in, d.error, d.needs_invite, d.user, d.passes, d.limits, d.limits_text, d.notices,
     d.machine, d.slots_used, d.ram_used_mb, d.transfer, d.logged_in_at, d.session_expires_at, d.base,
     (d.servers || []).map((s) => [s.id, s.name, s.state, s.state_text, s.running, s.address, s.port,
-      s.ram_text, s.size_text, s.can_pull, s.live, s.players_online, s.tps, s.local_name, s.version]),
+      s.ram_text, s.size_text, s.can_pull, s.live, s.players_online, s.tps, s.local_name, s.version,
+      s.sleeping, s.hibernation, s.hibernation_minutes, s.local_id]),
     state.servers.map((s) => [s.id, s.name, s.installed, s.running, s.installing, s.cloud_locked,
       s.cloud, s.version, s.ram_mb, s.type, s.flavor]),
     c.open, c.busy, c.error, c.loading, c.login, c.hideBanner,
@@ -2493,14 +3215,26 @@ function cloudAccountPage(d) {
          <div class="cl-main">
            ${cloudTransferBox(d)}
            ${cloudDetailBox(d)}
-           ${cloudRemoteBox(d)}
-           ${cloudLocalBox(d)}
+           ${cloudServerHint(d)}
          </div>
          <div class="cl-side">
            ${cloudMachineBox(d)}
            ${cloudTipBox(d)}
          </div>
        </div>`;
+}
+
+/** Statt einer zweiten Serverliste nur ein Hinweis – die Server stehen in der Seitenleiste. */
+function cloudServerHint(d) {
+  const hosted = (d.servers || []).length;
+  const gesamt = (state.servers || []).length;
+  return `<div class="card">
+    <div class="card-head"><h3>🗂 Deine Server</h3>
+      <span class="muted small">${hosted} von ${gesamt} auf dem Root-Server</span></div>
+    <p class="small mb0">Alle Server stehen links unter <b>Meine Server</b> – die auf dem Root-Server tragen
+       die Pille <span class="srv-pill srv-pill-cloud">Cloud</span>, die hier auf dem PC
+       <span class="srv-pill srv-pill-local">Lokal</span>. Ein Klick öffnet immer dieselbe Seite mit denselben
+       Reitern; verschieben und zurückholen findest du dort in der Übersicht.</p></div>`;
 }
 
 /** Meldungen des Root-Servers – unverändert, sie kommen von dort. */
@@ -2684,15 +3418,20 @@ function cloudRemoteCard(s) {
   const belegt = firstNum([live.memory_mb, s.memory_mb]);
   const ramText = esc(s.ram_text || gb(s.ram_mb || 0));
   // Der Root-Server nennt die Adresse bei Bedrock schon mit Port – dann keinen zweiten anhängen.
+  // Java braucht keinen: der Verteiler auf dem Root-Server hört auf dem Standardport 25565.
   const roh = String(s.address || '');
-  const adresse = roh && !roh.includes(':') && s.port ? roh + ':' + s.port : roh;
-  const zustand = s.state === 'hosted' ? (running ? ['pill-green', 'läuft'] : ['pill-grey', 'gestoppt'])
+  const java = String(s.type) !== 'bedrock';
+  const adresse = roh && !roh.includes(':') && s.port && !(java && Number(s.port) === 25565)
+    ? roh + ':' + s.port : roh;
+  const schlaeft = hostedSleeping(s);
+  const zustand = s.state === 'hosted'
+    ? (running ? ['pill-green', 'läuft'] : schlaeft ? ['pill-sleep', 'schläft'] : ['pill-grey', 'gestoppt'])
     : s.state === 'awaiting_pull' || s.state === 'downloading' ? ['pill-amber', esc(s.state_text || cloudStateText(s.state))]
       : ['pill-grey', esc(s.state_text || cloudStateText(s.state))];
   return `
   <article class="rsv ${running ? 'is-on' : ''}${offen ? ' is-open' : ''}${busy ? ' is-busy' : ''}">
     <header class="rsv-head">
-      <span class="dot ${running ? 'dot-on' : ''}" aria-hidden="true"></span>
+      <span class="dot ${running ? 'dot-on' : schlaeft ? 'dot-sleep' : ''}" aria-hidden="true"></span>
       <h4 class="rsv-name">${esc(s.name)}</h4>
       <span class="pill ${zustand[0]}">${zustand[1]}</span>
     </header>
@@ -2704,7 +3443,7 @@ function cloudRemoteCard(s) {
         <button class="btn btn-sm" data-copy="${esc(adresse)}" aria-label="Adresse von ${esc(s.name)} kopieren">⧉ Kopieren</button>
       </div>` : ''}
     <div class="rsv-stats">
-      ${statBox('Zustand', running ? 'Online' : 'Offline', running ? 'ok' : '')}
+      ${statBox('Zustand', running ? 'Online' : schlaeft ? 'Schläft' : 'Offline', running ? 'ok' : '')}
       ${spieler !== null ? statBox('Spieler', esc(String(spieler)) + (spielerMax ? ' / ' + esc(String(spielerMax)) : '')) : ''}
       ${running && laufzeit ? statBox('Laufzeit', esc(fmtUptime(laufzeit))) : ''}
       ${statBox('Arbeitsspeicher', belegt ? esc(fmtMb(belegt)) + ' <span class="mini">von ' + ramText + '</span>' : ramText)}
@@ -2713,6 +3452,8 @@ function cloudRemoteCard(s) {
     <div class="rsv-btns btn-row">
       <button class="btn btn-sm btn-primary" data-cloud-start="${esc(s.id)}" ${canStart && !busy ? '' : 'disabled'}>▶ Starten</button>
       <button class="btn btn-sm btn-danger" data-cloud-stop="${esc(s.id)}" ${running && !busy ? '' : 'disabled'}>■ Stoppen</button>
+      ${s.local_id ? `<button class="btn btn-sm" data-hosted-open="${esc(s.local_id)}"
+        title="Alle Reiter dieses Servers – Übersicht, Spieler, Konsole, Dateien, Einstellungen">⚙ Bedienen</button>` : ''}
       <button class="btn btn-sm" data-cloud-open="${esc(s.id)}">🖥 Konsole</button>
       <button class="btn btn-sm" data-cloud-files="${esc(s.id)}">📂 Dateien</button>
       <button class="btn btn-sm" data-cloud-pull="${esc(s.id)}" ${s.can_pull && !busy ? '' : 'disabled'}
@@ -2763,8 +3504,16 @@ function cloudConsolePanel(s) {
     dieselben wie in der Konsole eines Servers auf diesem PC.</div>`;
 }
 
+/* Dateien auf dem Root-Server – dieselbe Ansicht im Bereich „Cloud“ und auf der Serverseite eines
+   gehosteten Servers. Welche Instanz und welcher Zustand gemeint sind, sagen diese drei Helfer. */
+const remoteFiles = () => state.hostedView && state.view === 'server' ? state.hosted.files : state.cloud.files;
+const remoteFilesId = () => state.hostedView && state.view === 'server'
+  ? (hostedLink(server() || {}).instance || '')
+  : ((state.cloud.open || {}).id || '');
+const remoteFilesPaint = () => { if (state.hostedView && state.view === 'server') paintHosted(); else paintCloud(); };
+
 function cloudFilesPanel(s) {
-  const f = state.cloud.files;
+  const f = remoteFiles();
   if (f.open !== null) {
     return `
     <div class="cl-editor-head">
@@ -2833,11 +3582,12 @@ function cloudLocalBox(d) {
           ${hosted ? `<span class="pill ${wartet ? 'pill-amber' : 'pill-blue'}">${esc(cloudStateText(link.state))}</span>`
             : '<span class="pill pill-grey">auf diesem PC</span>'}</div>
         <div class="w-meta">${esc(s.version || '')} · ${esc(gb(s.ram_mb))}${link.address ? ' · ' + esc(link.address) : ''}</div>
-        ${hosted ? `<div class="loc-lock"><span aria-hidden="true">🔒</span>
+        ${hosted ? `<div class="loc-lock">
           ${wartet ? 'Warte auf die Rückholung – erst danach lässt sich die Kopie hier wieder starten.'
-            : 'Die Kopie auf diesem PC ist gesperrt: gespielt wird gerade auf dem Root-Server.'}</div>` : ''}
+            : 'Bedient wird er auf seiner Serverseite; die Kopie auf diesem PC bleibt derweil liegen.'}</div>` : ''}
       </div>
       <div class="btn-row">
+        ${hosted && !wartet ? `<button class="btn btn-sm" data-hosted-open="${esc(s.id)}">⚙ Bedienen</button>` : ''}
         ${hosted
           ? `<button class="btn btn-sm ${wartet ? 'btn-primary' : ''}" data-cloud-pull-local="${esc(link.instance || '')}"
                ${link.instance && !busy ? '' : 'disabled'}>⬇ Zurück auf diesen PC holen</button>`
@@ -3227,27 +3977,31 @@ async function cloudLoadLog() {
 }
 
 async function cloudLoadFiles(path) {
-  const open = state.cloud.open;
-  if (!open) return;
-  const f = state.cloud.files;
+  const id = remoteFilesId();
+  if (!id) return;
+  const f = remoteFiles();
   f.path = path || ''; f.open = null; f.error = ''; f.entries = null; f.dirty = false;
-  paintCloud();
+  // „busy“ hält das Neuzeichnen davon ab, gleich noch einmal zu laden (die Bindung lädt nur,
+  // wenn noch nichts da ist).
+  f.busy = true;
+  remoteFilesPaint();
   try {
-    const d = await api(`cloud/files?instance=${encodeURIComponent(open.id)}&path=${encodeURIComponent(f.path)}`);
+    const d = await api(`cloud/files?instance=${encodeURIComponent(id)}&path=${encodeURIComponent(f.path)}`);
     f.entries = d.entries || [];
     f.path = d.path || f.path;
   } catch (e) { f.error = e.message; f.entries = []; }
-  paintCloud();
+  f.busy = false;
+  remoteFilesPaint();
 }
 
 async function cloudOpenFile(path) {
-  const open = state.cloud.open;
-  const f = state.cloud.files;
+  const id = remoteFilesId();
+  const f = remoteFiles();
   try {
-    const d = await api(`cloud/file?instance=${encodeURIComponent(open.id)}&path=${encodeURIComponent(path)}`);
+    const d = await api(`cloud/file?instance=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}`);
     f.open = d.path || path; f.text = d.text || ''; f.error = ''; f.dirty = false;
   } catch (e) { f.error = e.message; }
-  paintCloud();
+  remoteFilesPaint();
 }
 
 async function copyText(text, was = 'Adresse') {
@@ -3311,6 +4065,8 @@ function bindCloud() {
   $$('[data-cloud-pull]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPull));
   $$('[data-cloud-pull-local]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPullLocal));
   $$('[data-cloud-push]').forEach((el) => el.onclick = () => cloudUpload(el.dataset.cloudPush));
+  // „Bedienen“: zur Serverseite des gehosteten Servers – dort gibt es alle Reiter.
+  $$('[data-hosted-open]').forEach((el) => el.onclick = () => openServer(el.dataset.hostedOpen));
 
   $$('[data-cloud-open]').forEach((el) => el.onclick = () => cloudOpenConsole(el.dataset.cloudOpen));
   $$('[data-cloud-files]').forEach((el) => el.onclick = () => {
@@ -3351,6 +4107,36 @@ function bindCloud() {
     cmd.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send.click(); } };
   }
 
+  bindRemoteFiles();
+
+  const resume = $('#cloudResume');
+  if (resume) resume.onclick = () => {
+    const t = cloudData().transfer || {};
+    if (t.kind === 'upload') cloudUpload(t.local); else cloudDownload(t.instance);
+  };
+  const abortT = $('#cloudAbortT');
+  if (abortT) abortT.onclick = async () => {
+    const t = cloudData().transfer || {};
+    const ok = await askConfirm({
+      tone: 'danger', title: 'Übertragung verwerfen?', confirmText: 'Verwerfen',
+      text: 'Die angefangene Übertragung wird auf dem Root-Server abgebrochen. Der Server bleibt auf '
+        + 'diesem PC spielbar. Beim nächsten Anlauf beginnt die Übertragung von vorn.',
+    });
+    if (!ok) return;
+    try { await api('cloud/abort', { method: 'POST', body: { server: t.local } }); toast('Verworfen.'); }
+    catch (e) { toast(e.message, true); }
+    await loadCloud(true);
+  };
+
+  const jc = $('#cloudJobClose');
+  if (jc) jc.onclick = () => { state.cloud.job = null; state.cloud.rate = null; paintCloud(); };
+}
+
+/* Bedienung der Dateien auf dem Root-Server – im Bereich „Cloud“ und im Reiter „Dateien“ eines
+   gehosteten Servers dieselbe. Welche Instanz gemeint ist, sagt remoteFilesId(). */
+function bindRemoteFiles() {
+  const f = remoteFiles();
+  const instanz = () => remoteFilesId();
   $$('[data-cloud-dir]').forEach((el) => el.onclick = (e) => { e.preventDefault(); cloudLoadFiles(el.dataset.cloudDir); });
   $$('[data-cloud-file]').forEach((el) => el.onclick = () => cloudOpenFile(el.dataset.cloudFile));
   $$('[data-cloud-del]').forEach((el) => el.onclick = async () => {
@@ -3363,9 +4149,9 @@ function bindCloud() {
     if (!ok) return;
     el.disabled = true;
     try {
-      await api('cloud/file/delete', { method: 'POST', body: { instance: state.cloud.open.id, path: pfad } });
+      await api('cloud/file/delete', { method: 'POST', body: { instance: instanz(), path: pfad } });
       toast('Gelöscht.');
-      await cloudLoadFiles(state.cloud.files.path);
+      await cloudLoadFiles(f.path);
     } catch (e) { toast(e.message, true); el.disabled = false; }
   });
   $$('[data-cloud-ren]').forEach((el) => el.onclick = async () => {
@@ -3386,9 +4172,9 @@ function bindCloud() {
     const teile = pfad.split('/'); teile.pop();
     try {
       await api('cloud/file/rename', { method: 'POST',
-        body: { instance: state.cloud.open.id, path: pfad, new_path: teile.concat(neu).join('/') } });
+        body: { instance: instanz(), path: pfad, new_path: teile.concat(neu).join('/') } });
       toast('Umbenannt.');
-      await cloudLoadFiles(state.cloud.files.path);
+      await cloudLoadFiles(f.path);
     } catch (e) { toast(e.message, true); }
   });
   const mk = $('#cloudMkdir');
@@ -3400,18 +4186,18 @@ function bindCloud() {
       validate: (v) => (String(v.mdlInput || '').trim() ? '' : 'Bitte einen Namen eintragen.'),
     });
     if (!name) return;
-    const p = state.cloud.files.path ? state.cloud.files.path + '/' + name : name;
+    const p = f.path ? f.path + '/' + name : name;
     try {
-      await api('cloud/file/mkdir', { method: 'POST', body: { instance: state.cloud.open.id, path: p } });
+      await api('cloud/file/mkdir', { method: 'POST', body: { instance: instanz(), path: p } });
       toast('Ordner angelegt.');
-      await cloudLoadFiles(state.cloud.files.path);
+      await cloudLoadFiles(f.path);
     } catch (e) { toast(e.message, true); }
   };
   $$('[data-cloud-get]').forEach((el) => el.onclick = async () => {
     el.disabled = true;
     try {
       const r = await api('cloud/file/download', { method: 'POST',
-        body: { instance: state.cloud.open.id, path: el.dataset.cloudGet } });
+        body: { instance: instanz(), path: el.dataset.cloudGet } });
       toast(`Liegt jetzt hier: ${r.local}`);
     } catch (e) { toast(e.message, true); }
     el.disabled = false;
@@ -3436,57 +4222,35 @@ function bindCloud() {
       for (let i = 0; i < puffer.length; i += 0x8000) {
         roh += String.fromCharCode.apply(null, puffer.subarray(i, i + 0x8000));
       }
-      const ordner = state.cloud.files.path ? state.cloud.files.path + '/' : '';
+      const ordner = f.path ? f.path + '/' : '';
       await api('cloud/file/upload', { method: 'POST',
-        body: { instance: state.cloud.open.id, name: datei.name, path: ordner + datei.name, inhalt: btoa(roh) } });
+        body: { instance: instanz(), name: datei.name, path: ordner + datei.name, inhalt: btoa(roh) } });
       toast('Hochgeladen.');
-      await cloudLoadFiles(state.cloud.files.path);
+      await cloudLoadFiles(f.path);
     } catch (e) { toast(e.message, true); }
     add.disabled = false;
   };
   const back = $('#cloudFileBack');
   if (back) back.onclick = async () => {
-    if (state.cloud.files.dirty && !(await askConfirm({
+    if (f.dirty && !(await askConfirm({
       tone: 'danger', title: 'Ungespeicherte Änderungen verwerfen?', confirmText: 'Verwerfen',
       text: 'In dieser Datei stehen Änderungen, die noch nicht auf dem Root-Server gespeichert sind.',
     }))) return;
-    cloudLoadFiles(state.cloud.files.path);
+    cloudLoadFiles(f.path);
   };
   const text = $('#cloudFileText');
-  if (text) text.oninput = () => { state.cloud.files.text = text.value; state.cloud.files.dirty = true; };
+  if (text) text.oninput = () => { f.text = text.value; f.dirty = true; };
   const save = $('#cloudFileSave');
   if (save) save.onclick = async () => {
     save.disabled = true;
     try {
-      await api('cloud/file', { method: 'POST', body: { instance: state.cloud.open.id,
-        path: state.cloud.files.open, content: $('#cloudFileText').value } });
-      state.cloud.files.dirty = false;
+      await api('cloud/file', { method: 'POST', body: { instance: instanz(),
+        path: f.open, content: $('#cloudFileText').value } });
+      f.dirty = false;
       toast('Gespeichert.');
     } catch (e) { toast(e.message, true); }
     save.disabled = false;
   };
-
-  const resume = $('#cloudResume');
-  if (resume) resume.onclick = () => {
-    const t = cloudData().transfer || {};
-    if (t.kind === 'upload') cloudUpload(t.local); else cloudDownload(t.instance);
-  };
-  const abortT = $('#cloudAbortT');
-  if (abortT) abortT.onclick = async () => {
-    const t = cloudData().transfer || {};
-    const ok = await askConfirm({
-      tone: 'danger', title: 'Übertragung verwerfen?', confirmText: 'Verwerfen',
-      text: 'Die angefangene Übertragung wird auf dem Root-Server abgebrochen. Der Server bleibt auf '
-        + 'diesem PC spielbar. Beim nächsten Anlauf beginnt die Übertragung von vorn.',
-    });
-    if (!ok) return;
-    try { await api('cloud/abort', { method: 'POST', body: { server: t.local } }); toast('Verworfen.'); }
-    catch (e) { toast(e.message, true); }
-    await loadCloud(true);
-  };
-
-  const jc = $('#cloudJobClose');
-  if (jc) jc.onclick = () => { state.cloud.job = null; state.cloud.rate = null; paintCloud(); };
 }
 
 function cloudOpenConsole(id) {

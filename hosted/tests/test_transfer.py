@@ -5,10 +5,12 @@ import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import pathlib
 import shutil
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -27,6 +29,12 @@ transfer = importlib.import_module("hosted_core.transfer")
 def write(path: pathlib.Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+
+
+#: So viele Dateien der Prüf-Instanz gehen wirklich über die Leitung: die acht Dateien aus
+#: ``make_instance`` ohne ``server.jar`` und ``logs/latest.log`` – beides beschafft der Root
+#: selbst (siehe ``paths.NACHLADBAR_DIRS`` / ``NACHLADBAR_FILES``).
+UEBERTRAGENE_DATEIEN = 6
 
 
 def make_instance(root: pathlib.Path) -> None:
@@ -79,8 +87,15 @@ class Basis(unittest.TestCase):
 
 class TestManifest(Basis):
     def test_manifest_zaehlt_und_hasht(self):
-        self.assertEqual(self.manifest["file_count"], 8)
-        gesamt = sum(p.stat().st_size for p in self.source.rglob("*") if p.is_file())
+        # server.jar und logs/latest.log fehlen mit Absicht: der Root-Server holt den Serverkern
+        # selbst und legt Protokolle neu an (paths.nachladbar).
+        self.assertEqual(self.manifest["file_count"], UEBERTRAGENE_DATEIEN)
+        namen = [e["path"] for e in self.manifest["files"]]
+        self.assertNotIn("server.jar", namen)
+        self.assertNotIn("logs/latest.log", namen)
+        gesamt = sum(p.stat().st_size for p in self.source.rglob("*")
+                     if p.is_file()
+                     and not paths.nachladbar(p.relative_to(self.source).as_posix()))
         self.assertEqual(self.manifest["total_bytes"], gesamt)
         index = transfer.manifest_index(self.manifest)
         self.assertIn("plugins/EssentialsX.jar", index)
@@ -131,7 +146,8 @@ class TestManifest(Basis):
         self.assertEqual(bericht["missing_count"], 1)
 
     def test_groesse_und_platz(self):
-        self.assertEqual(transfer.dir_size(self.source), self.manifest["total_bytes"])
+        # `dir_size` misst den ganzen Ordner, das Manifest nur das, was übertragen wird.
+        self.assertGreater(transfer.dir_size(self.source), self.manifest["total_bytes"])
         self.assertEqual(transfer.dir_stats(self.source)["files"], 8)
         self.assertGreater(transfer.free_space(self.tmp), 0)
         transfer.check_space(self.tmp, 1024, reserve=0)
@@ -147,8 +163,11 @@ class TestUpload(Basis):
         push(session, self.source)
         bericht = session.finish()
         self.assertTrue(bericht["ok"])
-        self.assertEqual(bericht["files"], 8)
+        self.assertEqual(bericht["files"], UEBERTRAGENE_DATEIEN)
         self.assertEqual(session.state, "done")
+        # Der Serverkern ist nicht mitgekommen – er wird auf dem Root beschafft.
+        self.assertFalse((self.target / "server.jar").exists())
+        self.assertFalse((self.target / "logs").exists())
         pruefung = transfer.verify(self.target, self.manifest)
         self.assertTrue(pruefung["ok"])
         self.assertEqual((self.target / "welt" / "region" / "r.0.0.mca").read_bytes(),
@@ -326,10 +345,10 @@ class TestRueckholung(Basis):
         # eine Datei verstümmeln, eine löschen
         with (self.target / "welt" / "region" / "r.0.0.mca").open("r+b") as fh:
             fh.truncate(1000)
-        (self.target / "logs" / "latest.log").unlink()
+        (self.target / "plugins" / "config" / "config.yml").unlink()
         bericht = transfer.verify(self.target, self.manifest)
         self.assertFalse(bericht["ok"])
-        self.assertEqual(bericht["missing"], ["logs/latest.log"])
+        self.assertEqual(bericht["missing"], ["plugins/config/config.yml"])
         self.assertEqual(bericht["wrong_size"], ["welt/region/r.0.0.mca"])
         with self.assertRaises(ValueError):
             transfer.confirm_pull(self.target, self.manifest)
@@ -443,6 +462,173 @@ class TestGrenzenUndPlatz(Basis):
         self.assertTrue(any("x" * 210 in p for p in uebersprungen), uebersprungen)
         self.assertTrue(all("x" * 210 not in e["path"] for e in bericht["files"]))
         self.assertTrue(bericht["skipped"][0]["reason"])
+
+
+class TestNachladbares(Basis):
+    """Was der Root selbst beschaffen kann, geht in **keiner** Richtung über die Leitung."""
+
+    def test_manifest_laesst_nachladbares_weg(self):
+        write(self.source / "libraries" / "a" / "b.jar", os.urandom(5000))
+        write(self.source / "versions" / "1.21" / "x.jar", os.urandom(5000))
+        write(self.source / "cache" / "mojang.json", b"{}")
+        write(self.source / "crash-reports" / "crash.txt", b"oh")
+        bericht = transfer.build_manifest(self.source)
+        namen = [e["path"] for e in bericht["files"]]
+        for weg in ("server.jar", "libraries/a/b.jar", "versions/1.21/x.jar",
+                    "cache/mojang.json", "logs/latest.log", "crash-reports/crash.txt"):
+            self.assertNotIn(weg, namen)
+        # und sie dürfen auch nicht als „übersprungen“ gemeldet werden: sonst verweigerte der
+        # Daemon nach jeder Rückholung die Freigabe.
+        gemeldet = [e["path"] for e in bericht["skipped"]]
+        self.assertEqual(gemeldet, [])
+
+    def test_rueckholung_vermisst_nichts_was_nie_hochgeladen_wurde(self):
+        """Der Ablauf einer Rückholung: hochladen, auf dem Root nachladen, Manifest vergleichen."""
+        session = self.begin_upload()
+        push(session, self.source)
+        session.finish()
+        # Der Root beschafft den Serverkern selbst – danach liegt mehr im Ordner als übertragen.
+        write(self.target / "server.jar", b"vom Root geladen")
+        write(self.target / "libraries" / "paper" / "netty.jar", os.urandom(3000))
+        write(self.target / "logs" / "latest.log", b"[INFO] laeuft\n")
+        vom_root = transfer.build_manifest(self.target)
+        self.assertEqual(vom_root["file_count"], UEBERTRAGENE_DATEIEN)
+        # Der PC hat genau dieses Manifest heruntergeladen und meldet es zurück.
+        bericht = transfer.compare_manifests(vom_root, transfer.check_manifest(vom_root))
+        self.assertTrue(bericht["ok"], bericht)
+        self.assertEqual(vom_root["skipped"], [])
+
+    def test_einzelne_datei_bleibt_lesbar(self):
+        """`logs/latest.log` gehört in keine Übertragung – ansehen darf man sie trotzdem."""
+        self.assertEqual(paths.check_transfer("logs/latest.log"), "logs/latest.log")
+        session = self.begin_upload()
+        push(session, self.source)
+        session.finish()
+        write(self.target / "logs" / "latest.log", b"[INFO] Fertig\n")
+        self.assertEqual(transfer.read_chunk(self.target, "logs/latest.log", 0, 100),
+                         b"[INFO] Fertig\n")
+
+    def test_listen_sind_auf_beiden_seiten_gleich(self):
+        """core/cloud.py (PC) muss dieselben Listen führen wie paths.py (Root-Server)."""
+        import ast
+        quelle = pathlib.Path(_HOSTED).parent / "core" / "cloud.py"
+        if not quelle.is_file():
+            self.skipTest("Das Programm für den PC liegt hier nicht (reine Server-Ablage).")
+        baum = ast.parse(quelle.read_text(encoding="utf-8"))
+        gefunden: dict[str, set] = {}
+        for knoten in baum.body:
+            if not isinstance(knoten, ast.Assign) or len(knoten.targets) != 1:
+                continue
+            ziel = knoten.targets[0]
+            if isinstance(ziel, ast.Name) and ziel.id in ("NACHLADBAR_DIRS", "NACHLADBAR_FILES"):
+                gefunden[ziel.id] = set(ast.literal_eval(knoten.value))
+        self.assertEqual(gefunden.get("NACHLADBAR_DIRS"), paths.NACHLADBAR_DIRS)
+        self.assertEqual(gefunden.get("NACHLADBAR_FILES"), paths.NACHLADBAR_FILES)
+
+
+def tar_paket(dateien: dict) -> bytes:
+    """Ein Paket bauen, wie es das Programm auf dem PC schickt."""
+    puffer = io.BytesIO()
+    with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT,
+                      encoding="utf-8") as archiv:
+        for name, inhalt in dateien.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(inhalt)
+            info.mtime = 1758790000
+            archiv.addfile(info, io.BytesIO(inhalt))
+    return puffer.getvalue()
+
+
+class TestPaket(Basis):
+    """Viele kleine Dateien in einer Anfrage – 92 % aller Dateien sind kleiner als 1 MB."""
+
+    def kleine(self) -> dict:
+        index = transfer.manifest_index(self.manifest)
+        return {name: (self.source / name).read_bytes()
+                for name, eintrag in index.items()
+                if 0 < eintrag["size"] <= transfer.BUNDLE_SMALL_BYTES}
+
+    def test_paket_wird_angenommen(self):
+        session = self.begin_upload()
+        dateien = self.kleine()
+        self.assertGreaterEqual(len(dateien), 4)
+        ergebnis = session.write_bundle(tar_paket(dateien))
+        self.assertEqual(ergebnis["files"], len(dateien))
+        for name, inhalt in dateien.items():
+            self.assertEqual((self.target / name).read_bytes(), inhalt)
+        self.assertFalse(list(self.target.rglob("*" + transfer.PART_SUFFIX)))
+        push(session, self.source)                 # der Rest geht in Stücken
+        self.assertTrue(session.finish()["ok"])
+
+    def test_paket_darf_wiederholt_werden(self):
+        session = self.begin_upload()
+        paket = tar_paket(self.kleine())
+        session.write_bundle(paket)
+        noch_einmal = session.write_bundle(paket)
+        self.assertEqual(noch_einmal["files"], 0)
+        self.assertEqual(noch_einmal["skipped_count"], len(self.kleine()))
+
+    def test_paket_wehrt_ausbruch_und_falsche_angaben_ab(self):
+        session = self.begin_upload()
+        index = transfer.manifest_index(self.manifest)
+        echt = (self.source / "plugins" / "config" / "config.yml").read_bytes()
+        boese = [
+            {"../../geheim.txt": b"weg damit"},                  # Ausbruch
+            {"/etc/passwd": b"weg damit"},                       # absoluter Pfad
+            {".mcsm/install.json": b"{}"},                       # Verwaltungsdatei
+            {"nicht-im-manifest.txt": b"fremd"},                 # nicht angekündigt
+            {"plugins/config/config.yml": echt + b"mehr"},       # falsche Größe
+            {"plugins/config/config.yml": b"x" * len(echt)},     # falsche Prüfsumme
+        ]
+        for paket in boese:
+            with self.subTest(paket=list(paket)[0]):
+                with self.assertRaises(ValueError):
+                    session.write_bundle(tar_paket(paket))
+        self.assertFalse((self.tmp / "geheim.txt").exists())
+        self.assertFalse((self.target / "nicht-im-manifest.txt").exists())
+        # Nach all dem ist die Datei unverändert – und die Übertragung noch offen.
+        self.assertIn("plugins/config/config.yml", index)
+        self.assertEqual(session.state, "open")
+
+    def test_paket_nimmt_keine_verknuepfungen(self):
+        session = self.begin_upload()
+        puffer = io.BytesIO()
+        with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT) as archiv:
+            info = tarfile.TarInfo("plugins/EssentialsX.jar")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/etc/passwd"
+            archiv.addfile(info)
+        with self.assertRaises(ValueError) as fehler:
+            session.write_bundle(puffer.getvalue())
+        self.assertIn("gewöhnliche Datei", str(fehler.exception))
+
+    def test_paket_zu_gross_wird_abgelehnt(self):
+        session = self.begin_upload()
+        with self.assertRaises(ValueError):
+            session.write_bundle(b"x" * (transfer.BUNDLE_MAX_BYTES + 1))
+
+    def test_packen_fuer_die_rueckholung(self):
+        session = self.begin_upload()
+        push(session, self.source)
+        session.finish()
+        namen = [name for name, e in transfer.manifest_index(self.manifest).items()
+                 if 0 < e["size"] <= transfer.BUNDLE_SMALL_BYTES]
+        paket, enthalten = transfer.pack_files(self.target, namen)
+        self.assertEqual({e["path"] for e in enthalten}, set(namen))
+        with tarfile.open(fileobj=io.BytesIO(paket), mode="r|") as archiv:
+            gelesen = {m.name: archiv.extractfile(m).read() for m in archiv}
+        for name in namen:
+            self.assertEqual(gelesen[name], (self.source / name).read_bytes())
+
+    def test_packen_laesst_zu_grosse_und_fehlende_weg(self):
+        session = self.begin_upload()
+        push(session, self.source)
+        session.finish()
+        paket, enthalten = transfer.pack_files(
+            self.target, ["welt/region/r.0.0.mca", "gibtsnicht.txt", "welt/level.dat"],
+            small_bytes=10_000)
+        self.assertEqual([e["path"] for e in enthalten], ["welt/level.dat"])
+        self.assertTrue(paket)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,49 @@ TECH_NAMES = {"libraries", "versions", "cache", ".paper-remapped", "bundler", "s
               "quilt-server-launch.jar", "modpack-index.json", ".fabric", ".quilt",
               "installer.log", "mods-unsupported"}
 
+# ---------------------------------------------------------------- Nachladbares
+#
+# Diese Listen sind **die** Stelle, an der entschieden wird, was eine Übertragung auslässt.
+# Beide Richtungen fragen dieselbe Funktion `nachladbar()`: der Upload lässt die Einträge weg,
+# und das Manifest für die Rückholung tut es genauso. Sonst würde beim Zurückholen etwas als
+# „fehlt“ gelten, das nie hochgeladen wurde, und die Freigabe käme nie durch.
+#
+# Gemessen an einem echten Server: `libraries` 79 MB, `cache` 58 MB, `versions` 28 MB, dazu
+# `logs` – zusammen 56 % der Daten. Der Root-Server holt das in Sekunden selbst
+# (`core/sources_linux.py`: Paper-Jar in derselben Version, Java, Geyser/Floodgate); über die
+# Leitung des Benutzers dauert dasselbe Minuten.
+#
+# Alle Namen klein geschrieben – verglichen wird ohne Rücksicht auf Groß- und Kleinschreibung,
+# damit ein vom PC mitgebrachtes „Libraries“ genauso erkannt wird.
+
+#: Ordner, die der Root-Server selbst beschafft oder ohnehin neu anlegt.
+NACHLADBAR_DIRS = {
+    "libraries",            # Abhängigkeiten von Paper – lädt der Server beim Start selbst
+    "versions",             # entpackte Serverversionen
+    "cache",                # Zwischenspeicher von Paper und Mojang
+    ".paper-remapped",      # wird aus server.jar erzeugt
+    "bundler",              # wird aus server.jar erzeugt
+    "logs",                 # Protokolle des Servers
+    "crash-reports",        # Absturzberichte
+    "debug",                # Fehlersuche-Ausgaben
+    # Bedrock: `install_bedrock` entpackt das Archiv jedes Mal neu und lässt dabei nur
+    # Welt und Konfiguration stehen.
+    "definitions", "minecraftpe", "treatments", "internalstorage", "world_templates",
+    "premium_cache",
+}
+
+#: Dateien **im Wurzelverzeichnis** der Instanz, die zum Serverkern gehören.
+NACHLADBAR_FILES = {
+    "server.jar", "paper.jar", "build.txt",
+    "bedrock_server", "bedrock_server.exe", "bedrock_server_how_to.html",
+    "release-notes.txt", "profanity_filter.wlist", "dedicated_server.txt",
+}
+
+#: Ordner, die auf dem PC zu Hause sind: Sicherungen würden die Übertragung leicht verdoppeln.
+#: Sie werden **nicht** hochgeladen; was auf dem Root entsteht, kommt aber mit zurück.
+#: (Das Gegenstück auf dem PC ist ``SKIP_TOP_DIRS`` in ``core/cloud.py``.)
+NUR_LOKAL_DIRS = {"backups"}
+
 #: Endungen, die in der Dateiliste zugeklappt bleiben (technisch, nicht interessant).
 HIDDEN_EXT = {".exe", ".dll", ".pdb", ".lock", ".dat_old", ".bak", ".tmp", PART_SUFFIX}
 
@@ -464,8 +507,44 @@ def is_text(rel: str) -> bool:
     return ext in TEXT_EXT
 
 
+def _erste_teile(rel: str) -> list[str]:
+    """Bestandteile eines Pfads, klein geschrieben – ohne die strenge Prüfung von ``parts``.
+
+    ``nachladbar`` wird mitten im Einlesen eines Ordners aufgerufen (für jeden Eintrag) und darf
+    deshalb nicht an einem ungewöhnlichen Namen scheitern: unbrauchbare Namen lehnt an dieser
+    Stelle schon ``normalize`` ab.
+    """
+    text = str(rel or "").replace("\\", "/").strip("/")
+    return [t.lower() for t in text.split("/") if t not in ("", ".")]
+
+
+def nachladbar(rel: str) -> bool:
+    """Kann der Root-Server diesen Eintrag selbst beschaffen? Dann wird er nie übertragen.
+
+    Gilt für **beide** Richtungen (siehe ``NACHLADBAR_DIRS``): Was hier wahr ist, steht in keinem
+    Manifest – nicht beim Hochladen und nicht bei der Rückholung.
+    """
+    teile = _erste_teile(rel)
+    if not teile:
+        return False
+    if teile[0] in NACHLADBAR_DIRS:
+        return True
+    return len(teile) == 1 and teile[0] in NACHLADBAR_FILES
+
+
+def nur_lokal(rel: str) -> bool:
+    """Bleibt dieser Eintrag beim Hochladen auf dem PC (Sicherungen)?"""
+    teile = _erste_teile(rel)
+    return bool(teile) and teile[0] in NUR_LOKAL_DIRS
+
+
 def check_transfer(rel: str) -> str:
-    """Pfadprüfung für Übertragungen: alles außer Verwaltungsdateien und Teil-Dateien."""
+    """Pfadprüfung für Übertragungen: alles außer Verwaltungsdateien und Teil-Dateien.
+
+    Hier wird **nicht** auf ``nachladbar`` geprüft: eine einzelne Datei aus ``logs`` darf sich der
+    Benutzer weiter ansehen und herunterladen – sie gehört nur nicht in eine Übertragung des
+    ganzen Ordners. Das entscheidet ``walk_files`` bzw. ``transfer.build_manifest``.
+    """
     norm = normalize(rel)
     if not norm:
         raise ValueError("Es fehlt der Dateiname.")
@@ -562,7 +641,8 @@ def list_dir(root, rel: str = "") -> dict:
     return {"path": norm, "entries": entries}
 
 
-def walk_files(root, rel: str = "", *, skip_reserved: bool = True, skipped: list | None = None):
+def walk_files(root, rel: str = "", *, skip_reserved: bool = True, skipped: list | None = None,
+               nachladbar_auslassen: bool = False):
     """Alle Dateien unter ``rel`` als relative Pfade (keine Verknüpfungen, sortiert).
 
     Verknüpfungen werden übersprungen statt zu einem Fehler zu führen: beim Einlesen eines
@@ -571,6 +651,10 @@ def walk_files(root, rel: str = "", *, skip_reserved: bool = True, skipped: list
     Wird ``skipped`` (eine Liste) mitgegeben, landen dort alle ausgelassenen Einträge als
     ``{"path": …, "reason": …}``. Der Daemon braucht das vor dem Löschen eines Ordners: was nicht
     im Manifest steht, hat der PC nie heruntergeladen und darf deshalb nicht ungesehen weg.
+
+    ``nachladbar_auslassen`` lässt alles weg, was der Root-Server selbst beschaffen kann
+    (``nachladbar``). Diese Einträge kommen **nicht** in ``skipped``: sie fehlen nicht, sie
+    gehören absichtlich nicht dazu – sonst verweigerte die Freigabe nach jeder Rückholung.
     """
     def note(pfad: str, grund: str) -> None:
         if skipped is not None and len(skipped) < 200:
@@ -603,6 +687,8 @@ def walk_files(root, rel: str = "", *, skip_reserved: bool = True, skipped: list
                 note(child, str(exc))
                 continue
             if skip_reserved and classify(norm) == "reserved":
+                continue
+            if nachladbar_auslassen and nachladbar(norm):
                 continue
             if os.path.isdir(full):
                 subfolders.append((norm, full))

@@ -22,12 +22,14 @@ Alle Fehler sind ``ValueError`` mit einem verständlichen deutschen Satz.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pathlib
 import re
 import secrets
 import shutil
+import tarfile
 import threading
 import time
 
@@ -46,6 +48,14 @@ SESSION_MAX_AGE = 7 * 24 * 3600         # ältere Sitzungen werden aufgeräumt
 MAX_OPEN_SESSIONS_PER_USER = 8          # so viele offene Übertragungen darf ein Konto haben
 MAX_CACHED_SESSIONS = 64                # so viele Sitzungen bleiben im Arbeitsspeicher (LRU)
 SPACE_CHECK_EVERY = 8                   # alle so viele Stücke wird der freie Platz nachgeprüft
+
+# Pakete: 92 % der Dateien einer Instanz sind kleiner als 1 MB. Einzeln kostet jede von ihnen
+# eine eigene Anfrage – bei einer Leitung mit 20 ms Laufzeit mehr als ihr Inhalt. Sie gehen
+# deshalb gebündelt als tar-Strom in einer Anfrage über die Leitung und werden hier ausgepackt
+# (dieselben Pfadprüfungen wie bei einem einzelnen Stück, Größe und Prüfsumme je Datei).
+BUNDLE_SMALL_BYTES = 1024 * 1024        # bis hierher gilt eine Datei als „klein“
+BUNDLE_MAX_BYTES = 24 * 1024 * 1024     # so groß darf ein Paket höchstens sein (Arbeitsspeicher)
+BUNDLE_MAX_FILES = 400                  # so viele Dateien stecken höchstens in einem Paket
 
 MANIFEST_VERSION = 1
 SESSION_FILE = "session.json"
@@ -207,11 +217,18 @@ def human(num: int) -> str:
 
 # ---------------------------------------------------------------- Manifest
 
-def build_manifest(folder, *, rel: str = "", hashes: bool = True) -> dict:
+def build_manifest(folder, *, rel: str = "", hashes: bool = True,
+                   nachladbar_auslassen: bool = True) -> dict:
     """Liest einen Ordner ein und baut das Manifest (jede Datei mit Größe und SHA256).
 
     Bei ``hashes=False`` bleiben die Prüfsummen leer – nur für schnelle Übersichten, für eine
     Übertragung oder eine Bestätigung braucht es die echten Prüfsummen.
+
+    ``nachladbar_auslassen`` (Standard **an**) lässt weg, was der Root-Server selbst beschaffen
+    kann: ``libraries``, ``versions``, ``cache``, ``logs`` und den Serverkern
+    (``paths.nachladbar``). Das gilt mit Absicht auch für das Manifest der **Rückholung** – so
+    sehen beide Seiten dieselbe Liste, und was nie hochgeladen wurde, gilt beim Zurückholen
+    nicht als fehlend.
     """
     root = pathlib.Path(str(folder))
     if not root.is_dir():
@@ -219,7 +236,8 @@ def build_manifest(folder, *, rel: str = "", hashes: bool = True) -> dict:
     files: list[dict] = []
     skipped: list[dict] = []
     total = 0
-    for name in paths.walk_files(root, rel, skipped=skipped):
+    for name in paths.walk_files(root, rel, skipped=skipped,
+                                 nachladbar_auslassen=nachladbar_auslassen):
         full = paths.resolve(root, name)
         try:
             size = full.stat().st_size
@@ -360,7 +378,9 @@ def verify(folder, manifest: dict, *, hashes: bool = True) -> dict:
         checked += 1
         checked_bytes += size
     known = {e["path"] for e in manifest.get("files", [])}
-    extra = sorted(name for name in paths.walk_files(root)
+    # Nachladbares zählt nicht als „zusätzlich“: `libraries` und `logs` entstehen auf dem Root von
+    # selbst und gehören in kein Manifest – sonst meldete jeder Bericht hunderte Fundstücke.
+    extra = sorted(name for name in paths.walk_files(root, nachladbar_auslassen=True)
                    if name not in known and not name.endswith(PART_SUFFIX))
     return {
         "ok": not missing and not wrong_size and not wrong_hash,
@@ -446,6 +466,54 @@ def read_chunk(root, rel: str, offset: int, length: int = CHUNK_SIZE) -> bytes:
         raise ValueError(f"Die Datei „{name}“ ist nicht vorhanden.") from exc
     except IsADirectoryError as exc:
         raise ValueError(f"„{name}“ ist ein Ordner.") from exc
+
+
+def pack_files(root, names, *, max_bytes: int = BUNDLE_MAX_BYTES,
+               max_files: int = BUNDLE_MAX_FILES,
+               small_bytes: int = BUNDLE_SMALL_BYTES) -> tuple[bytes, list[dict]]:
+    """Packt viele **kleine** Dateien des Instanzordners in einen tar-Strom (Rückholung).
+
+    Das Gegenstück zu :meth:`_ChunkSession.write_bundle`: der PC holt hunderte kleine Dateien in
+    einer Anfrage statt in hunderten. Gelesen wird über Ordner-Deskriptoren
+    (``paths.lies_stueck``), es kommen also keine Verknüpfungen mit.
+
+    Rückgabe ``(tar-Bytes, Liste)``. Die Liste nennt zu jeder enthaltenen Datei ``path``, ``size``
+    und ``sha256``; der PC prüft damit jede Datei einzeln. Was nicht mehr hineinpasst, zu groß ist
+    oder nicht (mehr) existiert, bleibt einfach weg – der Aufrufer holt es dann in Stücken.
+    """
+    grenze = max(1, min(int(max_bytes or BUNDLE_MAX_BYTES), BUNDLE_MAX_BYTES))
+    hoechstzahl = max(1, min(int(max_files or BUNDLE_MAX_FILES), BUNDLE_MAX_FILES))
+    klein = max(1, min(int(small_bytes or BUNDLE_SMALL_BYTES), BUNDLE_SMALL_BYTES))
+    puffer = io.BytesIO()
+    enthalten: list[dict] = []
+    gesamt = 0
+    with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT,
+                      encoding="utf-8") as archiv:
+        for roh in list(names)[:hoechstzahl * 4]:
+            if len(enthalten) >= hoechstzahl:
+                break
+            name = paths.check_transfer(roh)
+            groesse = paths.groesse(root, name)
+            if groesse < 0 or groesse > klein:
+                continue
+            if gesamt + groesse > grenze and enthalten:
+                break
+            try:
+                inhalt = paths.lies_stueck(root, name, 0, groesse)
+            except (OSError, ValueError):
+                continue
+            if len(inhalt) != groesse:
+                continue                      # die Datei hat sich gerade geändert – später holen
+            info = tarfile.TarInfo(name)
+            info.size = len(inhalt)
+            info.mtime = _now()
+            info.mode = 0o644
+            info.type = tarfile.REGTYPE
+            archiv.addfile(info, io.BytesIO(inhalt))
+            enthalten.append({"path": name, "size": len(inhalt),
+                              "sha256": sha256_bytes(inhalt)})
+            gesamt += len(inhalt)
+    return puffer.getvalue(), enthalten
 
 
 # ---------------------------------------------------------------- Sitzungen
@@ -604,21 +672,33 @@ class _ChunkSession:
     def complete(self) -> bool:
         return len(self.done) >= len(self.index)
 
-    def status(self) -> dict:
-        """Zustand für das Programm auf dem PC (Fortschrittsanzeige und Wiederaufnahme)."""
+    def status(self, *, missing_limit: int = _REPORT_CAP) -> dict:
+        """Zustand für das Programm auf dem PC (Fortschrittsanzeige und Wiederaufnahme).
+
+        ``missing_limit`` bestimmt, wie viele offene Dateien die Antwort nennt. Der PC schickt
+        mehrere Dateien gleichzeitig und bündelt die kleinen – mit einer längeren Liste braucht er
+        für hunderte kleine Dateien nicht hunderte Runden.
+        """
         with self._lock:
+            grenze = max(1, min(int(missing_limit or _REPORT_CAP), MAX_FILES))
             return {
                 "id": self.id, "kind": self.kind, "state": self.state,
                 "target": str(self.target),
                 "instance_id": self.data.get("instance_id", ""),
                 "chunk_size": CHUNK_SIZE,
+                # Damit das Programm auf dem PC weiß, dass dieser Dienst Pakete annimmt
+                # (ältere Stände kennen die Route nicht und lassen die Felder weg).
+                "bundle": True,
+                "bundle_small_bytes": BUNDLE_SMALL_BYTES,
+                "bundle_max_bytes": BUNDLE_MAX_BYTES,
+                "bundle_max_files": BUNDLE_MAX_FILES,
                 "file_count": len(self.index),
                 "total_bytes": int(self.manifest.get("total_bytes") or 0),
                 "done_files": len(self.done),
                 "received_bytes": self.received_bytes(),
                 "skipped_files": len(self.data.get("skipped") or []),
                 "complete": self.complete(),
-                "missing": self.missing(),
+                "missing": self.missing(limit=grenze),
                 "next": self.next_needed(),
                 "created_at": self.data.get("created_at", 0),
                 "updated_at": self.data.get("updated_at", 0),
@@ -706,6 +786,99 @@ class _ChunkSession:
             self.save()
             return {"path": name, "offset": reached, "size": entry["size"],
                     "done": True, "complete": self.complete()}
+
+    # -------------------------------------------------- Paket mit kleinen Dateien
+
+    def write_bundle(self, data: bytes) -> dict:
+        """Nimmt ein **Paket** (tar-Strom) mit vielen kleinen Dateien in einer Anfrage an.
+
+        Jede Datei im Paket wird einzeln geprüft, als wäre sie ein Stück: Pfad durch
+        ``paths.check_transfer`` (kein Ausbruch, keine Verwaltungsdatei), sie muss zum Manifest
+        dieser Übertragung gehören, Größe und SHA256 müssen stimmen, und geschrieben wird über
+        Ordner-Deskriptoren (``paths.schreibe_atomar``) – eine Verknüpfung im Pfad kann den Inhalt
+        also nicht aus dem Instanzordner hinausleiten.
+
+        Dateien, die schon fertig sind, werden übergangen. Ein wiederholtes Paket nach einem
+        Verbindungsabriss ist damit unschädlich.
+        """
+        with self._lock:
+            if self.state != "open":
+                raise ValueError("Diese Übertragung ist abgeschlossen oder abgebrochen.")
+            if not isinstance(data, (bytes, bytearray)) or not data:
+                raise ValueError("Das Paket enthält keine Daten.")
+            data = bytes(data)
+            if len(data) > BUNDLE_MAX_BYTES:
+                raise ValueError(f"Ein Paket darf höchstens {human(BUNDLE_MAX_BYTES)} groß sein.")
+            check_space(self.target, len(data))
+            geschrieben: list[str] = []
+            uebergangen: list[str] = []
+            geschriebene_bytes = 0
+            try:
+                strom = tarfile.open(fileobj=io.BytesIO(data), mode="r|", encoding="utf-8")
+            except tarfile.TarError as exc:
+                raise ValueError("Das Paket ist beschädigt und lässt sich nicht auspacken.") from exc
+            try:
+                for nummer, eintrag in enumerate(strom, start=1):
+                    if nummer > BUNDLE_MAX_FILES:
+                        raise ValueError(f"Ein Paket darf höchstens {BUNDLE_MAX_FILES} Dateien "
+                                         f"enthalten.")
+                    if not eintrag.isfile():
+                        raise ValueError(f"„{eintrag.name}“ ist im Paket keine gewöhnliche Datei – "
+                                         f"Ordner, Verknüpfungen und Gerätedateien nimmt der "
+                                         f"Root-Server nicht an.")
+                    name = paths.check_transfer(eintrag.name)
+                    ziel = self.index.get(name)
+                    if ziel is None:
+                        raise ValueError(f"Die Datei „{name}“ gehört nicht zu dieser Übertragung.")
+                    if name in self.done:
+                        uebergangen.append(name)
+                        continue
+                    if int(eintrag.size) > BUNDLE_SMALL_BYTES:
+                        raise ValueError(f"„{name}“ ist mit {human(eintrag.size)} zu groß für ein "
+                                         f"Paket – größere Dateien gehen in Stücken.")
+                    if int(eintrag.size) != int(ziel["size"]):
+                        raise ValueError(f"„{name}“ ist im Paket {human(eintrag.size)} groß, das "
+                                         f"Manifest nennt {human(ziel['size'])}.")
+                    quelle = strom.extractfile(eintrag)
+                    inhalt = quelle.read(int(ziel["size"])) if quelle is not None else b""
+                    if len(inhalt) != int(ziel["size"]):
+                        raise ValueError(f"„{name}“ kam im Paket unvollständig an.")
+                    if sha256_bytes(inhalt) != ziel["sha256"]:
+                        raise ValueError(f"Die Prüfsumme von „{name}“ stimmt nicht – das Paket "
+                                         f"muss noch einmal geschickt werden.")
+                    vollstaendig = paths.resolve(self.target, name)
+                    try:
+                        vollstaendig.parent.mkdir(parents=True, exist_ok=True)
+                        paths.schreibe_atomar(self.target, name, inhalt)
+                    except OSError as exc:
+                        raise ValueError(f"„{name}“ kann auf dem Server nicht geschrieben "
+                                         f"werden.") from exc
+                    # Eine angefangene Teil-Datei aus einem früheren Anlauf ist jetzt überholt.
+                    try:
+                        paths.entfernen(self.target, name + PART_SUFFIX)
+                    except (OSError, ValueError):
+                        pass
+                    if ziel.get("mtime"):
+                        try:
+                            os.utime(str(vollstaendig), (ziel["mtime"], ziel["mtime"]))
+                        except OSError:
+                            pass
+                    self.done.add(name)
+                    geschrieben.append(name)
+                    geschriebene_bytes += len(inhalt)
+            except tarfile.TarError as exc:
+                raise ValueError(f"Das Paket lässt sich nicht auspacken: {exc}") from exc
+            finally:
+                try:
+                    strom.close()
+                except tarfile.TarError:
+                    pass
+                if geschrieben:
+                    self.save()          # auch bei einem Fehler: das Geschriebene bleibt gültig
+            return {"files": len(geschrieben), "bytes": geschriebene_bytes,
+                    "skipped": _cap(uebergangen), "skipped_count": len(uebergangen),
+                    "done_files": len(self.done), "complete": self.complete(),
+                    "received_bytes": self.received_bytes()}
 
     # -------------------------------------------------- abschließen und abbrechen
 

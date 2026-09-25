@@ -13,6 +13,7 @@
   --blue:          #54a0ff;
   --amber:         #f0b429;
   --red:           #f2626b;
+  --sleep:         #a78bfa;   /* Ruhezustand: nicht grau wie „gestoppt“, nicht grün wie „läuft“ */
   --radius:        12px;
   --shadow:        0 10px 30px rgba(0,0,0,.35);
 }
@@ -658,8 +659,8 @@ body.modal-on { overflow: hidden; }
 }
 .loc-row:last-of-type { border-bottom: none; }
 .loc-main { min-width: 0; }
-.loc-row.is-locked .loc-main .w-name { color: #cbb27a; }
-.loc-lock { font-size: 12px; color: var(--amber); margin-top: 4px; display: flex; gap: 6px; align-items: flex-start; }
+.loc-row.is-locked .loc-main .w-name { color: var(--text); }
+.loc-lock { font-size: 12px; color: var(--muted); margin-top: 4px; display: flex; gap: 6px; align-items: flex-start; }
 
 /* ---------- Leere Zustände und Tipps ---------- */
 .empty-inline { display: flex; gap: 14px; align-items: flex-start; padding: 6px 0 2px; }
@@ -686,3 +687,41 @@ body.modal-on { overflow: hidden; }
 .acct-sess:last-child { border-bottom: none; }
 .acct-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+
+/* ============================================================ Gehostete Server
+   Ein Server auf dem Root-Server sieht aus wie jeder andere – nur mit Wolken-Zeichen und einem
+   eigenen Zustand „schläft“ (Ruhezustand bei Leerstand). */
+
+.srv-tags { display: inline-flex; align-items: center; gap: 6px; }
+.srv-cloud { color: var(--blue); font-size: 12px; line-height: 1; }
+.cloud-tag { color: var(--blue); font-size: 17px; vertical-align: 2px; }
+
+/* Zustand „schläft“: eigene Farbe, damit er nicht wie „gestoppt“ aussieht. */
+.dot-sleep { background: var(--sleep); box-shadow: 0 0 0 3px rgba(167,139,250,.18); }
+.pill-sleep { background: rgba(167,139,250,.15); color: var(--sleep); }
+.hero .h-dot.sleep { background: var(--sleep); box-shadow: 0 0 0 6px rgba(167,139,250,.14); }
+
+.stat.ok .v   { color: var(--green); }
+.stat.warn .v { color: var(--amber); }
+.stat.bad .v  { color: var(--red); }
+
+/* Der ruhige Streifen statt der alten Sperrmeldung. */
+.hosted-strip {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 16px; border-radius: var(--radius);
+  border: 1px solid #23344b; border-left: 3px solid var(--blue);
+  background: rgba(84,160,255,.06);
+}
+.hosted-strip .hs-ico { font-size: 18px; color: var(--blue); flex: 0 0 auto; }
+.hosted-strip .hs-txt { flex: 1; min-width: 220px; font-size: 13px; color: #bcc7d6; }
+.hosted-strip .hs-txt b { color: var(--text); }
+@media (max-width: 700px) { .hosted-strip .btn-row { width: 100%; } }
+
+/* Pille in der Seitenleiste: wo läuft dieser Server? */
+.srv-pill {
+  display: inline-block; padding: 1px 6px; border-radius: 999px; margin-right: 5px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  border: 1px solid transparent; vertical-align: middle;
+}
+.srv-pill-cloud { color: #8ff0b4; background: rgba(61,220,132,.13); border-color: rgba(61,220,132,.30); }
+.srv-pill-local { color: var(--muted); background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
