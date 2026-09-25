@@ -8,12 +8,15 @@ Läuft auch ohne Konsole (pythonw.exe); Meldungen landen in data/manager.log.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import ctypes
 import json
 import logging
 import mimetypes
 import os
 import pathlib
+import re
 import secrets
 import socket
 import subprocess
@@ -28,7 +31,7 @@ from urllib.parse import parse_qs, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import companion, manager, players, sources, store, tray, updater  # noqa: E402
+from core import cloud, companion, manager, players, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -72,6 +75,10 @@ def _server_view(cfg: dict) -> dict:
     view["ports"] = manager.port_list(cfg)
     view["xbox"] = manager.xbox_status(cfg)
     view["companion"] = companion.status(cfg)
+    # Cloud: Verknüpfung mit dem Root-Server. Rein lokal aus servers.json – kein Netzverkehr,
+    # damit die Übersicht auch ohne Internet sofort da ist.
+    view["cloud"] = cloud.link_of(cfg)
+    view["cloud_locked"] = cloud.locked(cfg)
     return view
 
 
@@ -105,6 +112,12 @@ def _no_job(server_id: str) -> None:
     """Während einer laufenden Installation nichts ändern, starten oder löschen."""
     if manager.job_running(server_id):
         raise ApiError("Die Einrichtung läuft noch – bitte warten, bis sie abgeschlossen ist.", 409)
+
+
+def _not_hosted(cfg: dict) -> None:
+    """Liegt der Server auf dem Root-Server, ist die lokale Kopie gesperrt (nur an einer Stelle spielbar)."""
+    if cloud.locked(cfg):
+        raise ApiError(cloud.lock_hint(cfg), 409)
 
 
 # --------------------------------------------------------------------- Routen
@@ -203,6 +216,7 @@ def api_settings(body, _query, server_id: str = "") -> dict:
 def api_reinstall(body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
     _no_job(server_id)
+    _not_hosted(cfg)
     if manager.is_running(server_id):
         raise ApiError("Bitte den Server zuerst stoppen.")
     updated = _sanitize(body, existing=cfg)
@@ -214,6 +228,7 @@ def api_reinstall(body, _query, server_id: str = "") -> dict:
 def api_start(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
     _no_job(server_id)
+    _not_hosted(cfg)
     if not cfg.get("installed"):
         raise ApiError("Der Server ist noch nicht fertig installiert.")
     if manager.is_running(server_id):
@@ -387,6 +402,7 @@ def api_firewall(_body, _query, server_id: str = "") -> dict:
 def api_delete(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
     _no_job(server_id)
+    _not_hosted(cfg)
     try:
         manager.delete_server(cfg)
     except RuntimeError as exc:
@@ -491,6 +507,179 @@ def api_public_ip(_body, query) -> dict:
         raise ApiError(f"Öffentliche IP konnte nicht ermittelt werden: {exc}") from exc
 
 
+# -- Cloud (Root-Server): Anmeldung, Konto, entfernte Server, Übertragungen
+# Die eigentliche Arbeit steckt in core/cloud.py. Fehler von dort (cloud.CloudError) wandelt der
+# Verteiler unten in eine Antwort mit deutschem Satz – 401 führt zusätzlich zum Abmelden.
+
+def _cloud_instance(body: dict, query: dict) -> str:
+    """Kennung einer Instanz auf dem Root-Server (aus Rumpf oder Abfrage)."""
+    value = str(body.get("instance") or _q(query, "instance")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value or ""):
+        raise ApiError("Es fehlt die Kennung des Servers auf dem Root-Server.")
+    return value
+
+
+def api_cloud_status(_body, query) -> dict:
+    return cloud.status(force=_q(query, "force") == "1")
+
+
+def api_cloud_login(_body, _query) -> dict:
+    """Discord-Anmeldung beginnen – die Oberfläche öffnet die gelieferte Adresse im Browser."""
+    return cloud.login_start(socket.gethostname())
+
+
+def api_cloud_login_poll(_body, _query) -> dict:
+    return cloud.login_poll()
+
+
+def api_cloud_login_invite(body, _query) -> dict:
+    """Ersatzweg mit Einladungscode, solange Discord auf dem Root-Server nicht eingerichtet ist."""
+    return cloud.login_invite(str(body.get("code", "")), str(body.get("name", "")))
+
+
+def api_cloud_logout(_body, _query) -> dict:
+    log.info("Abmeldung vom Root-Server.")
+    return cloud.logout()
+
+
+def api_cloud_servers(_body, query) -> dict:
+    force = _q(query, "force") == "1"
+    servers = [cloud.remote_view(r) for r in cloud.remote_servers(force)]
+    cloud.sync_links()
+    return {"servers": servers}
+
+
+def api_cloud_start(body, query) -> dict:
+    return cloud.remote_start(_cloud_instance(body, query))
+
+
+def api_cloud_stop(body, query) -> dict:
+    try:
+        announce = max(0, min(900, int(body.get("announce_seconds") or 0)))
+    except (TypeError, ValueError):
+        announce = 0
+    return cloud.remote_stop(_cloud_instance(body, query), announce)
+
+
+def api_cloud_command(body, query) -> dict:
+    return cloud.remote_command(_cloud_instance(body, query), str(body.get("command", "")))
+
+
+def api_cloud_console(_body, query) -> dict:
+    try:
+        since = int(_q(query, "since", "0"))
+        tail = int(_q(query, "tail", "0"))
+    except ValueError:
+        since, tail = 0, 0
+    return cloud.remote_console(_cloud_instance({}, query), since, tail)
+
+
+def api_cloud_files(_body, query) -> dict:
+    return cloud.remote_files(_cloud_instance({}, query), _q(query, "path"))
+
+
+def api_cloud_file_get(_body, query) -> dict:
+    return cloud.remote_file_read(_cloud_instance({}, query), _q(query, "path"))
+
+
+def api_cloud_file_put(body, query) -> dict:
+    content = body.get("content", body.get("text"))
+    if not isinstance(content, str):
+        raise ApiError("Es fehlt der Text, der gespeichert werden soll.")
+    return cloud.remote_file_write(_cloud_instance(body, query), str(body.get("path", "")), content)
+
+
+def api_cloud_file_delete(body, query) -> dict:
+    """Eine Datei oder einen Ordner auf dem Root-Server löschen (z. B. ein Plugin)."""
+    return cloud.remote_file_delete(_cloud_instance(body, query),
+                                    str(body.get("path", _q(query, "path"))))
+
+
+def api_cloud_file_mkdir(body, query) -> dict:
+    return cloud.remote_file_mkdir(_cloud_instance(body, query), str(body.get("path", "")))
+
+
+def api_cloud_file_rename(body, query) -> dict:
+    return cloud.remote_file_rename(_cloud_instance(body, query), str(body.get("path", "")),
+                                    str(body.get("new_path", body.get("neu", ""))))
+
+
+#: So groß darf der Körper beim Hochladen einer einzelnen Datei werden (Base64 wiegt +33 %).
+UPLOAD_BODY_MAX = 48 * 1024 * 1024
+UPLOAD_FILE_MAX = 32 * 1024 * 1024
+
+
+def api_cloud_file_upload(body, query) -> dict:
+    """Eine einzelne Datei auf den Root-Server legen – z. B. ein Plugin.
+
+    Zwei Wege: ``local`` ist ein Pfad auf diesem PC (so ruft es ein Skript auf), ``inhalt`` ist
+    der Inhalt als Base64 (so ruft es die Oberfläche auf – der Browser gibt keinen Pfad heraus).
+    """
+    ziel = str(body.get("path", ""))
+    quelle = str(body.get("local", body.get("datei", "")))
+    inhalt = body.get("inhalt", body.get("content_b64"))
+    if isinstance(inhalt, str) and inhalt:
+        name = pathlib.Path(str(body.get("name", "") or ziel or "datei")).name
+        if not name:
+            raise ApiError("Es fehlt der Name der Datei.")
+        try:
+            roh = base64.b64decode(inhalt, validate=True)
+        except (ValueError, binascii.Error):
+            raise ApiError("Der Inhalt der Datei ist unlesbar.") from None
+        if len(roh) > UPLOAD_FILE_MAX:
+            raise ApiError(f"Die Datei ist zu groß (höchstens "
+                           f"{UPLOAD_FILE_MAX // (1024 * 1024)} MB auf diesem Weg).")
+        ablage = store.DATA_DIR / "cloud-stage"
+        ablage.mkdir(parents=True, exist_ok=True)
+        tmp = ablage / f"{secrets.token_hex(8)}-{name}"
+        try:
+            tmp.write_bytes(roh)
+            return cloud.remote_file_upload(_cloud_instance(body, query), tmp, ziel or name)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    if not quelle:
+        raise ApiError("Es fehlt die Datei, die hochgeladen werden soll.")
+    return cloud.remote_file_upload(_cloud_instance(body, query), quelle, ziel)
+
+
+def api_cloud_file_download(body, query) -> dict:
+    """Eine einzelne Datei vom Root-Server holen – z. B. world/level.dat."""
+    pfad = str(body.get("path", _q(query, "path")))
+    if not pfad:
+        raise ApiError("Es fehlt der Pfad der Datei, die geholt werden soll.")
+    ziel = str(body.get("local", "")) or None
+    return cloud.remote_file_download(_cloud_instance(body, query), pfad, ziel)
+
+
+def api_cloud_upload(body, _query) -> dict:
+    """„Auf den Root-Server verschieben“: ganzen Serverordner hochladen (Job)."""
+    cfg = _require(store.get(str(body.get("server", ""))))
+    _no_job(cfg["id"])
+    job = cloud.upload_async(cfg)
+    log.info("Server „%s“ wird auf den Root-Server verschoben.", cfg["name"])
+    return {"job_id": job["id"], "server_id": cfg["id"]}
+
+
+def api_cloud_download(body, query) -> dict:
+    """„Zurück auf diesen PC holen“: Instanz herunterladen, prüfen und den Root-Ordner freigeben."""
+    job = cloud.download_async(_cloud_instance(body, query))
+    log.info("Rückholung vom Root-Server gestartet.")
+    return {"job_id": job["id"], "server_id": job["server_id"]}
+
+
+def api_cloud_release(body, query) -> dict:
+    """Nachträglich freigeben: prüft die lokalen Dateien erneut und löscht dann den Root-Ordner."""
+    job = cloud.release_async(_cloud_instance(body, query))
+    return {"job_id": job["id"], "server_id": job["server_id"]}
+
+
+def api_cloud_abort(body, _query) -> dict:
+    return cloud.abort_transfer(str(body.get("server", "")))
+
+
 def request_shutdown(delay: float = 0.0) -> None:
     """Stoppt alle Server und beendet den HTTP-Server (GUI-Knopf, Tray-Menü)."""
     def work() -> None:
@@ -570,6 +759,29 @@ ROUTES = {
     ("POST", "shutdown"): api_shutdown,
     ("GET", "update"): api_update,
     ("POST", "update/apply"): api_update_apply,
+    # Cloud (Root-Server)
+    ("GET", "cloud/status"): api_cloud_status,
+    ("GET", "cloud/servers"): api_cloud_servers,
+    ("GET", "cloud/console"): api_cloud_console,
+    ("GET", "cloud/files"): api_cloud_files,
+    ("GET", "cloud/file"): api_cloud_file_get,
+    ("GET", "cloud/login/poll"): api_cloud_login_poll,
+    ("POST", "cloud/login"): api_cloud_login,
+    ("POST", "cloud/login/invite"): api_cloud_login_invite,
+    ("POST", "cloud/logout"): api_cloud_logout,
+    ("POST", "cloud/start"): api_cloud_start,
+    ("POST", "cloud/stop"): api_cloud_stop,
+    ("POST", "cloud/command"): api_cloud_command,
+    ("POST", "cloud/file"): api_cloud_file_put,
+    ("POST", "cloud/file/delete"): api_cloud_file_delete,
+    ("POST", "cloud/file/mkdir"): api_cloud_file_mkdir,
+    ("POST", "cloud/file/rename"): api_cloud_file_rename,
+    ("POST", "cloud/file/upload"): api_cloud_file_upload,
+    ("POST", "cloud/file/download"): api_cloud_file_download,
+    ("POST", "cloud/upload"): api_cloud_upload,
+    ("POST", "cloud/download"): api_cloud_download,
+    ("POST", "cloud/release"): api_cloud_release,
+    ("POST", "cloud/abort"): api_cloud_abort,
 }
 # Hinweis: Routen mit "/" im Namen (update/apply) laufen über den allgemeinen Verteiler unten.
 
@@ -671,7 +883,10 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
-            if length > 4_000_000:
+            # Eine einzelne Datei (Plugin) kommt als Base64 im Körper – dafür ist mehr Platz
+            # nötig als für gewöhnliche Aufrufe. Alles andere bleibt eng begrenzt.
+            grenze = UPLOAD_BODY_MAX if route == "cloud/file/upload" else 4_000_000
+            if length > grenze:
                 self._json(413, {"error": "Anfrage zu groß."})
                 return
             if length:
@@ -706,6 +921,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(exc.status, {"error": str(exc)})
         except sources.SourceError as exc:
             self._json(502, {"error": str(exc)})
+        except cloud.CloudError as exc:
+            # Fehler des Root-Servers samt Status durchgeben (401 hat core/cloud.py schon abgemeldet).
+            self._json(exc.status if 400 <= exc.status < 600 else 502, {"error": str(exc)})
         except Exception as exc:                      # noqa: BLE001
             log.exception("API-Fehler bei %s %s", method, route)
             self._json(500, {"error": f"Unerwarteter Fehler: {exc}"})

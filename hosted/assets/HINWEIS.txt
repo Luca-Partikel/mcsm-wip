@@ -1,0 +1,13 @@
+MCSMCompanion.jar in diesem Ordner ist eine Kopie von assets/MCSMCompanion.jar aus dem
+Projektordner. Sie liegt hier, weil auf den Root-Server nur der Ordner hosted/ uebertragen
+wird (tools/deploy_hosted.py packt genau diesen Ordner) und deploy.sh die Jar nach
+/opt/mcsm/assets/ installiert. Der Daemon legt sie vor jedem Start eines gehosteten
+Paper-Servers nach plugins/ (siehe hosted/core/companion.py).
+
+Gebaut wird die Jar mit tools/build_plugin.py. Wird sie dort neu gebaut, muss sie hierher
+kopiert werden:
+
+    copy assets\MCSMCompanion.jar hosted\assets\MCSMCompanion.jar
+
+deploy.sh nennt beim Ausrollen Groesse und Datum der Jar, damit ein vergessener Abgleich
+auffaellt.

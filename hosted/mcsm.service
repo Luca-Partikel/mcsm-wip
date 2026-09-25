@@ -1,0 +1,97 @@
+[Unit]
+Description=Minecraft Server Manager - Hosted-Daemon (mcsmd)
+Documentation=file:/opt/mcsm/ARCHITEKTUR.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcsm
+Group=mcsm
+WorkingDirectory=/opt/mcsm
+ExecStart=/usr/bin/python3 /opt/mcsm/mcsmd.py
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MCSM_DATA_ROOT=/srv/mcsm
+Environment=MCSM_DATA=/srv/mcsm/data
+Environment=MCSM_LOG=/var/log/mcsm/api.log
+Environment=MCSM_BIND=127.0.0.1
+Environment=MCSM_PORT=8765
+Environment=TZ=Europe/Berlin
+# Basisdomain und Hostnamen. MCSM_DOMAIN muss zu MCSM_ROUTER_DOMAIN in mcsm-router.service
+# passen - sonst schlaegt der Verteiler die Marke unter einem anderen Namen nach.
+Environment=MCSM_DOMAIN=arcardia-nexus.de
+Environment=MCSM_ADMIN_HOST=admin.arcardia-nexus.de
+Environment=MCSM_API_HOST=api.arcardia-nexus.de
+# Zuordnungstabelle des Verteilers (identisch mit MCSM_ROUTES in mcsm-router.service).
+Environment=MCSM_ROUTES=/srv/mcsm/data/routes.json
+# MCSM_STOP_SERVERS=1 wuerde beim Beenden auch die Kundenserver stoppen. Absichtlich nicht
+# gesetzt: ein Update des Dienstes soll fuer die Spieler keine Unterbrechung sein.
+
+Restart=always
+RestartSec=5s
+
+# KillMode=process (nicht mixed): Bei mixed wuerde systemd nach TimeoutStopSec allen restlichen
+# Prozessen der cgroup SIGKILL schicken - also den Java-Prozessen, ohne dass die Welt gespeichert
+# waere. Mit process ueberleben sie jeden Neustart und jeden Absturz des Daemons.
+#
+# Genau darauf baut der neue Ablauf: Der Daemon stoppt beim Beenden **keinen** Kundenserver
+# mehr, sondern schickt nur noch ein "save-all"; die Server spielen weiter. Beim naechsten Start
+# sammelt adopt_running() sie wieder ein (PID-Datei und Prozessgruppe pruefen, Konsole aus
+# logs/latest.log neu anhaengen). Nur wirklich verwaiste Prozesse werden gestoppt. Ein Update
+# ist damit keine Zwangsunterbrechung fuer die Spieler.
+#
+# TimeoutStopSec bleibt grosszuegig: mit MCSM_STOP_SERVERS=1 (geplante Wartung) stoppt der
+# Daemon doch alle Server mit Ankuendigung, und das braucht Zeit.
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=240
+
+# Protokoll: eigene Zeilen nach /var/log/mcsm/api.log, alles zusaetzlich ins Journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcsmd
+
+# ---------------------------------------------------------------- Haertung
+#
+# Wichtig zum Verstaendnis der Auswahl: Die Kunden-Server laufen ueber sudo unter je einem
+# eigenen, unprivilegierten Unix-Benutzer (core/isolation.py). Ein Plugin, das ein Kunde
+# hochlaedt, kaeme sonst an fremde Welten und an /srv/mcsm/data (Einladungscodes, Paesse,
+# das Geheimnis des ersten Admin-Kontos). sudo braucht dafuer sein setuid-Bit, und das
+# funktioniert nur ohne "no new privileges".
+#
+# systemd setzt PR_SET_NO_NEW_PRIVS fuer einen Dienst mit User= immer dann, wenn eine der
+# seccomp- oder capability-gestuetzten Optionen gesetzt ist - unabhaengig von
+# NoNewPrivileges=no. Auf diesem Server nachgemessen (systemd 252): ProtectKernelTunables,
+# ProtectKernelModules, ProtectKernelLogs, ProtectClock, ProtectHostname, RestrictSUIDSGID,
+# RestrictRealtime, RestrictNamespaces und LockPersonality machen sudo unmoeglich. Deshalb
+# bleiben hier nur die Optionen, die ueber Mount-Namespaces arbeiten. Die Trennung der Konten
+# wiegt schwerer als diese zusaetzliche Absicherung des Daemons gegen sich selbst: die
+# Konten-Trennung schliesst eine nachgewiesene Luecke, die Optionen waren Vorsorge.
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/mcsm /var/log/mcsm
+ProtectControlGroups=yes
+# UMask=0007: Dateien, die der Daemon in einem Instanzordner ablegt (server.jar, Plugins,
+# server.properties), muessen fuer die Gruppe des zugehoerigen Server-Benutzers lesbar und
+# schreibbar sein - sonst kaeme der Serverprozess nicht an seine eigenen Dateien. Die
+# Kontodaten unter /srv/mcsm/data schuetzt nicht die Umask, sondern 0700 auf dem Ordner und
+# 0600 auf jeder Datei (store_hosted.save, write_private_json).
+# Achtung: Diese Umask gilt auch fuer den Verwaltungsordner .mcsm im Instanzordner - dort duerfte
+# der Serverprozess sonst mcsm.pid, install.json und die Merkdatei von fix_tree veraendern.
+# Deshalb setzt der Runner .mcsm bei jedem Start ausdruecklich auf 0710 und nur .mcsm/home und
+# .mcsm/tmp auf 2770 (core/isolation.py, secure_manage). Vererben genuegt dafuer nicht.
+UMask=0007
+LimitNOFILE=65536
+
+# Absichtlich NICHT gesetzt:
+#   MemoryDenyWriteExecute - die Java-Laufzeit uebersetzt Bytecode zur Laufzeit (JIT).
+#   SystemCallFilter       - der JVM-Start scheitert sonst je nach Version schwer nachvollziehbar.
+#   ProcSubset=pid         - der Daemon liest /proc/meminfo fuer den freien Arbeitsspeicher.
+#   Alles seccomp-Gestuetzte - siehe oben, es wuerde sudo und damit die Konten-Trennung
+#                              unmoeglich machen.
+
+[Install]
+WantedBy=multi-user.target

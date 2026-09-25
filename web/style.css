@@ -397,3 +397,27 @@ a.btn { text-decoration: none; }
 .pl-list .w-meta { white-space: normal; }
 .pl-add { display: grid; gap: 8px; margin-top: 12px; }
 .pl-add .flex select { flex: 1; }
+
+/* ---------- Cloud (Root-Server) ---------- */
+.cloud-banner {
+  margin: 22px 40px 0; padding: 16px 18px; border-radius: var(--radius);
+  border: 1px solid #5a4a20; background: linear-gradient(180deg, rgba(240,180,41,.12), rgba(240,180,41,.05));
+  box-shadow: var(--shadow);
+}
+.cloud-banner .cb-head { display: flex; gap: 13px; align-items: flex-start; }
+.cloud-banner .cb-ico {
+  width: 30px; height: 30px; flex: 0 0 30px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(240,180,41,.18); color: var(--amber); font-size: 15px;
+}
+.cloud-banner .cb-title { font-weight: 650; font-size: 15px; }
+.cloud-banner .cb-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
+.cloud-banner .cb-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft);
+}
+.cloud-row .btn-row { flex-wrap: wrap; max-width: 60%; }
+.cloud-editor {
+  width: 100%; min-height: 340px; resize: vertical; background: #05080d; color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; line-height: 1.55;
+}

@@ -44,6 +44,8 @@ Ordner: `servers/<id>/` (Server + Welt), `cache/` (Downloads), `runtime/` (Java)
 - **Dateien:** Server-Ordner (nur Welten, Einstellungen, Plugins, Logs, Backups – Technik ausgeblendet);
   `server.properties` als Formular mit deutschen Erklärungen, YAML/JSON/TXT direkt editierbar (mit `.bak`-Sicherung).
 - **Einstellungen:** Name, MOTD, Port(s), Spieler, RAM, Modus, Version/Neuinstallation, Löschen.
+- **Cloud:** Konto und Pässe auf dem Root-Server, gehostete Server mit Zustand, Adresse und Steuerung,
+  Umzug in beide Richtungen (siehe unten).
 
 ## Ports
 
@@ -109,6 +111,36 @@ im Spiel `/hardcore on|off` für OPs): Wer stirbt, wird ohne Todesbildschirm sof
 indem er ein Totem der Unsterblichkeit am Grab rechtsklickt oder ablegt – der Tote spawnt dann dort im Überlebensmodus
 (oder beim nächsten Login). Ein Wechsel per Befehl im Spiel wird nach dem Stopp in die Einstellungen übernommen.
 API: `POST /api/servers/<id>/hardcore {"enabled": true|false}`.
+
+## Cloud (Root-Server)
+
+Neben den Servern auf diesem PC kann ein Server auf dem Root-Server laufen
+(`https://api.arcardia-nexus.de`, Programm im Ordner `hosted/`). Gesteuert wird alles weiterhin von
+hier – der Bereich **Cloud** in der Seitenleiste zeigt:
+
+- **Nicht angemeldet:** was der Root-Server bringt (läuft rund um die Uhr, feste Adresse
+  `mein-server.arcardia-nexus.de`, keine Portfreigabe nötig) und den Knopf **„Mit Discord anmelden“**
+  (der Browser öffnet sich, das Programm holt die Sitzung ab). Ersatzweg: Einladungscode.
+- **Angemeldet:** die eigenen **Pässe** mit Restzeit und Grenzen („2 Server gleichzeitig, zusammen 8 GB“),
+  die **eigenen Server auf dem Root** mit Zustand, Adresse und Steuerung (Starten, Stoppen, Konsole,
+  Befehle, Dateien) sowie die Server auf diesem PC.
+
+**Umzug.** Bei jedem lokalen Server steht „⬆ Auf den Root-Server verschieben“: der ganze Serverordner
+wird stückweise mit SHA256 je Datei übertragen (`backups/` bleibt hier). Danach ist die **lokale Kopie
+gesperrt** – ein Server ist immer nur an einer Stelle spielbar. Umgekehrt holt „⬇ Zurück auf diesen PC
+holen“ alles wieder her; der Ordner auf dem Root wird **erst gelöscht**, wenn hier jede Datei geprüft
+angekommen ist. Abgebrochene Übertragungen setzen beim nächsten Versuch dort auf, wo sie stehen
+geblieben sind.
+
+**Abgelaufener Pass.** Dann stoppt der Root-Server die Server angekündigt und speichert die Welt; beim
+nächsten Programmstart erscheint oben ein deutlicher Hinweis mit dem Knopf **„Jetzt zurückholen“**.
+
+**Sicherheit.** Das Sitzungstoken liegt allein in `data/cloud-token.json` (Rechte nur für den
+angemeldeten Windows-Benutzer) – es steht nie im Protokoll und nie in der Oberfläche. Antwortet der
+Root-Server mit 401, meldet sich das Programm ab und fragt neu. Ohne Anmeldung ändert sich nichts:
+die Server auf diesem PC laufen wie bisher.
+
+Schnittstelle und Erwartungen an die API: `hosted/spec-cloud-client.md`.
 
 ## Updates
 

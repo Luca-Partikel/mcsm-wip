@@ -1,0 +1,83 @@
+[Unit]
+Description=Minecraft Server Manager - Verteiler auf Port 25565 (mcsm-router)
+Documentation=file:/opt/mcsm/spec-router.md
+After=network-online.target
+Wants=network-online.target
+
+# Absichtlich KEIN Requires=mcsm.service: der Verteiler ist ein eigener Dienst. Faellt der
+# Daemon aus oder wird er neu gestartet, spielen die laufenden Server ungestoert weiter.
+
+[Service]
+Type=simple
+User=mcsm
+Group=mcsm
+WorkingDirectory=/opt/mcsm
+
+# Vor dem Start die Zuordnungstabelle pruefen; die Meldungen stehen dann im Journal.
+ExecStartPre=/usr/bin/python3 /opt/mcsm/router.py --pruefen
+ExecStart=/usr/bin/python3 /opt/mcsm/router.py
+
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MCSM_ROUTER_BIND=
+Environment=MCSM_ROUTER_PORT=25565
+Environment=MCSM_ROUTES=/srv/mcsm/data/routes.json
+Environment=MCSM_ROUTER_DOMAIN=arcardia-nexus.de
+Environment=MCSM_ROUTER_TARGET=127.0.0.1
+Environment=MCSM_ROUTER_LIMIT=200
+Environment=MCSM_ROUTER_LIMIT_TOTAL=1000
+Environment=MCSM_ROUTER_TIMEOUT=5
+Environment=MCSM_ROUTER_LOG=/var/log/mcsm/router.log
+Environment=MCSM_ROUTER_LOG_STDOUT=1
+Environment=MCSM_ROUTER_STATS=300
+Environment=TZ=Europe/Berlin
+
+Restart=always
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Protokoll: eigene Zeilen nach /var/log/mcsm/router.log, alles zusaetzlich ins Journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcsm-router
+
+# ---------------------------------------------------------------- Haertung
+# Der Verteiler liest nur die Zuordnungstabelle und schreibt nur sein Protokoll.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/mcsm
+ReadOnlyPaths=/srv/mcsm/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+LimitNOFILE=65536
+
+# Der Verteiler kennt keine Konten und braucht kein Geheimnis - sie werden ihm entzogen.
+InaccessiblePaths=-/srv/mcsm/data/discord_secret
+InaccessiblePaths=-/srv/mcsm/data/sessions.json
+InaccessiblePaths=-/srv/mcsm/data/users.json
+InaccessiblePaths=-/srv/mcsm/data/invites.json
+
+[Install]
+WantedBy=multi-user.target

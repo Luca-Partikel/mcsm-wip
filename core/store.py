@@ -55,6 +55,11 @@ DEFAULTS = {
     "autostart": False,
     "installed": False,
     "eula_accepted": False,
+    # Cloud (Root-Server): Verknüpfung dieser lokalen Kopie mit einer Instanz auf dem Root-Server.
+    # Wird ausschließlich von core/cloud.py geschrieben, nie aus der Oberfläche (sanitize kennt es
+    # nicht). Felder: instance, state (local_only|uploading|hosted|awaiting_pull|downloading|
+    # suspended), running, name, address, session (laufende Übertragung), updated.
+    "cloud": {},
     # Xbox-Freunde-Modus (MCXboxBroadcast): Server erscheint in der Freundesliste eines Bot-Kontos.
     "xbox_enabled": False,
     "xbox_address": "",         # Adresse, die Freunde erreichen (LAN-IP, öffentliche IP oder DynDNS-Name)
@@ -139,6 +144,9 @@ def all_servers() -> list[dict]:
             cfg = dict(DEFAULTS, **s)
             for key in OBSOLETE:
                 cfg.pop(key, None)
+            # eigene Kopien: sonst zeigten alle Server auf dieselben leeren Vorgabe-Objekte
+            cfg["cloud"] = dict(cfg.get("cloud") or {})
+            cfg["modpack"] = dict(cfg.get("modpack") or {})
             out.append(cfg)
         return out
 
@@ -193,6 +201,7 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
         cfg["type"] = stype if stype in VALID_TYPES else "bedrock"
         cfg["flavor"] = "paper"
         cfg["modpack"] = {}
+        cfg["cloud"] = {}                              # nur core/cloud.py schreibt hier hinein
 
     # Modpack: beim Anlegen oder – bei einem bestehenden Modpack-Server – beim Versionswechsel.
     # Der Loader kommt aus der gewählten Pack-Version (ein Pack kann z. B. von Forge auf NeoForge wechseln);
