@@ -303,8 +303,7 @@ async function loginDiscord() {
 /* Discord nachträglich an das angemeldete Konto hängen (kein neuer Login, keine neue Sitzung). */
 async function linkDiscord() {
   const btn = $('#btnLink');
-  if (!btn) return;
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   try {
     const ziel = location.origin + location.pathname;
     const data = await api('/api/auth/discord/start?link=1&ziel=' + encodeURIComponent(ziel));
@@ -313,10 +312,12 @@ async function linkDiscord() {
       throw new ApiError('Discord ist auf diesem Server nicht richtig eingerichtet.', 0);
     }
     location.href = url;
+    return true;
   } catch (e) {
     toast(e.message, true);
+    return false;
   } finally {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -334,6 +335,16 @@ async function loginCode() {
     if (!data.token) throw new ApiError('Der Server hat kein Sitzungstoken geschickt.', 0);
     writeToken(String(data.token));
     showLoginNote('');
+    // Ein Code gilt nur einmal. Ohne Discord am Konto gaebe es danach keinen zweiten Weg
+    // hinein - deshalb geht es direkt weiter zum Verknuepfen.
+    const user = (data.user || {});
+    if (!(user.discord_linked || user.discord_name || user.discord_id)) {
+      showLoginNote('Konto angelegt. Zum Schluss noch Discord verbinden – danach meldest du dich immer damit an.');
+      const weiter = await linkDiscord();
+      if (weiter) return;                 // die Seite wechselt gleich zu Discord
+      showLoginNote('Discord liess sich gerade nicht öffnen. Du bist angemeldet – oben rechts '
+        + 'kannst du es jederzeit nachholen.', true);
+    }
     await start();
   } catch (e) {
     showLoginNote(e.message, true);
@@ -1010,6 +1021,7 @@ function bind() {
     if (box && !$('#codeBox').classList.contains('hidden')) box.focus();
   };
   $('#btnLogout').onclick = doLogout;
+  $('#btnLink').onclick = linkDiscord;
   $('#tabs').addEventListener('click', (ev) => {
     const tab = ev.target.closest('.tab');
     if (tab) setView(tab.dataset.view);
