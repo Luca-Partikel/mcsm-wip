@@ -120,6 +120,29 @@ def _not_hosted(cfg: dict) -> None:
         raise ApiError(cloud.lock_hint(cfg), 409)
 
 
+def _hosted_instance(cfg: dict) -> str:
+    """Kennung dieses Servers auf dem Root-Server – leer, wenn er auf diesem PC liegt.
+
+    Nur „hosted“ und „suspended“ zählen: während einer Übertragung („uploading“, „awaiting_pull“,
+    „downloading“) gehört der Server keiner Seite ganz, und dann wird auf keiner geschaltet.
+    """
+    link = cloud.link_of(cfg)
+    if str(link.get("state") or "") not in ("hosted", "suspended"):
+        return ""
+    instance = str(link.get("instance") or "").strip()
+    return instance if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", instance) else ""
+
+
+def _xbox_host_name(value, fallback: str = "") -> str:
+    """Anzeigename für die Freundesliste – eine Zeile, keine Steuerzeichen, 1 bis 32 Zeichen."""
+    name = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))).strip()[:32]
+    if not name:
+        name = str(fallback or "").strip()[:32]
+    if not name:
+        raise ApiError("Bitte einen Anzeigenamen mit 1 bis 32 Zeichen eintragen.")
+    return name
+
+
 # --------------------------------------------------------------------- Routen
 
 def api_ping(_body, _query) -> dict:
@@ -281,6 +304,130 @@ def api_hardcore(body, _query, server_id: str = "") -> dict:
     return {"server": _server_view(updated)}
 
 
+# -- Serverbild (server-icon.png) für die Mehrspieler-Liste von Minecraft
+# Zugeschnitten wird im Browser (<canvas>); hierher kommt nur das fertige PNG als Base64.
+# Geprüft wird trotzdem alles noch einmal: Minecraft liest die Datei ungefragt, und ein
+# 64x64-Bild ist wenige Kilobyte groß – alles Größere ist kein Serverbild.
+
+#: Größte Kantenlänge eines Serverbildes. Minecraft erwartet genau 64x64.
+ICON_MAX_PX = 64
+#: Obergrenze für die fertige PNG-Datei (das Programmsymbol wiegt rund 3 KB).
+ICON_MAX_BYTES = 96 * 1024
+#: Obergrenze für die Datei, die der Benutzer auswählt – nur ein Hinweis für die Oberfläche.
+ICON_SOURCE_MAX_BYTES = 12 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_groesse(daten: bytes) -> tuple[int, int]:
+    """Breite und Höhe aus dem IHDR-Block lesen. Was kein PNG ist, fliegt hier heraus."""
+    if len(daten) < 24 or not daten.startswith(_PNG_MAGIC) or daten[12:16] != b"IHDR":
+        raise ApiError("Als Serverbild nimmt Minecraft nur PNG-Dateien an.")
+    breite = int.from_bytes(daten[16:20], "big")
+    hoehe = int.from_bytes(daten[20:24], "big")
+    if not (1 <= breite <= 4096 and 1 <= hoehe <= 4096):
+        raise ApiError("Das PNG nennt eine unmögliche Bildgröße.")
+    return breite, hoehe
+
+
+def _icon_pruefen(roh) -> bytes:
+    """Base64 aus der Oberfläche in ein geprüftes, quadratisches PNG von höchstens 64x64 machen."""
+    text = str(roh or "").strip()
+    if not text:
+        raise ApiError("Es fehlt das Bild.")
+    if text.startswith("data:"):
+        text = text.split(",", 1)[-1]
+    text = re.sub(r"\s+", "", text)
+    if len(text) > 4 * (ICON_MAX_BYTES // 3 + 4):
+        raise ApiError(f"Das Bild ist zu groß – ein Serverbild braucht höchstens "
+                       f"{ICON_MAX_BYTES // 1024} KB.")
+    try:
+        daten = base64.b64decode(text, validate=True)
+    except (ValueError, binascii.Error):
+        raise ApiError("Das Bild ist unlesbar – bitte noch einmal auswählen.") from None
+    if len(daten) > ICON_MAX_BYTES:
+        raise ApiError(f"Das Bild ist mit {len(daten) // 1024} KB zu groß – ein Serverbild braucht "
+                       f"höchstens {ICON_MAX_BYTES // 1024} KB.")
+    breite, hoehe = _png_groesse(daten)
+    if breite != hoehe:
+        raise ApiError(f"Das Serverbild muss quadratisch sein (erhalten: {breite}x{hoehe}).")
+    if breite > ICON_MAX_PX:
+        raise ApiError(f"Das Serverbild darf höchstens {ICON_MAX_PX}x{ICON_MAX_PX} Punkte groß "
+                       f"sein (erhalten: {breite}x{hoehe}).")
+    return daten
+
+
+def _icon_antwort(daten: bytes, *, size: int | None = None, fremd: bool = False) -> dict:
+    """Gemeinsame Antwort für lokale und gehostete Server.
+
+    ``daten`` sind die Bytes der Datei, sofern sie klein genug zum Anzeigen sind; ``size`` nennt die
+    wahre Größe, wenn nur ihre Angabe vorliegt (gehosteter Server) oder die Datei zu groß ist.
+    """
+    echte_groesse = len(daten) if size is None else int(size)
+    info: dict = {
+        "exists": echte_groesse > 0,
+        # „custom“ = ein Bild des Besitzers, nicht das Programmsymbol des Managers.
+        "custom": echte_groesse > 0 and daten != manager.default_icon_bytes(),
+        "size": echte_groesse,
+        "max_px": ICON_MAX_PX,
+        "max_bytes": ICON_MAX_BYTES,
+        "source_max_bytes": ICON_SOURCE_MAX_BYTES,
+        "png": "",
+        "width": 0,
+        "height": 0,
+        "fremd": bool(fremd),
+    }
+    if not daten:
+        return info
+    try:
+        info["width"], info["height"] = _png_groesse(daten)
+    except ApiError:
+        # Eine fremde Datei unter diesem Namen: anzeigen lässt sie sich nicht, ersetzen schon.
+        info["fremd"] = True
+        return info
+    info["png"] = base64.b64encode(daten).decode("ascii")
+    return info
+
+
+def api_icon_get(_body, _query, server_id: str = "") -> dict:
+    """Aktuelles Serverbild als Base64 – für die Vorschau in den Einstellungen."""
+    cfg = _require(store.get(server_id))
+    pfad = manager.server_icon_path(cfg)
+    try:
+        if not pfad.is_file():
+            return _icon_antwort(b"")
+        groesse = pfad.stat().st_size
+        if groesse > ICON_MAX_BYTES:
+            # Zu groß für Minecraft und für die Vorschau – ersetzen lässt sich das Bild trotzdem.
+            return _icon_antwort(b"", size=groesse, fremd=True)
+        return _icon_antwort(pfad.read_bytes())
+    except OSError as exc:
+        raise ApiError(f"Das Serverbild lässt sich nicht lesen: {exc}") from exc
+
+
+def api_icon_put(body, _query, server_id: str = "") -> dict:
+    """Eigenes Serverbild ablegen. Paper und BDS lesen die Datei beim Start – daher der Hinweis."""
+    cfg = _require(store.get(server_id))
+    daten = _icon_pruefen(body.get("png", body.get("bild")))
+    try:
+        manager.write_server_icon(cfg, daten)
+    except OSError as exc:
+        raise ApiError(f"Das Serverbild lässt sich nicht speichern: {exc}") from exc
+    log.info("Serverbild gesetzt: %s (%d Bytes)", cfg["name"], len(daten))
+    return {"ok": True, "icon": _icon_antwort(daten), "running": manager.is_running(server_id)}
+
+
+def api_icon_reset(_body, _query, server_id: str = "") -> dict:
+    """Standardbild zurückholen: eigenes Bild löschen, Programmsymbol wieder hinlegen."""
+    cfg = _require(store.get(server_id))
+    try:
+        manager.reset_server_icon(cfg)
+    except OSError as exc:
+        raise ApiError(f"Das Serverbild lässt sich nicht entfernen: {exc}") from exc
+    log.info("Serverbild auf das Standardbild zurückgesetzt: %s", cfg["name"])
+    return {"ok": True, "icon": api_icon_get({}, {}, server_id),
+            "running": manager.is_running(server_id)}
+
+
 # -- Spielerverwaltung (Freigabeliste, Sperrliste, Online-Spieler)
 
 def _players_cfg(server_id: str) -> dict:
@@ -306,14 +453,33 @@ def api_players_action(body, _query, server_id: str = "") -> dict:
 
 
 # -- Xbox-Freunde-Modus
+# Liegt der Server auf dem Root-Server, gehen dieselben Wege dorthin: der Bot läuft dann neben dem
+# Server im Rechenzentrum und meldet die Freunde auch dann, wenn dieser PC aus ist. Ein Bot auf
+# diesem PC würde die Freunde an eine Adresse schicken, hinter der hier gar kein Server mehr läuft.
 
 def api_xbox_status(_body, _query, server_id: str = "") -> dict:
-    return manager.xbox_status(_require(store.get(server_id)))
+    cfg = _require(store.get(server_id))
+    remote_id = _hosted_instance(cfg)
+    if remote_id:
+        return cloud.remote_xbox_status(remote_id)
+    return manager.xbox_status(cfg)
 
 
 def api_xbox_setup(body, _query, server_id: str = "") -> dict:
     """Vom Assistenten abgefragte Werte speichern, MCXboxBroadcast laden und den Bot starten."""
     cfg = _require(store.get(server_id))
+    remote_id = _hosted_instance(cfg)
+    if remote_id:
+        # Die Adresse gibt der Root-Server selbst vor (Unterdomäne und Bedrock-Port) – hier wird
+        # sie deshalb nicht übergeben. Eine vom PC geratene Adresse wäre dort schlicht falsch.
+        out = cloud.remote_xbox_setup(
+            remote_id,
+            host_name=_xbox_host_name(body.get("xbox_host_name"), cfg["name"]),
+            autostart=body.get("xbox_autostart", True) is not False)
+        out["hosted"] = True
+        if out.get("supported", True):
+            log.info("Xbox-Freunde-Modus auf dem Root-Server wird eingerichtet: %s", cfg["name"])
+        return out
     _no_job(server_id)
     raw = {"xbox_enabled": True}
     for key in ("xbox_address", "xbox_host_name", "xbox_autostart"):
@@ -323,11 +489,14 @@ def api_xbox_setup(body, _query, server_id: str = "") -> dict:
     store.save(updated)
     job = manager.xbox_setup_async(updated)
     log.info("Xbox-Freunde-Modus wird eingerichtet: %s", cfg["name"])
-    return {"job_id": job["id"], "server": _server_view(updated)}
+    return {"job_id": job["id"], "server": _server_view(updated), "hosted": False}
 
 
 def api_xbox_start(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
+    remote_id = _hosted_instance(cfg)
+    if remote_id:
+        return cloud.remote_xbox_start(remote_id)
     try:
         manager.broadcaster(cfg).start()
     except RuntimeError as exc:
@@ -337,12 +506,18 @@ def api_xbox_start(_body, _query, server_id: str = "") -> dict:
 
 def api_xbox_stop(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
+    remote_id = _hosted_instance(cfg)
+    if remote_id:
+        return cloud.remote_xbox_stop(remote_id)
     threading.Thread(target=manager.stop_broadcaster, args=(cfg,), daemon=True).start()
     return {"ok": True}
 
 
 def api_xbox_disable(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
+    remote_id = _hosted_instance(cfg)
+    if remote_id:
+        return cloud.remote_xbox_disable(remote_id)
     manager.stop_broadcaster(cfg)
     updated = store.sanitize({"xbox_enabled": False}, existing=cfg)
     store.save(updated)
@@ -351,12 +526,19 @@ def api_xbox_disable(_body, _query, server_id: str = "") -> dict:
 
 def api_xbox_reset(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
+    remote_id = _hosted_instance(cfg)
+    if remote_id:
+        return cloud.remote_xbox_reset(remote_id)
     manager.xbox_reset(cfg)
     return {"ok": True}
 
 
 def api_xbox_console(_body, query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
+    if _hosted_instance(cfg):
+        # Die Ausgabe des Bots steht in der Konsole des Root-Servers; ein eigener Weg dafür ist
+        # nicht verabredet. Die Karte zeigt Zustand und Anmeldecode, das genügt zur Bedienung.
+        return {"next": 0, "lines": [], "running": False, "hosted": True}
     try:
         since = int(_q(query, "since", "0"))
     except ValueError:
@@ -944,6 +1126,102 @@ def api_cloud_props_put(body, query) -> dict:
     return {"ok": True, "fields": _props_fields(_properties_from_text(neu), _hosted_kind(remote))}
 
 
+# -- Serverbild einer gehosteten Instanz
+# Eine eigene Route dafür hat der Root-Server nicht; gebraucht wird auch keine – das Bild ist eine
+# gewöhnliche Datei im Instanzordner, und für einzelne Dateien gibt es den Weg schon (Manifest,
+# Prüfsumme). Fehlt dem Root-Server auch der, sagt die Oberfläche das ruhig statt zu scheitern.
+
+def _icon_nicht_da(exc: cloud.CloudError) -> bool:
+    return exc.status in CLOUD_MISSING
+
+
+def api_cloud_icon(_body, query) -> dict:
+    """Serverbild einer gehosteten Instanz lesen (für die Vorschau)."""
+    remote_id = _cloud_instance({}, query)
+    try:
+        info = cloud.remote_file_info(remote_id, manager.SERVER_ICON_NAME)
+    except cloud.CloudError as exc:
+        if _icon_nicht_da(exc):
+            return {**_icon_antwort(b""), "supported": True}
+        raise
+    if not info or info.get("is_dir") or str(info.get("type") or "") == "dir":
+        return {**_icon_antwort(b""), "supported": True}
+    groesse = int(info.get("size") or 0)
+    if groesse <= 0:
+        return {**_icon_antwort(b""), "supported": True}
+    if groesse > ICON_MAX_BYTES:
+        return {**_icon_antwort(b"", size=groesse, fremd=True), "supported": True}
+    ablage = store.DATA_DIR / "cloud-stage"
+    ablage.mkdir(parents=True, exist_ok=True)
+    tmp = ablage / f"{secrets.token_hex(8)}-{manager.SERVER_ICON_NAME}"
+    try:
+        cloud.remote_file_download(remote_id, manager.SERVER_ICON_NAME, tmp)
+        daten = tmp.read_bytes()
+    except cloud.CloudError as exc:
+        if _icon_nicht_da(exc):
+            return {**_icon_antwort(b""), "supported": True}
+        raise
+    except OSError as exc:
+        raise ApiError(f"Das Serverbild lässt sich nicht lesen: {exc}") from exc
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {**_icon_antwort(daten), "supported": True}
+
+
+def api_cloud_icon_put(body, query) -> dict:
+    """Eigenes Serverbild auf den Root-Server legen (nur bei gestopptem Server)."""
+    remote_id = _cloud_instance(body, query)
+    remote = _hosted_remote(remote_id)
+    if remote.get("running"):
+        raise ApiError("Bitte den Server auf dem Root-Server zuerst stoppen – einzelne Dateien "
+                       "nimmt er nur bei gestopptem Server an. Das Bild wirkt ohnehin erst beim "
+                       "nächsten Start.", 409)
+    daten = _icon_pruefen(body.get("png", body.get("bild")))
+    ablage = store.DATA_DIR / "cloud-stage"
+    ablage.mkdir(parents=True, exist_ok=True)
+    tmp = ablage / f"{secrets.token_hex(8)}-{manager.SERVER_ICON_NAME}"
+    try:
+        tmp.write_bytes(daten)
+        cloud.remote_file_upload(remote_id, tmp, manager.SERVER_ICON_NAME)
+    except cloud.CloudError as exc:
+        if _icon_nicht_da(exc):
+            return {"supported": False,
+                    "hint": "Dieser Root-Server kann einzelne Dateien noch nicht annehmen – das "
+                            "Serverbild lässt sich dort erst setzen, wenn der Betreiber das "
+                            "nachgerüstet hat."}
+        raise
+    except OSError as exc:
+        raise ApiError(f"Das Serverbild lässt sich nicht übertragen: {exc}") from exc
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    log.info("Serverbild auf dem Root-Server gesetzt: %s (%d Bytes)", remote_id, len(daten))
+    return {"ok": True, "supported": True, "icon": _icon_antwort(daten), "running": False}
+
+
+def api_cloud_icon_reset(body, query) -> dict:
+    """Standardbild zurückholen: Datei auf dem Root-Server löschen. Der Dienst legt beim nächsten
+    Start seins wieder hin (mcsmd.ensure_server_icon)."""
+    remote_id = _cloud_instance(body, query)
+    remote = _hosted_remote(remote_id)
+    if remote.get("running"):
+        raise ApiError("Bitte den Server auf dem Root-Server zuerst stoppen.", 409)
+    try:
+        cloud.remote_file_delete(remote_id, manager.SERVER_ICON_NAME)
+    except cloud.CloudError as exc:
+        if _icon_nicht_da(exc):
+            # Nicht da ist genau das Ziel – der Dienst legt beim Start das Standardbild hin.
+            return {"ok": True, "supported": True, "icon": _icon_antwort(b""), "running": False}
+        raise
+    log.info("Serverbild auf dem Root-Server zurückgesetzt: %s", remote_id)
+    return {"ok": True, "supported": True, "icon": _icon_antwort(b""), "running": False}
+
+
 # -- Spielerverwaltung einer gehosteten Instanz: Listen als Dateien, Befehle über die Konsole
 
 def _hosted_player_files(kind: str) -> tuple[str, str, str]:
@@ -1255,6 +1533,44 @@ def api_cloud_players_action(body, query) -> dict:
     return bild(f"„{name}“ wurde hinausgeworfen.", frisch=True)
 
 
+# -- Xbox-Freunde-Modus einer gehosteten Instanz
+# Dieselbe Karte wie bei einem lokalen Server, nur läuft der Bot (MCXboxBroadcast) auf dem Root –
+# damit bleiben Anmeldung und Freundesliste auch dann bestehen, wenn dieser PC aus ist. Kennt der
+# Root-Server diese Wege noch nicht, meldet core/cloud.py das als {"supported": false, "hint": …}.
+
+def api_cloud_xbox(_body, query) -> dict:
+    return cloud.remote_xbox_status(_cloud_instance({}, query))
+
+
+def api_cloud_xbox_setup(body, query) -> dict:
+    """Bot auf dem Root-Server einrichten und starten (Anzeigename, automatischer Start)."""
+    remote_id = _cloud_instance(body, query)
+    remote = _hosted_remote(remote_id)
+    out = cloud.remote_xbox_setup(
+        remote_id,
+        host_name=_xbox_host_name(body.get("host_name"), str(remote.get("name") or "")),
+        autostart=body.get("autostart", True) is not False)
+    if out.get("supported", True):
+        log.info("Xbox-Freunde-Modus auf dem Root-Server wird eingerichtet (%s).", remote_id)
+    return out
+
+
+def api_cloud_xbox_start(body, query) -> dict:
+    return cloud.remote_xbox_start(_cloud_instance(body, query))
+
+
+def api_cloud_xbox_stop(body, query) -> dict:
+    return cloud.remote_xbox_stop(_cloud_instance(body, query))
+
+
+def api_cloud_xbox_reset(body, query) -> dict:
+    return cloud.remote_xbox_reset(_cloud_instance(body, query))
+
+
+def api_cloud_xbox_disable(body, query) -> dict:
+    return cloud.remote_xbox_disable(_cloud_instance(body, query))
+
+
 def api_cloud_upload(body, _query) -> dict:
     """„Auf den Root-Server verschieben“: ganzen Serverordner hochladen (Job)."""
     cfg = _require(store.get(str(body.get("server", ""))))
@@ -1369,7 +1685,9 @@ ROUTES = {
     ("GET", "cloud/file"): api_cloud_file_get,
     ("GET", "cloud/settings"): api_cloud_settings,
     ("GET", "cloud/props"): api_cloud_props,
+    ("GET", "cloud/icon"): api_cloud_icon,
     ("GET", "cloud/players"): api_cloud_players,
+    ("GET", "cloud/xbox"): api_cloud_xbox,
     ("GET", "cloud/login/poll"): api_cloud_login_poll,
     ("GET", "cloud/sessions"): api_cloud_sessions,
     ("POST", "cloud/login"): api_cloud_login,
@@ -1385,7 +1703,14 @@ ROUTES = {
     ("POST", "cloud/command"): api_cloud_command,
     ("POST", "cloud/settings"): api_cloud_settings_put,
     ("POST", "cloud/props"): api_cloud_props_put,
+    ("POST", "cloud/icon"): api_cloud_icon_put,
+    ("POST", "cloud/icon/reset"): api_cloud_icon_reset,
     ("POST", "cloud/players"): api_cloud_players_action,
+    ("POST", "cloud/xbox/setup"): api_cloud_xbox_setup,
+    ("POST", "cloud/xbox/start"): api_cloud_xbox_start,
+    ("POST", "cloud/xbox/stop"): api_cloud_xbox_stop,
+    ("POST", "cloud/xbox/reset"): api_cloud_xbox_reset,
+    ("POST", "cloud/xbox/disable"): api_cloud_xbox_disable,
     ("POST", "cloud/file"): api_cloud_file_put,
     ("POST", "cloud/file/delete"): api_cloud_file_delete,
     ("POST", "cloud/file/mkdir"): api_cloud_file_mkdir,
@@ -1424,6 +1749,9 @@ SERVER_ROUTES = {
     ("POST", "xbox/disable"): api_xbox_disable,
     ("POST", "portmap"): api_portmap,
     ("POST", "hardcore"): api_hardcore,
+    ("GET", "icon"): api_icon_get,
+    ("POST", "icon"): api_icon_put,
+    ("POST", "icon/reset"): api_icon_reset,
     ("POST", "portmap/remove"): api_portmap_remove,
     ("POST", "xbox/reset"): api_xbox_reset,
     ("GET", "xbox/console"): api_xbox_console,

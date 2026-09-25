@@ -148,11 +148,106 @@ Java-Code. Deshalb läuft **jedes Konto unter einem eigenen Unix-Benutzer**:
 
 ## Ports
 
-Vergeben werden sie **erst beim Start** aus `core/ports.py` (`PortPool`, TCP 25565–25700,
-UDP 19132–19300) und danach in den Instanz-Datensatz gespiegelt. Beim **Anlegen** bekommt eine
-Instanz keinen Port: sonst hätten 100 angelegte Java-Instanzen eines einzigen Kontos den Bereich
-für alle Konten aufgebraucht. `instances.PORT_RANGES` leitet sich aus `ports.POOLS` ab – es gibt
-nur eine Quelle für die Bereiche.
+Vergeben werden sie aus `core/ports.py` (`PortPool`, TCP 25565–25700, UDP 19132–19300) und danach
+in den Instanz-Datensatz gespiegelt. `instances.PORT_RANGES` leitet sich aus `ports.POOLS` ab – es
+gibt nur eine Quelle für die Bereiche.
+
+Der **TCP-Port** kommt, sobald eine Instanz auf dem Root liegt (`hosted`) oder gerade hochgeladen
+wird (`uploading`) – nicht erst beim ersten Start (`mcsmd.ensure_port`, `mcsmd.PORT_ZUSTAENDE`).
+Sonst überspringt `routes.tabelle()` sie, und der Verteiler meldet den Spielern „Diesen Server
+gibt es hier nicht“, obwohl der Server längst da ist. Genau das war der Befund zu „Eutopia“.
+Er bleibt der Instanz danach erhalten – auch über einen Stopp und den Ruhezustand hinweg, sonst
+verschwände ein schlafender Server wieder aus der Tabelle. Zurück geht er erst, wenn die Instanz
+den Root verlässt (zurückgeholt, geparkt, gelöscht).
+
+Eine Instanz im Zustand `local_only` bekommt **keinen** Port: sie liegt nur auf dem PC, steht
+nicht in `routes.json`, und der Port täte dort nichts. `MAX_INSTANCES_PER_USER` erlaubt 500
+angelegte Server je Konto, der Java-Bereich hat aber nur rund 136 Ports für **alle** Konten – ein
+einziges Konto könnte den Bereich mit Servern leerräumen, die es niemals hochlädt.
+
+Der **UDP-Block** (Bedrock/Geyser) wird nur im Betrieb gebraucht und beim Stopp freigegeben.
+
+## Ruhezustand und Wecken
+
+Ein gehosteter Java-Server steht in `routes.json`, **auch wenn er aus ist** – mit `wecken: true`,
+wenn der Besitzer den Ruhezustand eingeschaltet hat. Daraus ergeben sich drei Wege:
+
+* **Ping (Handshake mit Zustand 1).** Der Verteiler kommt auf `127.0.0.1:<port>` nicht durch und
+  antwortet selbst wie ein echter Server: Anzeigename, `0/<max>` (aus `server.properties`) und die
+  Beschreibung „Server ist ausgeschaltet – tritt bei, um ihn zu starten“, **ohne** Fehlerfarbe. In
+  der Serverliste sieht er damit normal aus.
+* **Beitritt (Zustand 2 oder 3).** Der Verteiler ruft `POST /api/router/wake` über die
+  Rückschleife auf, mit dem gemeinsamen Geheimnis aus `/srv/mcsm/data/router_secret` im Kopf
+  `X-MCSM-Router`. Der Dienst prüft Pass, Kontingent und Platz (`instances.check_start`) und
+  startet. Der Spieler wird getrennt mit „Der Server startet gerade. Bitte verbinde dich in etwa
+  einer Minute noch einmal.“ – oder, wenn er nicht starten darf, mit dem Grund im Klartext.
+  Mehrere Beitritte in derselben Sekunde starten **einen** Server: `mcsmd.WAKE_LOCKS` hält je
+  Instanz eine Sperre, und wer sie nicht bekommt, hört „startet gerade“ – was stimmt.
+* **Leerstand.** `mcsmd.ruhezustand_pruefen` läuft im Takt der Überwachungsschleife (60 s) und
+  legt einen Server schlafen, der `hibernation_minutes` (Vorgabe 15) ohne Spieler steht: erst
+  `save-all`, dann der gewöhnliche angekündigte Stopp. Die Spielerzahl kommt aus `status.json` des
+  Begleit-Plugins, ersatzweise über den Konsolenbefehl `list`; ist sie **unbekannt**, wird nicht
+  schlafen gelegt. Ebenso nicht, solange eine Übertragung für die Instanz offen ist oder der
+  Server erst seit weniger als `HIBERNATION_GRACE` (5 Minuten) läuft – ein frisch geweckter
+  Server soll nicht einschlafen, bevor der Spieler, der ihn geweckt hat, überhaupt drin ist.
+
+Ein schlafender Server zählt **nicht** als laufend (`instances.is_running` verlangt `running`):
+Platz und Arbeitsspeicher sind im Pass wieder frei. Beim Wecken wird das Kontingent erneut
+geprüft; reicht es nicht, sagt die Trennmeldung das. `server_view` führt „schläft“ (`sleeping`)
+als eigenen Zustand neben „läuft“ und „gestoppt“; ein- und ausschalten lässt sich das je Server
+über `POST /api/servers/<id>/settings` mit `hibernation` und `hibernation_minutes`.
+
+## Xbox-Freunde-Modus (Konsolen)
+
+Konsolenspieler (Xbox, PlayStation, Switch) können keine Adresse eintippen. Sie kommen über
+**Freunde → Beitreten** herein: Ein Bot-Konto meldet sich bei Xbox Live an und zeigt den Server
+allen seinen Freunden als beitretbare Welt. Dazu läuft je Instanz ein eigener Prozess
+(`MCXboxBroadcast Standalone`, `hosted/core/xbox.py` – die Linux-Fassung des Abschnitts „Xbox“
+aus `core/manager.py` des PC-Programms).
+
+* **Beworben wird die öffentliche Adresse des Root-Servers** (`arcardia-nexus.de`, übersteuerbar
+  mit `MCSM_XBOX_ADDRESS`) und der **Bedrock-Port der Instanz**: bei Java der Geyser-Port, bei BDS
+  der eingetippte Port. **Nie `127.0.0.1`** – die Konsole des Freundes baut die Verbindung selbst
+  dorthin auf; `xbox.LOOPBACK` lehnt solche Werte ab. Genau das war der Fehler nach dem Umzug: in
+  der mitgezogenen `config.yml` stand noch die Heimadresse des Betreibers.
+* Der Bot läuft **unter demselben Unix-Benutzer wie der Server** (`core/isolation.py`), in eigener
+  Sitzung, und trägt `-Dmcsm.xbox=<kennung>` in der Kommandozeile – daran findet der Dienst einen
+  vergessenen Bot in `/proc` wieder (wie `-Dmcsm.instanz=` beim Server).
+* Die Jar liegt **einmal** in `/srv/mcsm/cache` (mit Prüfsumme). Damit der Serverbenutzer sie
+  lesen kann, wird sie `0644` und der Zwischenspeicher bekommt nur „durchlaufen“ für andere
+  (0711, dasselbe Muster wie `/srv/mcsm`). Eine Kopie je Instanz wären 40 MB – die Platte ist
+  hier der engere Engpass.
+* **Die Anmeldung liegt in `<instanz>/xbox/cache/cache.json`** und wird bei einer Übertragung
+  **mitgenommen**. Stolperstein: `cache` steht in `paths.NACHLADBAR_DIRS`, das gilt aber nur für
+  den **ersten** Pfadteil, und der ist hier `xbox`. `transfer.xbox_anmeldung_dabei()` hält die
+  Zusage fest, ein Selbsttest prüft sie auf beiden Seiten. Ohne sie müsste sich der Betreiber
+  nach jedem Umzug neu bei Xbox Live anmelden.
+* Der Bot **startet und stoppt mit dem Server** (`xbox_enabled` und `xbox_autostart` im
+  Instanz-Datensatz) und geht beim Ruhezustand mit – der Serverprozess endet dort auf demselben
+  Weg. Beim Beenden des Dienstes werden die Bots **wirklich gestoppt** (anders als die Server):
+  Sie halten keine Welt, und zwei Bots kündigten Xbox Live dieselbe Sitzung doppelt an. Der
+  nächste Start fährt sie in `xbox_wieder_aufnehmen()` in Sekunden wieder hoch.
+* Angemeldet wird per **Gerätecode**: Der Dienst zieht die Zeile mit `microsoft.com/link` und dem
+  Code aus der Ausgabe und bietet sie im Status an (`state` = `off` | `starting` | `login` |
+  `online`, dazu `state_text` in deutschem Klartext). Einlösen kann den Code nur der Betreiber.
+
+Routen (gleiche Namen und Felder wie in `app.py` des PC-Programms):
+`GET /api/servers/<id>/xbox` und `…/xbox/status`, `POST …/xbox/setup` (Vorgang: Java, Jar,
+Konfiguration, Bot), `POST …/xbox/start` | `/stop` | `/reset` | `/disable`,
+`GET …/xbox/console`. Die beworbene Adresse setzt **der Dienst**, nicht das Konto – sonst könnte
+ein Kunde Xbox Live eine fremde Adresse als „seinen“ Server ankündigen.
+
+## Crossplay: Chat und Serverbild
+
+Zwei Kleinigkeiten, die vor **jedem** Start nachgezogen werden (`mcsmd.ensure_crossplay_chat`,
+`mcsmd.ensure_server_icon`), weil der Server `server.properties` selbst neu schreibt:
+
+* Mit Geyser steht `enforce-secure-profile` auf **false**. Bedrock-Spieler kommen über Floodgate
+  herein und haben keine Mojang-Chatsignatur; bleibt die Einstellung auf `true`, verwirft der
+  Server ihre Chatnachrichten – sie können spielen, aber nichts schreiben, und niemand sieht,
+  woran es liegt.
+* Ohne eigenes Bild bekommt der Server `assets/server-icon.png` als `server-icon.png`. Ein
+  vorhandenes Bild des Besitzers wird **nie** überschrieben.
 
 ## Grenzen der Maschine (wichtig für die Pässe)
 

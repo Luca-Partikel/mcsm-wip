@@ -163,7 +163,12 @@ class TestTabelle(Basis):
         instances.set_ports(bedrock["id"], {"java": 25571, "bedrock": 19132})
         tabelle = routen.eintraege(routen.tabelle())
         self.assertEqual(sorted(tabelle), ["java-welt"])
-        self.assertEqual(tabelle["java-welt"], {"port": 25570, "instanz": java["id"]})
+        # Je Eintrag steht mehr als der Port in der Datei: der Verteiler braucht Anzeigename,
+        # Spielerplätze und „darf geweckt werden“, um einen schlafenden Server wie einen
+        # echten zu beantworten.
+        self.assertEqual(tabelle["java-welt"],
+                         {"port": 25570, "instanz": java["id"], "name": "Java Welt",
+                          "max": routen.MAX_SPIELER_VORGABE, "wecken": True})
 
     def test_gestoppte_bleiben_in_der_tabelle(self):
         """Der Verteiler meldet dann „läuft gerade nicht“ – das ist die bessere Auskunft."""

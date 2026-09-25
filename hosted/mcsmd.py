@@ -58,7 +58,7 @@ _HERE = pathlib.Path(__file__).resolve().parent
 _PKG = "mcsm_core"
 _MODULES = ("store_hosted", "users", "passes", "instances",
             "paths", "transfer", "ports", "isolation", "runner", "sources_linux",
-            "oauth", "routes", "companion")
+            "oauth", "routes", "companion", "xbox")
 
 
 def _load_core() -> dict:
@@ -86,6 +86,9 @@ oauth = _core["oauth"]
 #: der Name wäre neben der Routenliste ``ROUTES`` dieser Datei zu leicht zu verwechseln.
 routen = _core["routes"]
 companion = _core["companion"]
+#: Xbox-Freunde-Modus (MCXboxBroadcast): ein Bot-Konto zeigt den Server seinen Xbox-Live-Freunden
+#: als beitretbare Welt. Für Konsolenspieler oft der einzige Weg auf einen fremden Server.
+xbox = _core["xbox"]
 
 # --------------------------------------------------------------------------- Einstellungen
 
@@ -105,6 +108,32 @@ ADMIN_FILE = "ERSTER-ADMIN.txt"
 DEFAULT_MACHINE_RAM_MB = passes.RAM_TOTAL_MAX_MB      # 10 GB dürfen insgesamt laufen
 MACHINE_RAM_RESERVE_MB = 512                # so viel Arbeitsspeicher bleibt frei
 WOKEN_KEEP_SECONDS = 14 * 86400             # so lange bleibt „wieder startbar“ als Hinweis stehen
+
+#: In diesen Zuständen liegt eine Instanz auf dem Root – und **nur** dann hält sie einen festen
+#: TCP-Port (siehe `ensure_port`). Eine Instanz, die noch allein auf dem PC liegt, bekommt keinen:
+#: sie steht auch nicht in `routes.json`, und der Bereich ist für alle Konten zusammen knapp.
+PORT_ZUSTAENDE = ("hosted", "uploading")
+
+# --------------------------------------------------------------------------- Ruhezustand
+#: Schonfrist nach dem Start: ein frisch geweckter Server soll nicht einschlafen, bevor der
+#: Spieler, der ihn geweckt hat, überhaupt drin ist.
+HIBERNATION_GRACE = 300
+#: So viele Sekunden kündigt das Begleit-Plugin den Ruhezustand im Spiel an.
+HIBERNATION_ANNOUNCE = 10
+#: So lange wird auf die Antwort des Konsolenbefehls „list“ gewartet (Ersatz für status.json).
+LIST_ANTWORT = 4.0
+#: „There are 0 of a max of 20 players online“ – auch die englische Kurzform „0/20“ passt.
+_LIST_RE = re.compile(r"(\d{1,5})\s*(?:of a max(?:imum)? of|/)\s*(\d{1,5})")
+
+# --------------------------------------------------------------------------- Weckruf
+#: Gemeinsames Geheimnis für den Verteiler. Er liegt neben den übrigen Daten und gehört wie sie
+#: allein dem Dienstbenutzer (0600) – beide Dienste laufen als „mcsm“.
+ROUTER_SECRET_FILE = "router_secret"
+#: Diese beiden Sätze stehen wortgleich in router.py (zwei Prozesse, eine Sprache).
+MELDUNG_STARTET = ("Der Server startet gerade. "
+                   "Bitte verbinde dich in etwa einer Minute noch einmal.")
+MELDUNG_WECKEN_FEHLT = ("Dieser Server ist ausgeschaltet und lässt sich gerade nicht wecken. "
+                        "Bitte später noch einmal versuchen.")
 
 # --------------------------------------------------------------------------- Oberfläche
 #: Die drei Dateien der Betreiberoberfläche. Es werden **nur** diese Namen bedient – kein Pfad
@@ -139,6 +168,10 @@ RATE_LIMITS = {
     # verworfen wird. Der Wert liegt bewusst über „angemeldet“ (900), damit ein ehrlicher
     # Aufrufer hier nie anstößt.
     "vorab": (1200, 60, 60),
+    # Weckrufe des Verteilers. Sie kommen aus der Rückschleife und teilen sich alle denselben
+    # Zähler; großzügig, weil ein Spieler beim Warten gern mehrmals auf „Beitreten“ drückt.
+    # Gegen doppelte Starts hilft die Sperre je Instanz, nicht diese Grenze.
+    "router": (600, 60, 60),
 }
 RATE_MAX_KEYS = 20000                       # Obergrenze, damit eine Flut den Speicher nicht füllt
 
@@ -285,6 +318,10 @@ _runtime: dict = {"version": 1, "ports": [], "warned": {}, "last_expiry_check": 
                   # {instanzkennung: zeitpunkt} – „ruht nicht mehr, kann wieder gestartet werden“.
                   # Der Hinweis muss den Neustart des Dienstes überleben, deshalb steht er hier.
                   "woken": {},
+                  # {instanzkennung: zeitpunkt} – seit wann steht dieser laufende Server ohne
+                  # Spieler da. Steht hier, damit ein Neustart des Dienstes die Uhr nicht
+                  # zurückstellt: die Server laufen ja weiter.
+                  "leer_seit": {},
                   # Letzter Stand der Zuordnungstabelle, nur damit nicht jede Minute dieselbe
                   # Zeile im Protokoll steht.
                   "routen_stand": None}
@@ -346,7 +383,7 @@ def runtime_load() -> None:
             return
         if isinstance(raw, dict):
             for key in ("ports", "warned", "last_expiry_check", "housekeeping_at",
-                        "save_all_at", "admin_invite", "started_at", "woken"):
+                        "save_all_at", "admin_invite", "started_at", "woken", "leer_seit"):
                 if key in raw:
                     _runtime[key] = raw[key]
 
@@ -363,6 +400,59 @@ def save_ports() -> None:
     with _runtime_lock:
         _runtime["ports"] = POOL.snapshot()
     runtime_save()
+
+
+# --------------------------------------------------------------------------- Geheimnis für den Verteiler
+
+def router_secret_path() -> pathlib.Path:
+    """Wo das gemeinsame Geheimnis für den Weckruf liegt (muss zu MCSM_ROUTER_SECRET passen)."""
+    raw = (os.environ.get("MCSM_ROUTER_SECRET") or "").strip()
+    return pathlib.Path(raw) if raw else store_hosted.data_dir() / ROUTER_SECRET_FILE
+
+
+def ensure_router_secret() -> str:
+    """Das Geheimnis anlegen, wenn es noch keins gibt, und zurückgeben.
+
+    Der Verteiler weist mit diesem Wert nach, dass ein Weckruf wirklich von ihm kommt. Er liegt
+    als Datei, weil beide Dienste getrennt laufen und getrennt neu starten; Rechte 0600, damit
+    kein hochgeladenes Plugin ihn lesen kann. Ein leerer Rückgabewert heißt: Wecken ist gerade
+    nicht möglich (der Dienst sagt das dann auch im Protokoll).
+    """
+    pfad = router_secret_path()
+    try:
+        vorhanden = pfad.read_text(encoding="utf-8").strip()
+    except OSError:
+        vorhanden = ""
+    if len(vorhanden) >= 32:
+        try:
+            os.chmod(pfad, 0o600)
+        except OSError:
+            pass
+        return vorhanden
+    wert = secrets.token_hex(32)
+    tmp = pfad.with_name(f"{pfad.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(wert + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, pfad)
+    except OSError as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        log_event(f"Das Geheimnis für den Verteiler ließ sich nicht anlegen ({exc}) – "
+                  f"schlafende Server lassen sich dann nicht über einen Beitritt wecken.")
+        return ""
+    log_event(f"Das gemeinsame Geheimnis für den Verteiler wurde neu angelegt ({pfad.name}, "
+              f"nur für den Dienstbenutzer lesbar).")
+    return wert
 
 
 # --------------------------------------------------------------------------- Ratenbremse
@@ -488,6 +578,8 @@ def bremsgruppe(path: str) -> str:
         return "abholen"
     if path.startswith(("/api/auth/", "/auth/")):
         return "anmeldung"
+    if path.startswith("/api/router/"):
+        return "router"
     return ""
 
 
@@ -589,14 +681,25 @@ STOP_EVENT = threading.Event()
 
 
 def on_runner_exit(run, code: int) -> None:
-    """Nach dem Ende eines Servers: Ports freigeben, Zustand nachtragen."""
+    """Nach dem Ende eines Servers: Bot anhalten, Ports freigeben, Zustand nachtragen."""
     iid = run.spec.instance_id
+    # Der Bot des Xbox-Freunde-Modus stoppt **mit** dem Server: er würde sonst weiter eine Welt
+    # ankündigen, die es nicht mehr gibt, und die Freunde liefen in einen Verbindungsfehler.
+    # Das deckt auch den Ruhezustand ab – dort endet der Serverprozess auf demselben Weg.
+    xbox_stop_for(iid, "Server beendet")
     try:
         instances.set_running(iid, False)
     except ValueError:
         pass
+    # Der feste TCP-Port bleibt der Instanz erhalten, solange sie auf dem Root liegt: sonst
+    # verschwände ein schlafender Server aus `routes.json`, und der Verteiler meldete wieder
+    # „Diesen Server gibt es hier nicht“. Der UDP-Block wird nur im Betrieb gebraucht.
+    inst = instances.get_instance(iid)
+    bleibt = inst is not None and str(inst.get("state") or "") in PORT_ZUSTAENDE
     try:
-        POOL.release(iid)
+        POOL.release(iid, ports.BEDROCK_POOL if bleibt else None)
+        if bleibt and inst is not None:
+            mirror_ports(inst, POOL.assignment(iid))
         save_ports()
     except ValueError:
         pass
@@ -634,6 +737,8 @@ def _grant_group(folder, run_as: str, iid: str) -> None:
 
 
 REGISTRY = runner.RunnerRegistry(on_exit=on_runner_exit)
+#: Die Bots des Xbox-Freunde-Modus – höchstens einer je Instanz (siehe core/xbox.py).
+XBOX = xbox.BroadcasterRegistry()
 
 
 # --------------------------------------------------------------------------- Fehler
@@ -905,6 +1010,50 @@ def apply_ports(inst: dict, folder: pathlib.Path, assignment: dict, geyser: bool
         write_geyser_config(folder, inst, assignment)
 
 
+def ensure_crossplay_chat(folder: pathlib.Path, geyser: bool) -> bool:
+    """Bei Crossplay ``enforce-secure-profile=false`` setzen. Rückgabe: ob geändert wurde.
+
+    Bedrock-Spieler kommen über Floodgate herein und haben **keine** Mojang-Chatsignatur. Steht
+    ``enforce-secure-profile`` auf ``true``, verwirft der Server ihre Chatnachrichten: Sie können
+    spielen, aber nichts schreiben – und niemand sieht, woran es liegt. Das Programm auf dem PC
+    macht das vor jedem Start genauso (``core/manager.py``).
+
+    Geschrieben wird nur, wenn der Wert wirklich abweicht: der Server schreibt
+    ``server.properties`` beim Beenden selbst neu, deshalb wird das vor **jedem** Start geprüft.
+    """
+    if not geyser:
+        return False
+    props = folder / "server.properties"
+    if str(read_properties(props).get("enforce-secure-profile", "")).strip().lower() == "false":
+        return False
+    patch_properties(props, {"enforce-secure-profile": "false"})
+    return True
+
+
+#: Standardbild für die Serverliste (``deploy.sh`` bringt den Ordner nach ``/opt/mcsm/assets``).
+SERVER_ICON = _HERE / "assets" / "server-icon.png"
+
+
+def ensure_server_icon(folder: pathlib.Path) -> bool:
+    """Standardbild setzen, solange der Besitzer keins hinterlegt hat.
+
+    Minecraft zeigt ``server-icon.png`` (64×64) in der Mehrspieler-Liste; ohne Datei bleibt dort
+    das graue Standardbild. Ein **eigenes** Bild wird nie überschrieben – nur wenn gar keins da
+    ist, legt der Dienst seins hin (wie ``manager.ensure_server_icon`` auf dem PC).
+    """
+    ziel = pathlib.Path(folder) / "server-icon.png"
+    try:
+        if ziel.exists() or not SERVER_ICON.is_file():
+            return False
+        tmp = ziel.with_name(ziel.name + ".neu")
+        shutil.copyfile(SERVER_ICON, tmp)
+        os.replace(tmp, ziel)
+        return True
+    except OSError as exc:
+        log_event(f"Das Serverbild ließ sich nicht setzen: {exc}")
+        return False
+
+
 def mirror_ports(inst: dict, assignment: dict) -> dict:
     """Die vergebenen Ports in den Datensatz spiegeln. Rückgabe: was dort jetzt steht.
 
@@ -1019,10 +1168,67 @@ def marke_zuruecklegen(inst: dict, grund: str) -> None:
         log_event(f"Die Unterdomäne „{marke}“ ließ sich nicht zurückhalten: {exc}")
 
 
+def max_spieler_of(instance_id: str) -> int:
+    """Spielerplätze einer Instanz aus ``server.properties`` (für die Anzeige ``0/<max>``)."""
+    inst = instances.get_instance(str(instance_id or ""))
+    if not inst:
+        return routen.MAX_SPIELER_VORGABE
+    return max_players_of(instance_dir(inst), routen.MAX_SPIELER_VORGABE)
+
+
+def ensure_port(inst: dict, grund: str = "") -> dict:
+    """Der Instanz einen festen TCP-Port geben – schon beim Anlegen, nicht erst beim Start.
+
+    Ohne das stünde eine gehostete Instanz erst nach ihrem **ersten Start** in ``routes.json``:
+    `routes.tabelle` überspringt jeden Eintrag ohne Port, und der Verteiler sagte den Spielern
+    bis dahin „Diesen Server gibt es hier nicht“. Genau das ist dem Betreiber passiert.
+
+    Einen Port bekommt aber **nur** eine Instanz, die wirklich hier liegt (``hosted``) oder gerade
+    hochgeladen wird (``uploading``). Eine Instanz im Zustand ``local_only`` steht noch allein auf
+    dem PC: sie taucht in ``routes.json`` gar nicht auf, der Port täte dort nichts – und
+    ``MAX_INSTANCES_PER_USER`` erlaubt 500 angelegte Server je Konto, während es nur rund 136
+    Java-Ports für **alle** Konten gibt. Ein einziges Konto könnte den Bereich also mit
+    Serverkarteikarten leerräumen, die niemals hochgeladen werden, und danach bekäme kein
+    wirklich gehosteter Server mehr eine Adresse – genau der Fehler, der behoben werden sollte.
+
+    Der Port bleibt der Instanz danach erhalten: `PortPool.allocate` gibt eine vorhandene
+    Buchung unverändert zurück, und `allocate_for` beim Start nimmt genau diese. Zurück geht er
+    erst, wenn die Instanz den Root-Server verlässt (zurückgeholt, geparkt, gelöscht).
+
+    Wirft nie – ein Server ohne Port ist ärgerlich, aber kein Grund, den Aufruf abzubrechen.
+    """
+    iid = str(inst.get("id") or "")
+    if not iid:
+        return {}
+    # Maßgeblich ist der gespeicherte Zustand: die Aufrufer setzen ihn direkt vorher und geben
+    # teils noch den alten Datensatz mit.
+    zustand = str((instances.get_instance(iid) or inst).get("state") or "")
+    if zustand not in PORT_ZUSTAENDE:
+        return {}
+    zuteilung = ports_live_of(iid)
+    if not zuteilung.get("port"):
+        try:
+            POOL.allocate(iid, ports.JAVA_POOL, 1)
+        except (ValueError, ports.PortsExhausted) as exc:
+            log_event(f"Für {iid} ließ sich kein fester Port vergeben ({exc})"
+                      + (f" – {grund}" if grund else "") + ".")
+            return {}
+        zuteilung = POOL.assignment(iid)
+        log_event(f"Instanz {iid} hat den festen Port {zuteilung.get('port')} bekommen"
+                  + (f" ({grund})" if grund else "") + ".")
+    # Auch eine schon vorhandene Buchung wird in den Datensatz gespiegelt: `routes.tabelle`
+    # liest den Port im Zweifel von dort, und ein leeres `ports` war genau der Befund.
+    frisch = instances.get_instance(iid) or inst
+    if int((frisch.get("ports") or {}).get("java") or 0) != int(zuteilung.get("port") or 0):
+        mirror_ports(frisch, zuteilung)
+    save_ports()
+    return zuteilung
+
+
 def schreibe_routen(grund: str = "") -> dict:
     """``routes.json`` für den Verteiler neu schreiben. Wirft nie – der Dienst läuft weiter."""
     try:
-        data = routen.schreibe_routen(ports_live=ports_live_of)
+        data = routen.schreibe_routen(ports_live=ports_live_of, max_spieler=max_spieler_of)
     except (OSError, ValueError) as exc:
         log_event(f"Die Zuordnungstabelle des Verteilers ließ sich nicht schreiben: {exc}")
         return {}
@@ -1067,6 +1273,165 @@ def reserve_router_port() -> None:
         log_event(f"Der Port {port} des Verteilers ließ sich nicht buchen: {exc}")
 
 
+# --------------------------------------------------------------------------- Xbox-Freunde-Modus
+#
+# Der Bot (MCXboxBroadcast, core/xbox.py) meldet Xbox Live eine **Adresse und einen Port**. Er
+# müsste deshalb gar nicht auf derselben Maschine wie der Server laufen – hier soll er es aber:
+# dann bleibt der Server auch dann in der Freundesliste, wenn der PC des Betreibers aus ist.
+# Genau das war der Grund für diese Runde: nach dem Umzug auf den Root fehlte der Bot, und die
+# Konsolenspieler sahen den Server nicht mehr.
+
+#: Übersteuert die beworbene Adresse (Ausnahmefall: eigene DNS-Namen, Test-Anlagen).
+XBOX_ADDRESS_ENV = "MCSM_XBOX_ADDRESS"
+_GEYSER_PORT_RE = re.compile(r"^\s{2}port:\s*(\d{1,5})\s*$", re.MULTILINE)
+
+
+def xbox_address() -> str:
+    """Die Adresse, die der Bot seinen Freunden nennt: die öffentliche Adresse des Root-Servers.
+
+    **Nie** ``127.0.0.1`` und nie ein interner Name: die Konsole des Freundes baut die Verbindung
+    selbst zu dieser Adresse auf. Bedrock läuft nicht über den Verteiler, deshalb ist es die
+    Basisdomain (sie zeigt auf die feste IPv4 des Root-Servers), nicht die Unterdomäne.
+    """
+    raw = (os.environ.get(XBOX_ADDRESS_ENV) or "").strip()
+    return raw or routen.domain()
+
+
+def geyser_bedrock_port(folder: pathlib.Path) -> int:
+    """Der Bedrock-Port aus ``plugins/Geyser-Spigot/config.yml``.
+
+    Nötig für die Anzeige eines **gestoppten** Servers: den UDP-Port gibt der PortPool nach dem
+    Stoppen zurück (er wird nur im Betrieb gebraucht), in der Geyser-Konfiguration steht aber
+    noch, womit der Server zuletzt lief.
+    """
+    try:
+        text = (folder / "plugins" / "Geyser-Spigot" / "config.yml").read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    found = _GEYSER_PORT_RE.search(text)
+    if not found:
+        return 0
+    try:
+        port = int(found.group(1))
+    except ValueError:
+        return 0
+    return port if 1 <= port <= 65535 else 0
+
+
+def xbox_bedrock_port(inst: dict, folder: pathlib.Path) -> int:
+    """Der Port, den eine Konsole anwählt (0 = noch keiner bekannt).
+
+    * Bedrock (BDS mit NetherNet): der eingetippte Port – im Datensatz unter ``java``.
+    * Java mit Crossplay: der Geyser-Port (UDP), im Datensatz unter ``bedrock``.
+
+    Maßgeblich ist der PortPool, solange der Server läuft; danach der Datensatz und zuletzt die
+    Geyser-Konfiguration.
+    """
+    iid = str(inst.get("id") or "")
+    live = ports_live_of(iid)
+    gespeichert = inst.get("ports") or {}
+    if str(inst.get("type")) == "bedrock":
+        reihe = (live.get("port"), gespeichert.get("java"))
+    else:
+        reihe = (live.get("bedrock_port"), gespeichert.get("bedrock"),
+                 geyser_bedrock_port(folder))
+    for wert in reihe:
+        try:
+            port = int(wert or 0)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            return port
+    return 0
+
+
+def build_xbox_spec(inst: dict) -> "xbox.XboxSpec":
+    """Die Angaben des Bots aus dem Instanz-Datensatz (ohne Netzabfrage)."""
+    folder = instance_dir(inst)
+    props = read_properties(folder / "server.properties")
+    name = str(inst.get("name") or "Minecraft Server")
+    return xbox.XboxSpec(
+        instance_id=str(inst.get("id") or ""),
+        directory=folder,
+        name=name,
+        motd=str(props.get("motd") or props.get("server-name") or name),
+        max_players=max_players_of(folder),
+        address=xbox_address(),
+        port=xbox_bedrock_port(inst, folder),
+        # Java mit Geyser antwortet auf den RakNet-Ping des Bots; ein NetherNet-BDS nie – dort
+        # würde der Bot sonst alle 30 Sekunden einen Fehler samt Stacktrace protokollieren.
+        query_server=str(inst.get("type")) != "bedrock",
+        run_as=isolation.user_for_owner(str(inst.get("owner") or "")),
+    )
+
+
+def xbox_moeglich(inst: dict) -> str:
+    """Leerer Text, wenn der Xbox-Freunde-Modus für diesen Server möglich ist – sonst der Grund."""
+    folder = instance_dir(inst)
+    if str(inst.get("type")) != "bedrock" and not has_geyser(folder):
+        return ("Konsolen sprechen Bedrock. Für den Xbox-Freunde-Modus braucht dieser "
+                "Java-Server deshalb zuerst Crossplay (Geyser) – danach lässt sich der Bot "
+                "einrichten.")
+    return ""
+
+
+def xbox_status_of(inst: dict) -> dict:
+    """Zustand des Bots für die API (gleiche Felder wie im Programm auf dem PC)."""
+    iid = str(inst.get("id") or "")
+    try:
+        spec = build_xbox_spec(inst)
+    except ValueError as exc:
+        # Kein Port, kein Benutzer – dann gibt es auch keinen Bot. Der Grund gehört in die Anzeige.
+        return {"enabled": instances.xbox_enabled(inst),
+                "autostart": instances.xbox_autostart(inst),
+                "installed": False, "running": False, "state": "off",
+                "code": "", "url": "", "gamertag": "", "error": "",
+                "address": xbox_address(), "port": 0,
+                "host_name": str(inst.get("name") or ""), "token_cached": False,
+                "uptime": 0, "console_next": 0, "restart_needed": False,
+                "possible": False, "reason": str(exc), "state_text": str(exc)}
+    out = xbox.status_for(spec, XBOX.find(iid),
+                          enabled=instances.xbox_enabled(inst),
+                          autostart=instances.xbox_autostart(inst))
+    grund = xbox_moeglich(inst)
+    if not grund and not spec.port:
+        grund = ("Der Bedrock-Port dieses Servers steht noch nicht fest – er wird beim ersten "
+                 "Start vergeben.")
+    out["possible"] = not grund
+    out["reason"] = grund
+    if grund and not out["running"]:
+        out["state_text"] = grund
+    return out
+
+
+def xbox_start_if_enabled(inst: dict) -> None:
+    """Den Bot mit dem Server starten – wie `manager.start_broadcaster_if_enabled` auf dem PC.
+
+    Ein Fehlschlag bleibt ohne Folgen für den Server: der Zustand des Bots sagt, was fehlt.
+    """
+    if not (instances.xbox_enabled(inst) and instances.xbox_autostart(inst)):
+        return
+    iid = str(inst.get("id") or "")
+    try:
+        bot = XBOX.get(build_xbox_spec(inst))
+        bot.start()
+        log_event(f"Xbox-Freunde-Modus von {iid} gestartet "
+                  f"({bot.spec.address}:{bot.spec.port}).")
+    except (ValueError, OSError) as exc:
+        log_event(f"Der Xbox-Freunde-Modus von {iid} ließ sich nicht starten: {exc}")
+
+
+def xbox_stop_for(instance_id: str, grund: str = "") -> None:
+    """Den Bot einer Instanz anhalten (Server aus, Ruhezustand, Instanz weg)."""
+    try:
+        if XBOX.stop(str(instance_id)):
+            log_event(f"Xbox-Freunde-Modus von {instance_id} beendet"
+                      + (f" ({grund})." if grund else "."))
+    except Exception as exc:                                        # noqa: BLE001
+        log_event(f"Beim Beenden des Xbox-Bots von {instance_id}: {exc}")
+
+
 def server_view(inst: dict) -> dict:
     """Instanz für die API: Datensatz, Anzeigetexte und der wirkliche Laufzustand."""
     out = instances.public_instance(inst)
@@ -1075,6 +1440,11 @@ def server_view(inst: dict) -> dict:
     run = REGISTRY.find(iid)
     out["live"] = run.status() if run is not None else None
     out["ports_live"] = ports_live_of(iid)
+    # „schläft“ ist ein eigener Zustand neben „läuft“ und „gestoppt“. Maßgeblich ist der
+    # wirkliche Prozess, nicht das Merkfeld im Datensatz.
+    out["sleeping"] = bool(str(inst.get("state") or "") == "hosted"
+                           and not (run is not None and run.running)
+                           and instances.hibernation_enabled(inst))
     out["companion"] = has_companion(folder)
     out["geyser"] = has_geyser(folder)
     out["installed"] = ((folder / "bedrock_server").is_file()
@@ -1084,6 +1454,9 @@ def server_view(inst: dict) -> dict:
     out["domain"] = routen.domain()
     out["subdomain"] = routen.subdomain(inst)
     out["address"] = routen.adresse(inst, ports_live=out["ports_live"])
+    # Xbox-Freunde-Modus gleich mit – wie `_server_view` im Programm auf dem PC (app.py), damit
+    # die Oberfläche denselben Weg gehen kann.
+    out["xbox"] = xbox_status_of(inst)
     return out
 
 
@@ -1210,6 +1583,16 @@ class Req:
     def herkunft(self) -> str:
         """Herkunftsadresse des Aufrufers (siehe `client_ip`)."""
         return client_ip(self.handler)
+
+    @property
+    def gegenstelle(self) -> str:
+        """Die Adresse der **wirklichen** Gegenstelle – ohne die Köpfe von nginx.
+
+        Für den Weckruf des Verteilers ist genau das nötig: `client_ip` liefert dort die Adresse
+        aus ``X-Forwarded-For``, und die kann sich jeder ausdenken.
+        """
+        gegen = self.handler.client_address
+        return str(gegen[0]) if gegen else ""
 
     # -- Rechte --------------------------------------------------------
     @property
@@ -1833,6 +2216,10 @@ def h_server_create(req: Req):
     # Die Unterdomäne wird jetzt vergeben und bleibt der Instanz für immer – auch wenn sie später
     # umbenannt wird. Die Spieler sollen ihre Adresse behalten.
     marke = ensure_marke(inst)
+    # Der Port ebenso – aber nur für eine Instanz, die schon hier liegt (Premium). Eine Instanz
+    # mit Herkunft „local“ steht noch auf dem PC und bekommt ihn erst mit der Übertragung
+    # (`h_upload_finish`); `ensure_port` prüft den Zustand selbst.
+    ensure_port(inst, "angelegt")
     inst = instances.get_instance(inst["id"]) or inst
     schreibe_routen(f"Instanz {inst['id']} angelegt")
     log_event(f"Instanz {inst['id']} angelegt (Konto {user['id']}, Herkunft {inst['origin']}, "
@@ -1869,9 +2256,25 @@ def h_server_settings(req: Req, iid: str):
         inst = instances.set_ram(iid, data.get("ram_mb"))
     if "version" in data:
         inst = instances.set_version(iid, str(data.get("version") or ""))
+    if "hibernation" in data or "hibernation_minutes" in data:
+        inst = instances.set_hibernation(
+            iid,
+            enabled=data.get("hibernation") if "hibernation" in data else None,
+            minutes=data.get("hibernation_minutes") if "hibernation_minutes" in data else None)
+    if "xbox_enabled" in data or "xbox_autostart" in data:
+        inst = instances.set_xbox(
+            iid,
+            enabled=data.get("xbox_enabled") if "xbox_enabled" in data else None,
+            autostart=data.get("xbox_autostart") if "xbox_autostart" in data else None)
+        # Ausgeschaltet heißt ausgeschaltet: ein laufender Bot würde sonst weiter ankündigen.
+        if not instances.xbox_enabled(instances.get_instance(iid) or inst):
+            xbox_stop_for(iid, "über die Einstellungen ausgeschaltet")
     # Die Unterdomäne bleibt beim Umbenennen **absichtlich** gleich: die Spieler haben die
     # Adresse im Serverbrowser stehen. Nachgetragen wird nur, wenn noch gar keine da ist.
     ensure_marke(instances.get_instance(iid) or inst)
+    # In der Tabelle des Verteilers stehen Anzeigename und „darf geweckt werden“ – beides kann
+    # sich hier geändert haben.
+    schreibe_routen(f"Einstellungen von {iid} geändert")
     return {"server": server_view(instances.get_instance(iid) or inst)}
 
 
@@ -1889,6 +2292,7 @@ def h_server_delete(req: Req, iid: str):
                        f"Dateien dort wirklich verloren gehen dürfen.", 409)
     folder = instance_dir(inst)
     REGISTRY.drop(iid, timeout=STOP_TIMEOUT)
+    XBOX.drop(iid)
     POOL.release(iid)
     save_ports()
     removed = {"deleted": False}
@@ -1907,16 +2311,18 @@ def h_server_delete(req: Req, iid: str):
 
 # --------------------------------------------------------------------------- Steuern
 
-@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/start$")
-def h_server_start(req: Req, iid: str):
-    """Server einschalten.
+def start_instanz(inst: dict) -> tuple:
+    """Einen gehosteten Server wirklich einschalten. Rückgabe ``(Ports, Runner)``.
 
     Der ganze Vorgang läuft unter `START_LOCK`, und die Pass-Grenzen werden mit
     `instances.reserve_start` geprüft **und** im selben Zug eingetragen. Ohne beides ließen sich
     „wie viele gleichzeitig“ und „wie viel Arbeitsspeicher zusammen“ durch zwei gleichzeitige
     Aufrufe einfach umgehen: beide sehen noch „nichts läuft“ und beide starten.
+
+    Wirft `ApiError` mit einem fertigen deutschen Satz. Diesen Weg gehen beide Auslöser: der
+    Knopf im Programm auf dem PC und der Weckruf des Verteilers.
     """
-    inst = req.instance(iid)
+    iid = str(inst.get("id") or "")
     with START_LOCK:
         free = instances.free_disk_bytes()
         need = int(inst.get("ram_mb") or 0)
@@ -1944,6 +2350,12 @@ def h_server_start(req: Req, iid: str):
             apply_ports(inst, folder, assignment, geyser)
             mirror_ports(inst, assignment)
             ensure_marke(inst)
+            # Vor jedem Start: Bedrock-Spieler müssen im Chat schreiben dürfen, und ohne eigenes
+            # Bild bekommt der Server das Standardbild für die Serverliste.
+            if ensure_crossplay_chat(folder, geyser):
+                log_event(f"Für {iid} wurde „enforce-secure-profile“ auf false gesetzt – sonst "
+                          f"könnten Bedrock-Spieler nicht im Chat schreiben.")
+            ensure_server_icon(folder)
             # Das Begleit-Plugin wird vor **jedem** Start bereitgelegt (auch wenn es gelöscht
             # wurde): nur damit versteht der Server „mcsmstop“ und kündigt einen Stopp im Spiel
             # an, und nur damit liefert er Kennzahlen für die Anzeige.
@@ -1957,13 +2369,31 @@ def h_server_start(req: Req, iid: str):
             run.start()
         except Exception:
             instances.release_start(iid)         # Reservierung zurücknehmen, der Start ging schief
-            POOL.release(iid)
+            # Der feste TCP-Port bleibt der Instanz (die Adresse soll gleich bleiben); der
+            # UDP-Block wird nur im Betrieb gebraucht und geht zurück.
+            POOL.release(iid, ports.BEDROCK_POOL)
             save_ports()
             raise
         save_ports()
     _woken_vergessen(iid)
+    _leerstand_vergessen(iid)
     schreibe_routen(f"Server {iid} gestartet")
     log_event(f"Server {iid} gestartet (Ports {assignment}).")
+    # Der Bot des Xbox-Freunde-Modus startet **mit** dem Server – erst jetzt steht der
+    # Bedrock-Port fest, den er ankündigen muss. In eigenem Faden: das Aufräumen eines
+    # vergessenen Bots darf die Antwort auf „Start“ nicht aufhalten.
+    frisch = instances.get_instance(iid) or inst
+    if instances.xbox_enabled(frisch) and instances.xbox_autostart(frisch):
+        threading.Thread(target=xbox_start_if_enabled, args=(frisch,), daemon=True,
+                         name=f"xbox-start-{iid}").start()
+    return assignment, run
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/start$")
+def h_server_start(req: Req, iid: str):
+    """Server einschalten (Knopf im Programm auf dem PC)."""
+    inst = req.instance(iid)
+    assignment, run = start_instanz(inst)
     return {"ok": True, "ports": assignment, "live": run.status(),
             "server": server_view(instances.get_instance(iid) or inst)}
 
@@ -2000,6 +2430,96 @@ def _stop_runner(run, announce: int) -> None:
         log_event(f"Beim Stoppen von {run.spec.instance_id} gab es einen Fehler: {exc}")
 
 
+# --------------------------------------------------------------------------- Weckruf des Verteilers
+
+#: Je Instanz eine Sperre: Fünf Beitrittsversuche in derselben Sekunde dürfen den Server nicht
+#: fünfmal starten. Wer die Sperre nicht bekommt, hört „startet gerade“ – und das stimmt.
+WAKE_LOCKS: dict = {}
+WAKE_LOCKS_GUARD = threading.Lock()
+
+
+def _wecksperre(instance_id: str) -> threading.Lock:
+    with WAKE_LOCKS_GUARD:
+        sperre = WAKE_LOCKS.get(str(instance_id))
+        if sperre is None:
+            sperre = threading.Lock()
+            WAKE_LOCKS[str(instance_id)] = sperre
+        return sperre
+
+
+def wecke_instanz(inst: dict) -> dict:
+    """Jemand will auf diesen Server – prüfen und starten.
+
+    Rückgabe ``{"ok": …, "gestartet": …, "meldung": …}``. Die Meldung geht wortwörtlich als
+    Trennmeldung ins Spiel: bei „ja“ die Bitte, es gleich noch einmal zu versuchen, bei „nein“
+    der Grund im Klartext (kein gültiger Pass, Kontingent voll, Platte knapp).
+    """
+    iid = str(inst.get("id") or "")
+    name = str(inst.get("name") or "Dieser Server")
+    sperre = _wecksperre(iid)
+    if not sperre.acquire(blocking=False):
+        return {"ok": True, "gestartet": False, "meldung": MELDUNG_STARTET}
+    try:
+        lauf = REGISTRY.find(iid)
+        if lauf is not None and lauf.running:
+            # Er startet schon (oder fährt gerade hoch) – dann ist alles gesagt.
+            return {"ok": True, "gestartet": False, "meldung": MELDUNG_STARTET}
+        frisch = instances.get_instance(iid) or inst
+        if str(frisch.get("state") or "") != "hosted":
+            return {"ok": False, "gestartet": False,
+                    "meldung": instances.state_reason(name, str(frisch.get("state") or ""))}
+        try:
+            start_instanz(frisch)
+        except ApiError as exc:
+            log_event(f"Weckruf für {iid} abgelehnt: {exc.message}")
+            return {"ok": False, "gestartet": False, "meldung": exc.message}
+        except (ValueError, OSError, ports.PortsExhausted) as exc:
+            log_event(f"Weckruf für {iid} ist fehlgeschlagen: {exc}")
+            return {"ok": False, "gestartet": False, "meldung": str(exc) or MELDUNG_WECKEN_FEHLT}
+        except Exception:                                           # noqa: BLE001
+            log_event(f"Weckruf für {iid} ist fehlgeschlagen:\n" + traceback.format_exc())
+            return {"ok": False, "gestartet": False, "meldung": MELDUNG_WECKEN_FEHLT}
+        log_event(f"„{name}“ ({iid}) wurde durch einen Beitritt geweckt und gestartet.")
+        return {"ok": True, "gestartet": True, "meldung": MELDUNG_STARTET}
+    finally:
+        sperre.release()
+
+
+@route("POST", r"^/api/router/wake$", auth=False, limit=4096)
+def h_router_wake(req: Req):
+    """Der Verteiler meldet: jemand will auf <Instanz>.
+
+    Dieser Weg ist **nicht** Teil der öffentlichen API. Er gilt nur, wenn alle drei Dinge
+    stimmen: die Verbindung kommt wirklich aus der Rückschleife, sie trägt keine Kopfzeilen von
+    nginx (dann käme sie aus dem offenen Netz) und sie bringt das gemeinsame Geheimnis mit.
+    Fehlt eines davon, gibt es dieselbe 404 wie für jede unbekannte Adresse – von außen ist
+    nicht einmal zu erkennen, dass es diesen Weg gibt.
+    """
+    if not _ist_loopback(req.gegenstelle):
+        raise ApiError("Diese Adresse gibt es auf dem Root-Server nicht.", 404)
+    if req.header("X-Forwarded-For") or req.header("X-Real-IP"):
+        raise ApiError("Diese Adresse gibt es auf dem Root-Server nicht.", 404)
+    erwartet = ensure_router_secret()
+    mitgebracht = req.header("X-MCSM-Router").strip()
+    if not erwartet or not mitgebracht or not secrets.compare_digest(erwartet, mitgebracht):
+        log_event("Ein Weckruf ohne gültiges Geheimnis wurde abgewiesen.")
+        raise ApiError("Diese Adresse gibt es auf dem Root-Server nicht.", 404)
+
+    data = req.json(required=False)
+    kennung = str(data.get("instanz") or "").strip()
+    marke = str(data.get("marke") or "").strip().lower()
+    inst = instances.get_instance(kennung) if kennung else None
+    if inst is None and marke:
+        for kandidat in instances.all_instances():
+            if str(kandidat.get("marke") or "").strip().lower() == marke:
+                inst = kandidat
+                break
+    if inst is None:
+        return 404, {"ok": False, "gestartet": False,
+                     "meldung": "Diesen Server gibt es hier nicht."}
+    return wecke_instanz(inst)
+
+
 @route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/command$")
 def h_server_command(req: Req, iid: str):
     inst = req.instance(iid)
@@ -2022,6 +2542,172 @@ def h_server_console(req: Req, iid: str):
     tail = req.qint("tail", 0)
     out = run.console(req.qint("since", 0), tail=tail or None)
     out["live"] = run.status()
+    return out
+
+
+# --------------------------------------------------------------------------- Xbox-Freunde-Modus
+#
+# Die Wege heißen wie im Programm auf dem PC (``app.py``: ``xbox``, ``xbox/setup``, ``xbox/start``,
+# ``xbox/stop``, ``xbox/reset``, ``xbox/disable``, ``xbox/console``) und antworten mit denselben
+# Feldern – die Oberfläche muss also kaum etwas umlernen.
+#
+# Ein Unterschied mit Absicht: Die beworbene **Adresse** setzt der Dienst, nicht der Kunde. Sie
+# ist die öffentliche Adresse dieses Root-Servers; dürfte ein Konto sie frei wählen, könnte es
+# Xbox Live eine fremde Adresse als „seinen“ Server ankündigen.
+
+def _xbox_inst(req: Req, iid: str) -> dict:
+    """Instanz holen und prüfen, dass der Xbox-Freunde-Modus hier überhaupt Sinn hat."""
+    inst = req.instance(iid)
+    if str(inst.get("state") or "") not in ("hosted", "uploading", "suspended"):
+        raise ApiError(f"„{inst.get('name')}“ ist gerade "
+                       f"{instances.state_text(inst.get('state'))} – der Xbox-Freunde-Modus "
+                       f"gehört zu einem Server, der auf dem Root-Server liegt.", 409)
+    return inst
+
+
+@route("GET", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox$")
+def h_xbox_status(req: Req, iid: str):
+    return xbox_status_of(req.instance(iid))
+
+
+@route("GET", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/status$")
+def h_xbox_status2(req: Req, iid: str):
+    """Derselbe Zustand unter dem ausgeschriebenen Namen."""
+    return xbox_status_of(req.instance(iid))
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/setup$")
+def h_xbox_setup(req: Req, iid: str):
+    """Einrichten: Java und MCXboxBroadcast beschaffen, Konfiguration schreiben, Bot starten."""
+    inst = _xbox_inst(req, iid)
+    data = req.json(required=False)
+    grund = xbox_moeglich(inst)
+    if grund:
+        raise ApiError(grund, 409)
+    autostart = data.get("xbox_autostart", data.get("autostart"))
+    try:
+        frisch = instances.set_xbox(iid, enabled=True, autostart=autostart)
+    except ValueError as exc:
+        raise ApiError(str(exc), status_for_value_error(exc)) from exc
+    job = job_new_exclusive("xbox", iid, owner=str(inst.get("owner") or ""))
+    threading.Thread(target=_xbox_setup_worker, args=(dict(frisch), job), daemon=True,
+                     name=f"xbox-setup-{iid}").start()
+    log_event(f"Xbox-Freunde-Modus wird für {iid} eingerichtet.")
+    return 202, {"job": dict(job), "server": server_view(frisch)}
+
+
+def _xbox_setup_worker(inst: dict, job: dict) -> None:
+    iid = str(inst.get("id") or "")
+
+    def status(text: str) -> None:
+        job["step"] = str(text)
+
+    def progress(done: int, total: int) -> None:
+        job["done"] = int(done)
+        job["total"] = int(total)
+
+    try:
+        status("Java wird geprüft …")
+        xbox.ensure_java(progress=progress, status=status)
+        status("MCXboxBroadcast wird geladen …")
+        jar = xbox.ensure_jar(progress=progress, status=status)
+        status("Konfiguration wird geschrieben …")
+        spec = build_xbox_spec(instances.get_instance(iid) or inst)
+        xbox.write_config(spec)
+        bot = XBOX.get(spec)
+        hinweis = ""
+        try:
+            status("Bot wird neu gestartet …" if bot.restart_needed else "Bot wird gestartet …")
+            bot.start()
+        except (ValueError, OSError) as exc:
+            # Alles liegt bereit, nur starten geht gerade nicht (Server aus, Port noch offen).
+            # Das ist kein Fehlschlag der Einrichtung – der Bot startet dann mit dem Server.
+            hinweis = str(exc)
+        job["result"] = {"jar": jar.name, "address": spec.address, "port": spec.port,
+                         "hinweis": hinweis, "xbox": xbox_status_of(
+                             instances.get_instance(iid) or inst)}
+        job["state"] = "fertig"
+        job["step"] = hinweis or ("Der Xbox-Freunde-Modus ist eingerichtet. Bitte den Anmelde-Code "
+                                  "im Programm bestätigen.")
+        log_event(f"Xbox-Freunde-Modus von {iid} eingerichtet ({spec.address}:{spec.port}).")
+    except Exception as exc:                                        # noqa: BLE001
+        job["state"] = "fehler"
+        job["error"] = str(exc) or "Beim Einrichten des Xbox-Freunde-Modus ging etwas schief."
+        log_event(f"Einrichten des Xbox-Freunde-Modus von {iid} gescheitert: {exc}")
+    finally:
+        job["finished_at"] = store_hosted.now()
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/start$")
+def h_xbox_start(req: Req, iid: str):
+    inst = _xbox_inst(req, iid)
+    grund = xbox_moeglich(inst)
+    if grund:
+        raise ApiError(grund, 409)
+    try:
+        instances.set_xbox(iid, enabled=True)
+        bot = XBOX.get(build_xbox_spec(instances.get_instance(iid) or inst))
+        bot.start()
+    except ValueError as exc:
+        raise ApiError(str(exc), 409) from exc
+    except OSError as exc:
+        raise ApiError(f"Der Xbox-Bot konnte nicht gestartet werden: {exc}", 500) from exc
+    log_event(f"Xbox-Freunde-Modus von {iid} auf Wunsch gestartet.")
+    return {"ok": True, "xbox": xbox_status_of(instances.get_instance(iid) or inst)}
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/stop$")
+def h_xbox_stop(req: Req, iid: str):
+    """Bot anhalten. Die Einstellung bleibt an – beim nächsten Serverstart kommt er wieder."""
+    inst = req.instance(iid)
+    bot = XBOX.find(iid)
+    if bot is None or not bot.running:
+        raise ApiError("Der Xbox-Freunde-Modus läuft für diesen Server nicht.", 409)
+    threading.Thread(target=xbox_stop_for, args=(iid, "auf Wunsch"), daemon=True,
+                     name=f"xbox-stop-{iid}").start()
+    return 202, {"ok": True,
+                 "message": f"Der Xbox-Freunde-Modus von „{inst.get('name')}“ wird angehalten."}
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/disable$")
+def h_xbox_disable(req: Req, iid: str):
+    """Ausschalten: Bot anhalten und die Einstellung auf „aus“ setzen."""
+    inst = req.instance(iid)
+    xbox_stop_for(iid, "ausgeschaltet")
+    try:
+        frisch = instances.set_xbox(iid, enabled=False)
+    except ValueError as exc:
+        raise ApiError(str(exc), status_for_value_error(exc)) from exc
+    log_event(f"Xbox-Freunde-Modus von {iid} ausgeschaltet.")
+    return {"server": server_view(frisch), "xbox": xbox_status_of(frisch)}
+
+
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/reset$")
+def h_xbox_reset(req: Req, iid: str):
+    """Anmeldung verwerfen: Bot anhalten und den Token löschen – danach gibt es einen neuen Code.
+
+    Angefasst wird **nur** ``xbox/cache``; Welt und Serverdateien bleiben unberührt.
+    """
+    inst = req.instance(iid)
+    try:
+        spec = build_xbox_spec(inst)
+    except ValueError as exc:
+        raise ApiError(str(exc), 409) from exc
+    xbox.reset(spec, XBOX.find(iid))
+    log_event(f"Die Xbox-Anmeldung von {iid} wurde verworfen.")
+    return {"ok": True, "xbox": xbox_status_of(inst)}
+
+
+@route("GET", r"^/api/servers/([A-Za-z0-9._-]{1,64})/xbox/console$")
+def h_xbox_console(req: Req, iid: str):
+    """Ausgabe des Bots – dort steht auch die Zeile mit dem Anmelde-Code."""
+    req.instance(iid)
+    bot = XBOX.find(iid)
+    if bot is None:
+        return {"next": 0, "lines": [], "running": False, "live": None}
+    out = bot.console(req.qint("since", 0))
+    out["running"] = bot.running
+    out["live"] = bot.status()
     return out
 
 
@@ -2389,6 +3075,7 @@ def h_upload_finish(req: Req, iid: str):
         if str(inst.get("state")) == "uploading":
             instances.set_state(iid, "hosted")
             ensure_marke(instances.get_instance(iid) or inst)
+            ensure_port(instances.get_instance(iid) or inst, "hochgeladen")
             schreibe_routen(f"Instanz {iid} liegt jetzt auf dem Root")
         # Was der Root selbst laden kann, wurde nicht übertragen – jetzt holen, **bevor** jemand
         # auf „Starten“ drückt. Die Version nennt das Programm auf dem PC: es muss dieselbe sein
@@ -2559,6 +3246,7 @@ def h_release(req: Req, iid: str):
                 f"Bitte sie über die Dateiliste umbenennen oder sichern – oder den Aufruf mit "
                 f"force=1 wiederholen, wenn sie wirklich weg dürfen.", 409)
     REGISTRY.drop(iid, timeout=10)
+    XBOX.drop(iid)
     POOL.release(iid)
     save_ports()
     deleted = {"deleted": False, "files": 0, "bytes": 0}
@@ -2699,11 +3387,15 @@ def _install_worker(inst: dict, version: str, geyser: bool, job: dict) -> None:
                 sources_linux.install_crossplay(folder, progress=progress, status=status)
             else:
                 sources_linux.remove_crossplay(folder)
-            patch_properties(folder / "server.properties",
-                             {"motd": str(inst.get("name") or "Minecraft"),
-                              "gamemode": "survival", "difficulty": "normal",
-                              "online-mode": "true", "max-players": "10",
-                              "enable-command-block": "false", "spawn-protection": "0"})
+            eigenschaften = {"motd": str(inst.get("name") or "Minecraft"),
+                             "gamemode": "survival", "difficulty": "normal",
+                             "online-mode": "true", "max-players": "10",
+                             "enable-command-block": "false", "spawn-protection": "0"}
+            if geyser:
+                # Bedrock-Spieler haben keine Mojang-Chatsignatur (siehe ensure_crossplay_chat).
+                eigenschaften["enforce-secure-profile"] = "false"
+            patch_properties(folder / "server.properties", eigenschaften)
+            ensure_server_icon(folder)
         try:
             instances.set_version(iid, version)
         except ValueError:
@@ -2840,6 +3532,7 @@ def h_admin_delete_user(req: Req, uid: str):
                        "(oder force=1).", 409)
     for inst in own:
         REGISTRY.drop(inst["id"], timeout=30)
+        XBOX.drop(inst["id"])
         POOL.release(inst["id"])
         folder = instance_dir(inst)
         if folder.is_dir():
@@ -2986,6 +3679,13 @@ def h_admin_state(req: Req, iid: str):
     data = req.json()
     inst = instances.set_state(iid, str(data.get("state") or ""), force=True)
     ensure_marke(inst)
+    if str(inst.get("state") or "") in PORT_ZUSTAENDE:
+        ensure_port(inst, "Zustand vom Betreiber gesetzt")
+    elif str(inst.get("state") or "") == "local_only":
+        # Der Server liegt nicht mehr hier: der Port gehört wieder allen (der Datensatz hat ihn
+        # in `instances.set_state` schon abgegeben).
+        POOL.release(iid)
+        save_ports()
     schreibe_routen(f"Zustand von {iid} von Hand gesetzt")
     log_event(f"Zustand von {iid} auf {inst.get('state')} gesetzt (Betreiber).")
     return {"server": server_view(instances.get_instance(iid) or inst)}
@@ -3130,7 +3830,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Die Bremse greift **vor** allem anderen: Anmeldung und Einladungscodes sind streng
         # begrenzt (dort lohnt sich Raten), alles Übrige großzügig.
         ip = client_ip(self)
-        warn_missing_forwarded(ip)
+        # Der Weckruf des Verteilers kommt absichtlich ohne die Köpfe von nginx – daraus darf
+        # nicht die Klage „nginx gibt die Herkunftsadresse nicht weiter“ werden.
+        if not path.startswith("/api/router/"):
+            warn_missing_forwarded(ip)
         gruppe = bremsgruppe(path)
         if gruppe and self._bremse(gruppe, ip):
             return 429, ""
@@ -3377,6 +4080,138 @@ def companion_spieler(inst: dict) -> int:
         return -1
 
 
+def konsolen_spieler(run) -> int:
+    """Spielerzahl über den Konsolenbefehl ``list`` (``-1`` = unbekannt).
+
+    Ersatzweg, wenn das Begleit-Plugin fehlt (Fabric, NeoForge, ein gelöschtes Plugin). Ein
+    übernommener Server nimmt keine Befehle an – dort bleibt es bei „unbekannt“, und dann wird
+    auch nicht schlafen gelegt: lieber einen leeren Server laufen lassen als Spieler hinauswerfen.
+    """
+    if run is None or not run.running or not run.ready:
+        return -1
+    try:
+        marke = run.console(0)["next"]
+        run.send("list")
+    except (ValueError, OSError):
+        return -1
+    ende = time.time() + LIST_ANTWORT
+    while time.time() < ende:
+        try:
+            zeilen = run.console(marke)["lines"]
+        except (ValueError, OSError):
+            return -1
+        for zeile in zeilen:
+            treffer = _LIST_RE.search(str(zeile))
+            if treffer:
+                return max(0, int(treffer.group(1)))
+        time.sleep(0.2)
+    return -1
+
+
+def spielerzahl(inst: dict, run) -> int:
+    """Wie viele Spieler auf diesem Server sind (``-1`` = unbekannt).
+
+    Zuerst ``status.json`` des Begleit-Plugins (kostet nichts), ersatzweise ``list``.
+    """
+    zahl = companion_spieler(inst)
+    if zahl >= 0:
+        return zahl
+    return konsolen_spieler(run)
+
+
+def uebertragung_laeuft(instance_id: str) -> bool:
+    """Läuft für diese Instanz gerade eine Übertragung? (dann kein Ruhezustand)"""
+    try:
+        sitzungen = transfer.list_sessions(transfer_store())
+    except OSError:
+        return False
+    for info in sitzungen:
+        if str(info.get("instance_id") or "") != str(instance_id):
+            continue
+        if str(info.get("state") or "open") not in ("done", "aborted"):
+            return True
+    return False
+
+
+def _leerstand_vergessen(instance_id: str) -> None:
+    """Die Leerstands-Uhr dieser Instanz zurückstellen (gestartet, gestoppt, jemand kam)."""
+    with _runtime_lock:
+        leer = dict(_runtime.get("leer_seit") or {})
+        if str(instance_id) not in leer:
+            return
+        leer.pop(str(instance_id), None)
+        _runtime["leer_seit"] = leer
+    runtime_save()
+
+
+def _in_ruhe_schicken(inst: dict, run, minuten: int) -> None:
+    """Welt speichern und den Server sauber herunterfahren (eigener Faden).
+
+    ``save-all`` zuerst, damit auch bei einem hängenden Stopp nichts verloren geht. Danach der
+    gewöhnliche Weg: mit Begleit-Plugin wird der Stopp im Spiel angekündigt, ohne Plugin bleibt
+    es bei ``say`` – auf einem leeren Server sieht das ohnehin niemand, aber falls doch in der
+    letzten Sekunde jemand hereinkommt, steht er nicht ohne Vorwarnung draußen.
+    """
+    iid = str(inst.get("id") or "")
+    log_event(f"„{inst.get('name')}“ ({iid}) stand {minuten} Minuten ohne Spieler – die Welt wird "
+              f"gespeichert und der Server geht in den Ruhezustand. Der nächste Beitritt über "
+              f"„{routen.subdomain(inst) or 'die Unterdomäne'}“ weckt ihn wieder.")
+    try:
+        run.send("save-all")
+        time.sleep(2)
+    except (ValueError, OSError):
+        pass                    # übernommener Server oder Konsole weg – der Stopp speichert auch
+    try:
+        run.stop(timeout=STOP_TIMEOUT, announce_seconds=HIBERNATION_ANNOUNCE)
+    except Exception as exc:                                        # noqa: BLE001
+        log_event(f"Beim Schlafenlegen von {iid} gab es einen Fehler: {exc}")
+
+
+def ruhezustand_pruefen(now: int) -> None:
+    """Gehostete Server, die zu lange leer stehen, speichern und herunterfahren.
+
+    Ein schlafender Server zählt **nicht** als laufend: Platz und Arbeitsspeicher sind im Pass
+    wieder frei, und der Verteiler weckt ihn beim nächsten Beitritt (`wecke_instanz`).
+
+    Nicht schlafen gelegt wird, solange
+    * die Welt noch lädt oder der Server erst seit weniger als `HIBERNATION_GRACE` läuft,
+    * eine Übertragung für diese Instanz offen ist,
+    * die Spielerzahl unbekannt ist (dann wäre ein Stopp ein Risiko),
+    * oder der Besitzer den Ruhezustand abgeschaltet hat.
+    """
+    with _runtime_lock:
+        leer = dict(_runtime.get("leer_seit") or {})
+    frisch: dict = {}
+    for inst in instances.all_instances():
+        iid = str(inst.get("id") or "")
+        if str(inst.get("state") or "") != "hosted" or not instances.is_running(inst):
+            continue
+        if not instances.hibernation_enabled(inst):
+            continue
+        run = REGISTRY.find(iid)
+        if run is None or not run.running or run.stopping or not run.ready:
+            continue
+        if now - int(inst.get("started_at") or 0) < HIBERNATION_GRACE:
+            continue
+        if uebertragung_laeuft(iid):
+            continue
+        zahl = spielerzahl(inst, run)
+        if zahl != 0:
+            continue
+        beginn = int(leer.get(iid) or 0) or now
+        wartezeit = instances.hibernation_minutes(inst) * 60
+        if now - beginn < wartezeit:
+            frisch[iid] = beginn
+            continue
+        threading.Thread(target=_in_ruhe_schicken,
+                         args=(inst, run, instances.hibernation_minutes(inst)),
+                         daemon=True, name=f"ruhe-{iid}").start()
+    if frisch != leer:
+        with _runtime_lock:
+            _runtime["leer_seit"] = frisch
+        runtime_save()
+
+
 def warn_expiring(entry: dict, now: int) -> int:
     """Die 10-Minuten-Warnung an alle laufenden Server eines Kontos. Rückgabe: Zahl der Server.
 
@@ -3578,6 +4413,9 @@ def wake_parked(uid: str, now: int | None = None) -> list:
         iid = str(inst.get("id"))
         _woken_merken(iid, now=stamp)
         ensure_marke(inst)
+        # Beim Parken ist der Port zurückgegangen – jetzt liegt die Instanz wieder auf dem Root
+        # und gehört mit Port in die Tabelle des Verteilers.
+        ensure_port(inst, "wieder startbar")
         log_event(f"Instanz {iid} („{inst.get('name')}“) ruht nicht mehr – es liegt wieder ein "
                   f"gültiger Pass vor. Gestartet wurde sie nicht.")
     if geweckt:
@@ -3751,6 +4589,13 @@ def tick(now: int | None = None) -> None:
             _runtime["save_all_at"] = stamp
     if save_due:
         save_all_worlds()
+
+    # 5. Ruhezustand bei Leerstand. Läuft nach dem Parken: ein Server, der ohnehin gerade
+    #    gestoppt wird, braucht keine Leerstands-Uhr.
+    try:
+        ruhezustand_pruefen(stamp)
+    except Exception:                                               # noqa: BLE001
+        log_event("Fehler beim Prüfen des Ruhezustands:\n" + traceback.format_exc())
 
     with _runtime_lock:
         _runtime["warned"] = {k: v for k, v in warned.items()
@@ -3948,6 +4793,36 @@ def adopt_running() -> None:
 collect_orphans = adopt_running
 
 
+def xbox_wieder_aufnehmen() -> None:
+    """Die Bots des Xbox-Freunde-Modus nach einem Neustart des Dienstes wieder hochfahren.
+
+    Anders als ein Server hält ein Bot **nichts** fest: kein Spieler ist auf ihm, keine Welt
+    hängt an ihm, und ein Neustart kostet Sekunden. Deshalb wird er beim Beenden des Dienstes
+    gestoppt und hier neu gestartet – und ein trotzdem übrig gebliebener Bot (Absturz des
+    Dienstes, SIGKILL) zuerst beendet: zwei Bots kündigten Xbox Live dieselbe Sitzung doppelt an,
+    und die Freunde landeten wechselweise auf einer tote Verbindung.
+    """
+    zu_starten: list = []
+    for inst in instances.all_instances():
+        iid = str(inst.get("id") or "")
+        try:
+            spec = build_xbox_spec(inst)
+        except ValueError:
+            continue                         # ohne Port/Benutzer gab es hier auch keinen Bot
+        try:
+            if xbox.orphan_pid(spec) is not None:
+                log_event(f"Ein Xbox-Bot von {iid} lief aus einem früheren Lauf des Dienstes "
+                          f"noch – er wird beendet und, wenn eingeschaltet, neu gestartet.")
+                xbox.stop_orphan(spec)
+        except OSError as exc:
+            log_event(f"Der alte Xbox-Bot von {iid} ließ sich nicht prüfen: {exc}")
+        if (str(inst.get("state") or "") == "hosted" and instances.is_running(inst)
+                and instances.xbox_enabled(inst) and instances.xbox_autostart(inst)):
+            zu_starten.append(inst)
+    for inst in zu_starten:
+        xbox_start_if_enabled(inst)
+
+
 def startup() -> None:
     root = sources_linux.set_data_root(data_root())
     os.environ.setdefault("MCSM_DATA", str(root / "data"))
@@ -3975,12 +4850,19 @@ def startup() -> None:
         if lage["aktiv"]:
             log_event(f"Trennung der Server-Benutzer ist aktiv ({lage['benutzer']} Benutzer im "
                       f"Vorrat) – jedes Konto läuft unter einem eigenen Unix-Benutzer.")
+    # Gemeinsames Geheimnis für den Weckruf des Verteilers (0600, wird beim ersten Start angelegt).
+    ensure_router_secret()
     adopt_running()
+    xbox_wieder_aufnehmen()
     save_ports()
-    # Unterdomänen nachtragen (Instanzen aus der Zeit vor dieser Fassung haben noch keine) und
-    # die Zuordnungstabelle einmal frisch schreiben – der Verteiler liest sie von selbst neu.
+    # Unterdomänen und feste Ports nachtragen: Instanzen aus der Zeit vor dieser Fassung haben
+    # weder Marke noch Port, und ohne Port überspringt `routes.tabelle` sie – der Verteiler sagte
+    # den Spielern dann „Diesen Server gibt es hier nicht“, obwohl der Server längst da ist.
+    # Angefasst wird dabei nur der Datensatz, nie der Serverordner.
     for inst in instances.all_instances():
         ensure_marke(inst)
+        if str(inst.get("state") or "") in PORT_ZUSTAENDE:
+            ensure_port(inst, "beim Start des Dienstes nachgetragen")
     schreibe_routen("Start des Dienstes")
     ensure_first_admin()
 
@@ -4018,6 +4900,16 @@ def shutdown(server: Server | None = None) -> None:
             server.shutdown()
         except Exception:                                           # noqa: BLE001
             pass
+    # Die Bots des Xbox-Freunde-Modus werden **immer** angehalten, auch wenn die Server
+    # weiterlaufen: Sie halten nichts fest, der nächste Start fährt sie in Sekunden wieder hoch
+    # (`xbox_wieder_aufnehmen`), und ein vergessener Bot würde die Sitzung doppelt ankündigen.
+    try:
+        gestoppt = XBOX.stop_all(timeout=xbox.STOP_TIMEOUT)
+        if gestoppt:
+            log_event(f"{len(gestoppt)} Xbox-Bot(s) angehalten ({', '.join(gestoppt)}) – "
+                      f"der nächste Start des Dienstes meldet sie wieder an.")
+    except Exception:                                               # noqa: BLE001
+        log_event("Beim Anhalten der Xbox-Bots:\n" + traceback.format_exc())
     laufende = REGISTRY.running_ids()
     if stop_servers_on_exit():
         log_event("Der Dienst hält an – alle Server werden angekündigt gestoppt "

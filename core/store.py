@@ -50,7 +50,11 @@ DEFAULTS = {
     "public_ip": "",            # nur Bedrock: öffentliche IPv4 für NetherNet (leer = vom Router abfragen)
     "public_address": "",       # Anzeige für Freunde: MyFRITZ!-Name oder feste IP (leer = automatisch ermitteln)
     "auto_portmap": True,       # Portfreigabe beim Serverstart per UPnP anfordern (immer an, nicht in der Oberfläche)
-    "companion_tips": True,   # nur Paper: rotierende Tipps des Begleit-Plugins im Chat
+    "companion_tips": True,     # nur Paper: rotierende Tipps des Begleit-Plugins im Chat
+    # nur Paper: Das Begleit-Plugin speichert die Welten selbst (eine je Tick) statt Minecraft,
+    # das alle Welten im selben Tick wegschreibt und dabei sichtbar ruckelt.
+    "companion_autosave": True,
+    "companion_autosave_minutes": 10,
     "hardcore": False,          # nur Paper: MCSM-Hardcore des Companion-Plugins (1 Leben, Grab, Totem)
     "geyser": True,             # nur Java: Bedrock-Crossplay aktivieren
     "autostart": False,
@@ -77,6 +81,10 @@ VALID_GAMEMODES = ("survival", "creative", "adventure")
 VALID_DIFFICULTIES = ("peaceful", "easy", "normal", "hard")
 MODPACK_RAM_MIN = 4096
 MODPACK_RAM_DEFAULT = 6144
+# Abstand des Speicherns durch das Begleit-Plugin – dieselben Grenzen wie in AutoSaveTask.java.
+AUTOSAVE_MINUTES_MIN = 1
+AUTOSAVE_MINUTES_MAX = 180
+AUTOSAVE_MINUTES_DEFAULT = 10
 _VERSION_RE = r"[0-9][0-9A-Za-z.\-_]{0,31}"
 _MODRINTH_ID_RE = r"[A-Za-z0-9]{1,32}"
 
@@ -232,6 +240,9 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     else:
         cfg["ram_mb"] = _clamp(raw.get("ram_mb", cfg["ram_mb"]), 1024, 65536, 4096)
     cfg["view_distance"] = _clamp(raw.get("view_distance", cfg["view_distance"]), 4, 32, 10)
+    cfg["companion_autosave_minutes"] = _clamp(
+        raw.get("companion_autosave_minutes", cfg["companion_autosave_minutes"]),
+        AUTOSAVE_MINUTES_MIN, AUTOSAVE_MINUTES_MAX, AUTOSAVE_MINUTES_DEFAULT)
 
     motd = str(raw.get("motd", cfg["motd"])).strip() or "Ein Minecraft Server"
     # Zeilenumbrüche und '=' würden server.properties zerlegen.
@@ -260,7 +271,7 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
 
     for flag in ("online_mode", "allow_cheats", "pvp", "geyser", "autostart", "eula_accepted",
                  "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore",
-                 "companion_tips"):
+                 "companion_tips", "companion_autosave"):
         if flag in raw:
             cfg[flag] = bool(raw[flag])
     if modpack:

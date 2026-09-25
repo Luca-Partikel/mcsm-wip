@@ -1353,16 +1353,28 @@ async function startServer(id) {
 
 async function stopServer(id) {
   const inst = state.instances.find((i) => i.id === id);
+  const drauf = Number((inst || {}).players_online || 0);
+  // Mit Spielern auf dem Server lieber eine halbe Minute Vorlauf, sonst reichen zehn Sekunden.
+  const vorschlag = drauf > 0 ? 30 : 10;
   const value = await ask({
     title: 'Server stoppen?',
-    text: `„${esc(inst ? inst.name : id)}“ wird angekündigt heruntergefahren. Spieler auf dem Server
-      bekommen vorher eine Nachricht, die Welt wird gespeichert.`,
+    text: `„${esc(inst ? inst.name : id)}“ wird heruntergefahren. ${drauf > 0
+      ? '<b>' + drauf + (drauf === 1 ? ' Spieler ist' : ' Spieler sind') + ' gerade drauf</b> – sie bekommen'
+      : 'Spieler auf dem Server bekämen'} einen Countdown im Spiel, danach wird die Welt gespeichert.`,
     ok: 'Stoppen', danger: true,
+    fields: [{ name: 'sek', label: 'Vorwarnzeit in Sekunden', type: 'number', value: vorschlag,
+               min: 0, max: 900, hint: '0 = sofort und ohne Ansage.' }],
   });
   if (value === null) return;
+  let sek = parseInt(value.sek, 10);
+  if (!Number.isFinite(sek) || sek < 0) sek = 0;
+  sek = Math.min(900, sek);
   try {
-    await api('/api/servers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
-    toast(`„${inst ? inst.name : id}“ wird gestoppt.`);
+    await api('/api/servers/' + encodeURIComponent(id) + '/stop',
+              { method: 'POST', body: { announce_seconds: sek } });
+    toast(sek > 0
+      ? `„${inst ? inst.name : id}“ wird in ${sek} Sekunden gestoppt – die Spieler wurden gewarnt.`
+      : `„${inst ? inst.name : id}“ wird sofort gestoppt.`);
     await tick();
   } catch (e) {
     toast(e.message, true);

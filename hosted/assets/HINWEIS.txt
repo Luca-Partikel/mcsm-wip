@@ -11,3 +11,10 @@ kopiert werden:
 
 deploy.sh nennt beim Ausrollen Groesse und Datum der Jar, damit ein vergessener Abgleich
 auffaellt.
+
+server-icon.png ist ebenso eine Kopie von assets/server-icon.png. Der Daemon legt das Bild vor
+jedem Start in den Serverordner, wenn dort noch keines liegt (mcsmd.ensure_server_icon) - ohne
+Datei zeigt Minecraft in der Mehrspieler-Liste nur das graue Standardbild. Ein eigenes Bild des
+Besitzers wird nie ueberschrieben. Wird das Bild im Projektordner geaendert:
+
+    copy assets\server-icon.png hosted\assets\server-icon.png

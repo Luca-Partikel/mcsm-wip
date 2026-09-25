@@ -58,6 +58,24 @@ BUNDLE_MAX_BYTES = 24 * 1024 * 1024     # so groß darf ein Paket höchstens sei
 BUNDLE_MAX_FILES = 400                  # so viele Dateien stecken höchstens in einem Paket
 
 MANIFEST_VERSION = 1
+
+# Xbox-Freunde-Modus: Die gespeicherte Anmeldung des Bot-Kontos liegt im Ordner ``xbox`` der
+# Instanz (``core/xbox.py``). Sie **muss** bei einem Umzug mitkommen – sonst müsste sich der
+# Betreiber nach jedem Verschieben zwischen PC und Root neu bei Xbox Live anmelden, und seine
+# Freunde verlieren zwischenzeitlich den Server aus der Liste.
+#
+# Achtung, Stolperstein: ``cache`` steht in ``paths.NACHLADBAR_DIRS`` (Zwischenspeicher von
+# Paper). Das gilt aber nur für den **ersten** Pfadteil, und der ist hier ``xbox`` – die
+# Anmeldung fällt also nicht darunter. Damit eine spätere Erweiterung der Auslassungslisten das
+# nicht unbemerkt umdreht, hält `xbox_anmeldung_dabei` diese Zusage fest, und ein Selbsttest
+# prüft sie auf beiden Seiten (auch gegen die Zweitschrift in ``core/cloud.py`` des PC-Programms).
+XBOX_DIR = "xbox"
+XBOX_TOKEN_REL = "xbox/cache/cache.json"
+
+
+def xbox_anmeldung_dabei() -> bool:
+    """Wird die gespeicherte Xbox-Anmeldung bei einer Übertragung mitgenommen?"""
+    return not paths.nachladbar(XBOX_TOKEN_REL) and not paths.nur_lokal(XBOX_TOKEN_REL)
 SESSION_FILE = "session.json"
 PART_SUFFIX = paths.PART_SUFFIX
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -229,6 +247,10 @@ def build_manifest(folder, *, rel: str = "", hashes: bool = True,
     (``paths.nachladbar``). Das gilt mit Absicht auch für das Manifest der **Rückholung** – so
     sehen beide Seiten dieselbe Liste, und was nie hochgeladen wurde, gilt beim Zurückholen
     nicht als fehlend.
+
+    Der Ordner ``xbox`` gehört **nicht** dazu: darin liegt die gespeicherte Anmeldung des
+    Xbox-Freunde-Modus (siehe `xbox_anmeldung_dabei`), und die kann sich der Root-Server nicht
+    selbst beschaffen.
     """
     root = pathlib.Path(str(folder))
     if not root.is_dir():

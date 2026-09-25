@@ -441,6 +441,7 @@ def apply_config(cfg: dict, initial: bool = False) -> None:
 
 
 SERVER_ICON = store.BASE / "assets" / "server-icon.png"
+SERVER_ICON_NAME = "server-icon.png"
 
 
 def ensure_server_icon(sdir: pathlib.Path) -> None:
@@ -450,13 +451,45 @@ def ensure_server_icon(sdir: pathlib.Path) -> None:
     graue Standardbild. Ein eigenes Bild des Besitzers wird nie überschrieben – nur wenn gar keins
     da ist, legt der Manager seins hin.
     """
-    ziel = sdir / "server-icon.png"
+    ziel = sdir / SERVER_ICON_NAME
     if ziel.exists() or not SERVER_ICON.is_file():
         return
     try:
         shutil.copy2(SERVER_ICON, ziel)
     except OSError as exc:
         log.info("Serverbild konnte nicht gesetzt werden: %s", exc)
+
+
+def default_icon_bytes() -> bytes:
+    """Das Programmsymbol, das ohne eigenes Bild in der Mehrspieler-Liste steht (leer = fehlt)."""
+    try:
+        return SERVER_ICON.read_bytes()
+    except OSError:
+        return b""
+
+
+def server_icon_path(cfg: dict) -> pathlib.Path:
+    return store.server_dir(cfg["id"]) / SERVER_ICON_NAME
+
+
+def write_server_icon(cfg: dict, daten: bytes) -> pathlib.Path:
+    """Geprüftes PNG als Serverbild ablegen – über eine Zwischendatei, damit nie eine halbe liegt."""
+    ziel = server_icon_path(cfg)
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ziel.with_name(ziel.name + ".new")
+    tmp.write_bytes(daten)
+    tmp.replace(ziel)
+    return ziel
+
+
+def reset_server_icon(cfg: dict) -> bool:
+    """Eigenes Bild entfernen und das Programmsymbol wieder hinlegen (True = es lag eins da)."""
+    ziel = server_icon_path(cfg)
+    hatte = ziel.exists()
+    ziel.unlink(missing_ok=True)
+    if ziel.parent.is_dir():
+        ensure_server_icon(ziel.parent)
+    return hatte
 
 
 CROSSPLAY_JARS = ("Geyser-Spigot.jar", "floodgate-spigot.jar", "ViaVersion.jar", "ViaBackwards.jar")

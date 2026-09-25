@@ -21,7 +21,7 @@ from .version import __version__
 JAR_SRC = store.BASE / "assets" / "MCSMCompanion.jar"
 SPONSOR_TEXT = "Sponsored by Novelnia"
 MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore", "tips",
-           "motd_line", "motd_eigen")
+           "autosave", "autosave_minutes", "motd_line", "motd_eigen")
 # Schlüssel früherer Versionen, die aus vorhandenen config.yml entfernt werden
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
 SUSPICIOUS_HINT = ("Ein installiertes Plugin sieht nach Manipulation aus (gefälschte Spielerzahlen/Ping). "
@@ -80,6 +80,15 @@ def _yaml(value) -> str:
     return f'"{text}"'
 
 
+def autosave_minutes(cfg: dict) -> int:
+    """Abstand des plugin-eigenen Speicherns, auf denselben Bereich begrenzt wie im Plugin."""
+    try:
+        wert = int(cfg.get("companion_autosave_minutes", store.AUTOSAVE_MINUTES_DEFAULT))
+    except (TypeError, ValueError):
+        return store.AUTOSAVE_MINUTES_DEFAULT
+    return max(store.AUTOSAVE_MINUTES_MIN, min(store.AUTOSAVE_MINUTES_MAX, wert))
+
+
 def managed_values(cfg: dict) -> dict[str, str]:
     return {
         "server_name": _yaml(cfg.get("name") or "Minecraft Server"),
@@ -89,6 +98,11 @@ def managed_values(cfg: dict) -> dict[str, str]:
         "hardcore": _yaml(bool(cfg.get("hardcore"))),
         # Rotierende Tipps im Chat – im Programm abschaltbar.
         "tips": _yaml(cfg.get("companion_tips", True) is not False),
+        # Speichern durch das Plugin (Welt für Welt, je ein Tick Abstand) statt durch Minecraft,
+        # das alle Welten im selben Tick wegschreibt. „autosave_vanilla_aus“ bleibt frei
+        # einstellbar: der Manager verwaltet nur den Schalter und den Abstand.
+        "autosave": _yaml(cfg.get("companion_autosave", True) is not False),
+        "autosave_minutes": _yaml(autosave_minutes(cfg)),
         # Zeile 2 der Serverlisten-Anzeige – Zeile 1 baut das Plugin selbst.
         "motd_line": _yaml(str(cfg.get("motd") or "")),
         "motd_eigen": _yaml(True),
@@ -102,9 +116,10 @@ def _template_lines() -> list[str]:
             return zf.read("config.yml").decode("utf-8", errors="replace").splitlines()
     except (OSError, KeyError, zipfile.BadZipFile):
         return [
-            "# Von Minecraft Server Manager erzeugt. Verwaltete Schlüssel (server_name, manager_version, mode,",
-            "# sponsor_text, hardcore) werden bei jedem Start neu gesetzt – alles andere",
-            "# darf hier angepasst werden. Fehlende Schlüssel ergänzt das Plugin mit seinen Standardwerten.",
+            "# Von Minecraft Server Manager erzeugt. Verwaltete Schlüssel (server_name, manager_version,",
+            "# mode, sponsor_text, hardcore, tips, autosave, autosave_minutes) werden bei jedem Start neu",
+            "# gesetzt – alles andere darf hier angepasst werden. Fehlende Schlüssel ergänzt das Plugin",
+            "# mit seinen Standardwerten.",
         ]
 
 

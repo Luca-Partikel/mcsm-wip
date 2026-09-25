@@ -321,15 +321,29 @@ def java_port(instance: dict, *, ports_live: dict | None = None) -> int:
 
 # ----------------------------------------------------------------------- Tabelle
 
-def tabelle(*, ports_live=None) -> dict:
+#: Spielerplätze, wenn sich aus ``server.properties`` nichts lesen lässt.
+MAX_SPIELER_VORGABE = 20
+
+
+def tabelle(*, ports_live=None, max_spieler=None) -> dict:
     """Die Zuordnungstabelle für den Verteiler aufbauen.
 
     Aufgenommen werden Java-Instanzen im Zustand ``hosted`` mit bekanntem Port. **Gestoppte
-    bleiben drin**: der Verteiler meldet dann „Dieser Server läuft gerade nicht“, und das ist
-    für den Spieler die bessere Auskunft als „gibt es hier nicht“.
+    bleiben drin**: der Verteiler meldet dann „Dieser Server läuft gerade nicht“ – oder, wenn
+    der Ruhezustand eingeschaltet ist, beantwortet er den Ping wie ein echter Server und weckt
+    ihn beim Beitritt.
+
+    Je Eintrag steht deshalb mehr als der Port in der Datei:
+
+    ``port``     interner Port auf 127.0.0.1
+    ``instanz``  Kennung (fürs Protokoll und für den Weckruf)
+    ``name``     Anzeigename für die Statusantwort eines schlafenden Servers
+    ``max``      Spielerplätze für die Anzeige ``0/<max>``
+    ``wecken``   ob ein Beitritt diesen Server starten darf (Ruhezustand eingeschaltet)
 
     ``ports_live(instanzkennung) -> dict`` liefert die gerade gebuchten Ports (der PortPool ist
-    maßgeblich); fehlt der Rückruf, gilt der Wert aus dem Datensatz.
+    maßgeblich); fehlt der Rückruf, gilt der Wert aus dem Datensatz. ``max_spieler(kennung) ->
+    int`` liefert die Spielerplätze aus ``server.properties``.
     """
     out: dict = {"_bemerkung": "Wird vom Dienst mcsm geschrieben – nicht von Hand ändern."}
     for instance in instances_mod.all_instances():
@@ -337,10 +351,11 @@ def tabelle(*, ports_live=None) -> dict:
             continue
         if str(instance.get("type") or "java") != "java":
             continue
+        iid = str(instance.get("id") or "")
         live = {}
         if ports_live is not None:
             try:
-                live = ports_live(str(instance.get("id") or "")) or {}
+                live = ports_live(iid) or {}
             except Exception:                                   # noqa: BLE001 - nie den Ablauf stören
                 live = {}
         port = java_port(instance, ports_live=live)
@@ -349,13 +364,23 @@ def tabelle(*, ports_live=None) -> dict:
         marke = str(instance.get("marke") or "").strip().lower()
         if not marke or marke in out:
             continue
-        out[marke] = {"port": port, "instanz": str(instance.get("id") or "")}
+        plaetze = MAX_SPIELER_VORGABE
+        if max_spieler is not None:
+            try:
+                plaetze = max(1, int(max_spieler(iid) or MAX_SPIELER_VORGABE))
+            except Exception:                                   # noqa: BLE001 - nie den Ablauf stören
+                plaetze = MAX_SPIELER_VORGABE
+        out[marke] = {"port": port, "instanz": iid,
+                      "name": str(instance.get("name") or marke),
+                      "max": plaetze,
+                      "wecken": instances_mod.hibernation_enabled(instance)}
     return out
 
 
-def schreibe_routen(*, ports_live=None, path: pathlib.Path | None = None) -> dict:
+def schreibe_routen(*, ports_live=None, max_spieler=None,
+                    path: pathlib.Path | None = None) -> dict:
     """Tabelle atomar nach ``routes.json`` schreiben (0600). Rückgabe: was geschrieben wurde."""
-    data = tabelle(ports_live=ports_live)
+    data = tabelle(ports_live=ports_live, max_spieler=max_spieler)
     ziel = pathlib.Path(path) if path is not None else routes_path()
     ziel.parent.mkdir(parents=True, exist_ok=True)
     tmp = ziel.with_name(f"{ziel.name}.{os.getpid()}.tmp")

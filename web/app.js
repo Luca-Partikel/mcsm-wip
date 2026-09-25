@@ -29,6 +29,8 @@ const state = {
     remote: null,             // letzter Datensatz vom Root (Zustand, Spieler, Adresse)
     settings: null,           // Einstellungen der Instanz (Name, RAM, Ruhezustand)
     props: null,              // server.properties vom Root-Server
+    xbox: null,               // Xbox-Freunde-Modus auf dem Root-Server (derselbe Aufbau wie lokal)
+    xboxSig: '',              // Fingerabdruck der gezeichneten Xbox-Karte
     error: '',
     key: '',                  // gezeichneter Zustand: on | sleep | rest | off
     log: { next: 0, lines: [] },
@@ -506,6 +508,7 @@ function startWizard() {
     name: 'Mein Server', motd: 'Willkommen auf meinem Server', port: 19132, bedrock_port: 19132,
     max_players: 10, ram_mb: 4096, gamemode: 'survival', difficulty: 'easy', view_distance: 10,
     level_seed: '', public_address: '', online_mode: true, allow_cheats: false, pvp: true, geyser: true, hardcore: false, eula_accepted: false,
+    companion_tips: true, companion_autosave: true, companion_autosave_minutes: 10,
     mp: { query: '', results: null, total: 0, busy: false, error: '', project: null, versions: null, versionsError: '' },
   };
   state.view = 'wizard';
@@ -789,8 +792,28 @@ function settingsForm(s, prefix) {
       ${modpack ? '<div class="note note-info" style="margin:0 0 10px"><b>Kein Crossplay bei Modpacks:</b> Geyser/Floodgate und Bukkit-Plugins laufen nicht auf Fabric, NeoForge, Forge oder Quilt.</div>' : ''}
       ${java && !modpack ? fieldCheck(prefix + 'hardcore', 'MCSM-Hardcore (1 Leben, Grab &amp; Totem)',
         'Kein Vanilla-Hardcore: Wer stirbt, wird sofort Zuschauer an seinem Grab. Ein Mitspieler belebt ihn wieder, indem er ein Totem der Unsterblichkeit am Grab rechtsklickt oder darauf fallen lässt. Im Spiel schalten OPs mit <code>/hardcore on</code> / <code>off</code>.', !!s.hardcore) : ''}
+      ${java && !modpack ? companionFields(s, prefix) : ''}
     </div>
   </div>`;
+}
+
+/* Schalter des Begleit-Plugins. Nur Java mit Paper hat die Bukkit-API – Modpacks und Bedrock
+   laden das Plugin nicht, dort gibt es diesen Abschnitt gar nicht. Geschrieben werden die Werte
+   über core/companion.py in plugins/MCSMCompanion/config.yml. */
+function companionFields(s, prefix) {
+  const minuten = Number(s.companion_autosave_minutes || 10) || 10;
+  return `
+    <div class="sub-head">Begleit-Plugin</div>
+    ${fieldCheck(prefix + 'companion_tips', 'Tipps im Chat',
+      'Das Plugin schickt in Abständen kurze Hinweise in den Chat, etwa zu <code>/sethome</code> oder <code>/rules</code>. '
+      + 'Welche Texte und wie oft, steht in <code>plugins/MCSMCompanion/config.yml</code>.', s.companion_tips !== false)}
+    ${fieldCheck(prefix + 'companion_autosave', 'Speichern durch das Begleit-Plugin',
+      'Empfohlen. Minecraft speichert <b>alle Welten im selben Tick</b> – auf gewachsenen Welten ruckelt es dabei '
+      + 'für alle sichtbar. Das Plugin speichert stattdessen eine Welt je Tick, so verteilt sich die Last und '
+      + 'niemand merkt etwas. Aus&nbsp;= Minecraft speichert wieder selbst.', s.companion_autosave !== false)}
+    ${fieldInput(prefix + 'companion_autosave_minutes', 'Abstand des Speicherns', minuten,
+      { type: 'number', min: 1, max: 180,
+        hint: 'Minuten, 1 bis 180. Standard: 10. Beim Stoppen wird die Welt ohnehin immer gespeichert.' })}`;
 }
 
 function readSettingsForm(prefix, base) {
@@ -798,7 +821,10 @@ function readSettingsForm(prefix, base) {
   const out = { ...base };
   for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address']) if (get(k)) out[k] = get(k).value;
   for (const k of ['port', 'bedrock_port', 'max_players', 'ram_mb', 'view_distance']) if (get(k)) out[k] = Number(get(k).value);
-  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore']) if (get(k)) out[k] = get(k).checked;
+  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave']) if (get(k)) out[k] = get(k).checked;
+  // Ein leeres Minutenfeld soll den Standard bedeuten, nicht „1 Minute“.
+  const min = get('companion_autosave_minutes');
+  if (min) out.companion_autosave_minutes = Math.max(1, Math.min(180, Number(min.value) || 10));
   return out;
 }
 
@@ -807,6 +833,14 @@ function bindSettingsForm(prefix) {
   if (ram) ram.oninput = () => $('#' + prefix + 'ramLabel').textContent = gb(Number(ram.value));
   const vd = $('#' + prefix + 'view_distance');
   if (vd) vd.oninput = () => $('#' + prefix + 'vdLabel').textContent = vd.value + ' Chunks';
+  // Der Abstand gehört zum Speichern des Plugins – ohne es ist das Feld gegenstandslos.
+  const save = $('#' + prefix + 'companion_autosave');
+  const saveMin = $('#' + prefix + 'companion_autosave_minutes');
+  if (save && saveMin) {
+    const sync = () => { saveMin.disabled = !save.checked; saveMin.closest('.field').classList.toggle('field-off', !save.checked); };
+    save.onchange = sync;
+    sync();
+  }
   const pb = $('#' + prefix + 'pubip');
   if (pb) pb.onclick = async () => {
     pb.disabled = true;
@@ -1733,9 +1767,225 @@ function tabSettings(s) {
     </div>
   </fieldset>`}
 
+  ${s.type === 'java' ? iconSection() : ''}
+
   <h2>Server löschen</h2>
   <p class="muted">Entfernt den Server <b>samt Welt</b> von diesem PC. Das lässt sich nicht rückgängig machen.</p>
   <button class="btn btn-danger" id="btnDelete" ${busy ? 'disabled' : ''}>Server endgültig löschen</button>`;
+}
+
+/* ---------- Serverbild (server-icon.png)
+   Minecraft zeigt in der Mehrspieler-Liste neben dem Servernamen ein Bild von 64x64 Punkten.
+   Ausgewählt, quadratisch zugeschnitten und auf 64x64 gerechnet wird es hier im Browser
+   (<canvas>); an den Manager geht nur das fertige PNG. */
+
+/** Obergrenze für die Datei, die ausgewählt wird (zugeschnitten sind es nur wenige Kilobyte). */
+const ICON_SRC_MAX = 12 * 1024 * 1024;
+
+function iconSection() {
+  return `
+  <h2>Serverbild</h2>
+  <p class="muted">Das Bild steht in der Mehrspieler-Liste von Minecraft neben dem Servernamen –
+     quadratisch, 64x64 Punkte. Ohne eigenes Bild legt der Manager sein Programmsymbol hin.
+     Ein neues Bild ist <b>nach dem nächsten Start</b> des Servers zu sehen: Minecraft liest die
+     Datei beim Hochfahren.</p>
+  <div class="icon-row" id="icoBox">
+    <div class="icon-prev" id="icoPrev"><div class="icon-empty">kein&nbsp;Bild</div></div>
+    <div class="icon-side">
+      <div class="btn-row" style="margin-top:0">
+        <button class="btn btn-primary" id="icoPick" type="button">🖼 Bild auswählen …</button>
+        <button class="btn" id="icoReset" type="button" disabled>Standardbild zurückholen</button>
+      </div>
+      <div class="muted small" id="icoInfo">Wird geladen …</div>
+      <input type="file" id="icoFile" accept="image/png,image/jpeg" class="visually-hidden" tabindex="-1" aria-hidden="true">
+    </div>
+  </div>`;
+}
+
+/* Bindet den Abschnitt. hosted=true arbeitet über die Cloud-Route gegen den Root-Server.
+   gesperrt = Grund, warum gerade nichts geändert werden darf (leer = alles offen). */
+function bindIcon(s, hosted, gesperrt = '') {
+  const box = $('#icoBox');
+  if (!box) return;
+  const prev = $('#icoPrev'), info = $('#icoInfo'), pick = $('#icoPick'), reset = $('#icoReset'), file = $('#icoFile');
+  if (gesperrt) { pick.disabled = true; pick.title = gesperrt; reset.title = gesperrt; }
+  const instanz = hosted ? hostedLink(s).instance : '';
+  const route = hosted ? 'cloud/icon' : `servers/${s.id}/icon`;
+  const lesen = hosted ? route + '?instance=' + encodeURIComponent(instanz) : route;
+
+  const zeigen = (d) => {
+    if (!d) return;
+    prev.innerHTML = d.png
+      ? `<img src="data:image/png;base64,${d.png}" width="64" height="64" alt="Serverbild">`
+      : `<div class="icon-empty">${d.exists ? 'nicht anzeigbar' : 'kein&nbsp;Bild'}</div>`;
+    reset.disabled = !d.custom || !!gesperrt;
+    info.innerHTML = d.fremd
+      ? `Im Serverordner liegt eine Datei <code>server-icon.png</code>, die kein anzeigbares PNG von
+         höchstens 64x64 Punkten ist (${fmtBytes(d.size)}). Minecraft zeigt sie nicht – ein neues Bild ersetzt sie.`
+      : d.custom ? `Eigenes Bild · ${d.width}x${d.height} Punkte · ${fmtBytes(d.size)}`
+      : d.exists ? 'Das Standardbild des Managers (Programmsymbol).'
+      : 'Noch kein Bild – beim nächsten Start legt der Manager sein Programmsymbol hin.';
+  };
+
+  api(lesen).then(zeigen).catch((e) => {
+    info.textContent = 'Das Serverbild konnte nicht gelesen werden: ' + e.message;
+  });
+
+  const schicken = async (png) => {
+    const body = hosted ? { instance: instanz, png } : { png };
+    const d = await api(route, { method: 'POST', body });
+    if (d.supported === false) {
+      await askNote({ title: 'Auf dem Root-Server noch nicht möglich', text: d.hint || '' });
+      return;
+    }
+    zeigen(d.icon);
+    toast('Serverbild gespeichert – zu sehen nach dem nächsten Start des Servers.');
+  };
+
+  pick.onclick = () => { file.value = ''; file.click(); };
+  file.onchange = async () => {
+    const f = file.files && file.files[0];
+    if (!f) return;
+    if (!/^image\/(png|jpeg)$/.test(f.type || '')) { toast('Bitte eine PNG- oder JPG-Datei auswählen.', true); return; }
+    if (f.size > ICON_SRC_MAX) {
+      toast(`Die Datei ist mit ${fmtBytes(f.size)} zu groß – höchstens ${fmtBytes(ICON_SRC_MAX)}.`, true);
+      return;
+    }
+    const png = await iconCropDialog(f);
+    if (!png) return;
+    try { await schicken(png); } catch (e) { toast(e.message, true); }
+  };
+
+  reset.onclick = async () => {
+    if (!(await askConfirm({
+      title: 'Standardbild zurückholen?', confirmText: 'Zurückholen',
+      text: 'Das eigene Bild wird gelöscht. Der Manager legt dann wieder sein Programmsymbol als '
+        + 'Serverbild hin – zu sehen nach dem nächsten Start des Servers.',
+    }))) return;
+    try {
+      const d = await api(route + '/reset', { method: 'POST', body: hosted ? { instance: instanz } : {} });
+      if (d.supported === false) { await askNote({ title: 'Auf dem Root-Server noch nicht möglich', text: d.hint || '' }); return; }
+      zeigen(d.icon);
+      toast('Standardbild zurückgeholt.');
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function ladeBild(url) {
+  return new Promise((fertig, schiefgegangen) => {
+    const img = new Image();
+    img.onload = () => fertig(img);
+    img.onerror = () => schiefgegangen(new Error('Das Bild ließ sich nicht lesen.'));
+    img.src = url;
+  });
+}
+
+/* Quadratischen Ausschnitt ziehen und zoomen – mit Maus (ziehen, Mausrad) und Tastatur
+   (Pfeile verschieben, Plus/Minus zoomen, Schieber). Rückgabe: PNG als Base64 oder null. */
+async function iconCropDialog(datei) {
+  const url = URL.createObjectURL(datei);
+  let bild;
+  try { bild = await ladeBild(url); }
+  catch (e) { URL.revokeObjectURL(url); toast(e.message, true); return null; }
+  if (!bild.width || !bild.height) { URL.revokeObjectURL(url); toast('Das Bild ist leer.', true); return null; }
+
+  const V = 288;                                     // Kantenlänge des Ausschnittfensters (Anzeige)
+  const ZIEL = 64;                                   // Kantenlänge des fertigen Serverbildes
+  const kleinste = Math.min(bild.width, bild.height);
+  const zMin = V / kleinste;                         // kleiner geht nicht: der Ausschnitt wäre nicht gefüllt
+  const zMax = zMin * 12;
+  const st = { z: zMin, cx: bild.width / 2, cy: bild.height / 2 };
+
+  const seite = () => V / st.z;                      // Kantenlänge des Ausschnitts in Bildpunkten
+  const halten = () => {
+    st.z = Math.max(zMin, Math.min(zMax, st.z));
+    const h = seite() / 2;
+    st.cx = Math.max(h, Math.min(bild.width - h, st.cx));
+    st.cy = Math.max(h, Math.min(bild.height - h, st.cy));
+  };
+  const malen = (cv, kante) => {
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, kante, kante);
+    ctx.imageSmoothingQuality = 'high';
+    const s = seite();
+    ctx.drawImage(bild, st.cx - s / 2, st.cy - s / 2, s, s, 0, 0, kante, kante);
+  };
+  const ausschnitt = () => {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = ZIEL;
+    malen(cv, ZIEL);
+    return cv.toDataURL('image/png').split(',')[1] || '';
+  };
+
+  let ergebnis = null;
+  const ok = await dialog({
+    wide: true, icon: '🖼', title: 'Serverbild zuschneiden', sub: datei.name,
+    confirmText: 'Bild übernehmen',
+    body: () => `
+      <p class="mb0">Ausschnitt mit der <b>Maus ziehen</b>, mit dem <b>Mausrad</b> oder dem Schieber
+        zoomen. Mit der Tastatur: <b>Pfeiltasten</b> verschieben (mit Umschalt größere Schritte),
+        <b>+</b> und <b>−</b> zoomen.</p>
+      <div class="crop-wrap">
+        <div>
+          <canvas id="cropCv" class="crop-cv" width="${V}" height="${V}" tabindex="0"
+            aria-label="Ausschnitt verschieben und zoomen"></canvas>
+          <div class="field" style="margin:10px 0 0">
+            <label for="cropZoom">Zoom</label>
+            <input type="range" id="cropZoom" min="0" max="100" value="0" step="1">
+          </div>
+        </div>
+        <div class="crop-side">
+          <div class="crop-note">So sieht es in Minecraft aus:</div>
+          <div class="icon-prev"><canvas id="cropPrev" width="${ZIEL}" height="${ZIEL}"></canvas></div>
+          <div class="muted small">${ZIEL}x${ZIEL} Punkte</div>
+          <div class="muted small">Ausgewählt: ${bild.width}x${bild.height} Punkte</div>
+          ${kleinste < ZIEL ? `<div class="note note-warn mb0" style="margin-top:10px">Das Bild ist
+            kleiner als ${ZIEL} Punkte – es wird hochgerechnet und sieht dadurch grob aus.</div>` : ''}
+        </div>
+      </div>`,
+    bind: () => {
+      const cv = $('#cropCv'), pv = $('#cropPrev'), zoom = $('#cropZoom');
+      const zeichnen = () => {
+        halten();
+        malen(cv, V);
+        malen(pv, ZIEL);
+        zoom.value = String(Math.round(Math.log(st.z / zMin) / Math.log(zMax / zMin) * 100));
+      };
+      const setZoom = (wert) => { st.z = zMin * Math.pow(zMax / zMin, Math.max(0, Math.min(100, wert)) / 100); zeichnen(); };
+      zoom.oninput = () => setZoom(Number(zoom.value));
+
+      let zieht = false, lx = 0, ly = 0;
+      cv.onpointerdown = (e) => {
+        zieht = true; lx = e.clientX; ly = e.clientY;
+        cv.setPointerCapture(e.pointerId); cv.classList.add('is-drag'); cv.focus();
+      };
+      cv.onpointermove = (e) => {
+        if (!zieht) return;
+        st.cx -= (e.clientX - lx) / st.z;
+        st.cy -= (e.clientY - ly) / st.z;
+        lx = e.clientX; ly = e.clientY;
+        zeichnen();
+      };
+      const loslassen = () => { zieht = false; cv.classList.remove('is-drag'); };
+      cv.onpointerup = loslassen;
+      cv.onpointercancel = loslassen;
+      cv.onwheel = (e) => { e.preventDefault(); st.z *= e.deltaY < 0 ? 1.12 : 1 / 1.12; zeichnen(); };
+      cv.onkeydown = (e) => {
+        const schritt = (e.shiftKey ? 24 : 6) / st.z;
+        const pfeil = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+        if (pfeil) { st.cx += pfeil[0] * schritt; st.cy += pfeil[1] * schritt; }
+        else if (e.key === '+' || e.key === '=') st.z *= 1.12;
+        else if (e.key === '-' || e.key === '_') st.z /= 1.12;
+        else return;
+        e.preventDefault(); e.stopPropagation();
+        zeichnen();
+      };
+      zeichnen();
+    },
+    onSubmit: () => { ergebnis = ausschnitt(); if (!ergebnis) throw new Error('Der Ausschnitt ließ sich nicht erzeugen.'); },
+  });
+  URL.revokeObjectURL(url);
+  return ok ? ergebnis : null;
 }
 
 /* Einstellungen → Abschnitt „Modpack“: aktuelle Pack-Version, Versionsliste von Modrinth, Update / Neuinstallation. */
@@ -1888,6 +2138,7 @@ function bindServer() {
 
   if (state.tab === 'settings') {
     bindSettingsForm('st_');
+    bindIcon(s, false);
     $('#btnSave').onclick = async () => {
       try {
         const body = readSettingsForm('st_', {});
@@ -2092,6 +2343,8 @@ function hostedReset(instance) {
   state.hosted.remote = null;
   state.hosted.settings = null;
   state.hosted.props = null;
+  state.hosted.xbox = null;
+  state.hosted.xboxSig = '';
   state.hosted.error = '';
   state.hosted.key = '';
   state.hosted.log = { next: 0, lines: [] };
@@ -2127,6 +2380,8 @@ async function hostedTick() {
   if (!isHostedServer(s)) { stopHostedPolling(); render(); return; }
   await loadHosted(s);
   patchHostedStatus();
+  // Der Anmeldecode des Bots erscheint erst nach ein paar Sekunden – im selben Takt nachfragen.
+  if (state.tab === 'overview' && $('#hostedXboxCard')) await loadHostedXbox(s).catch(() => {});
 }
 
 /* Nur Zahlen und Texte auffrischen. Ändert sich der Zustand (läuft/schläft/gestoppt), wird die
@@ -2250,6 +2505,35 @@ function hostedOverview(s, r, st, werte) {
   const set = state.hosted.settings || {};
   const schlaf = set.hibernation_known === false ? null : (set.hibernation !== false);
   const minuten = Number(set.hibernation_minutes || 15);
+  const schlafKarte = `
+      <div class="card">
+        <div class="card-head"><h3>😴 Ruhezustand bei Leerstand</h3>
+          <span class="pill ${schlaf === null ? 'pill-grey' : schlaf ? 'pill-sleep' : 'pill-grey'}">${
+            schlaf === null ? 'unbekannt' : schlaf ? 'an · ' + minuten + ' Min.' : 'aus'}</span></div>
+        ${schlaf === null
+          ? `<p class="small mb0">Dieser Root-Server meldet noch nicht, ob er den Ruhezustand kennt.
+             Sobald er es tut, lässt er sich hier und in den <a href="#" data-tab-go="settings">Einstellungen</a> schalten.</p>`
+          : `<p class="small">${schlaf
+            ? `Ist ${minuten} Minuten lang niemand auf dem Server, speichert er die Welt und fährt herunter.
+               <b>Ein schlafender Server verbraucht kein Kontingent</b> – er gibt Platz und Arbeitsspeicher
+               in deinem Pass wieder frei. Beim Beitritt startet er von selbst.`
+            : 'Der Server bleibt eingeschaltet, auch wenn niemand spielt – er belegt dann dauerhaft einen Platz und den Arbeitsspeicher deines Passes.'}</p>
+             <div class="btn-row"><button class="btn btn-sm" data-tab-go="settings">Ruhezustand einstellen</button></div>`}
+      </div>`;
+  const logKarte = `
+      <div class="card">
+        <div class="card-head"><h3>🖥 Konsole – letzte Zeilen</h3>
+          <button class="btn btn-sm" data-tab-go="console">Öffnen</button></div>
+        <div class="minilog" id="hostedMiniLog">${r.running ? 'Wird geladen …' : 'Der Server läuft gerade nicht.'}</div>
+      </div>`;
+  // Konsolen kommen nur bei Bedrock (oder Java mit Geyser) herein – nur dort gibt es die Karte.
+  const karten = hostedBedrock(s, r)
+    ? `<div class="grid2" style="margin:0">
+         <div class="card" id="hostedXboxCard">${hostedXboxCard(s, r)}</div>
+         ${schlafKarte}
+       </div>
+       ${logKarte}`
+    : `<div class="grid2" style="margin:0">${schlafKarte}${logKarte}</div>`;
   return `
   <div class="dash">
     <div class="hero">
@@ -2279,28 +2563,169 @@ function hostedOverview(s, r, st, werte) {
       <div class="stat ${werte.tpsTone}"><div class="k">TPS</div><div class="v" data-hst="tps">${esc(werte.tps)}</div></div>
     </div>
 
-    <div class="grid2" style="margin:0">
-      <div class="card">
-        <div class="card-head"><h3>😴 Ruhezustand bei Leerstand</h3>
-          <span class="pill ${schlaf === null ? 'pill-grey' : schlaf ? 'pill-sleep' : 'pill-grey'}">${
-            schlaf === null ? 'unbekannt' : schlaf ? 'an · ' + minuten + ' Min.' : 'aus'}</span></div>
-        ${schlaf === null
-          ? `<p class="small mb0">Dieser Root-Server meldet noch nicht, ob er den Ruhezustand kennt.
-             Sobald er es tut, lässt er sich hier und in den <a href="#" data-tab-go="settings">Einstellungen</a> schalten.</p>`
-          : `<p class="small">${schlaf
-            ? `Ist ${minuten} Minuten lang niemand auf dem Server, speichert er die Welt und fährt herunter.
-               <b>Ein schlafender Server verbraucht kein Kontingent</b> – er gibt Platz und Arbeitsspeicher
-               in deinem Pass wieder frei. Beim Beitritt startet er von selbst.`
-            : 'Der Server bleibt eingeschaltet, auch wenn niemand spielt – er belegt dann dauerhaft einen Platz und den Arbeitsspeicher deines Passes.'}</p>
-             <div class="btn-row"><button class="btn btn-sm" data-tab-go="settings">Ruhezustand einstellen</button></div>`}
-      </div>
-      <div class="card">
-        <div class="card-head"><h3>🖥 Konsole – letzte Zeilen</h3>
-          <button class="btn btn-sm" data-tab-go="console">Öffnen</button></div>
-        <div class="minilog" id="hostedMiniLog">${r.running ? 'Wird geladen …' : 'Der Server läuft gerade nicht.'}</div>
-      </div>
-    </div>
+    ${karten}
   </div>`;
+}
+
+/* ---------- Xbox-Freunde-Modus auf dem Root-Server
+   Dieselbe Karte wie bei einem Server auf diesem PC – nur läuft MCXboxBroadcast neben dem Server
+   im Rechenzentrum. Anmeldung und Freundesliste bleiben damit bestehen, auch wenn dieser PC aus
+   ist; ein Bot auf dem PC würde die Freunde an eine Adresse schicken, hinter der hier nichts mehr
+   läuft. Kennt der Root-Server die Wege noch nicht, sagt die Karte das ruhig. */
+
+/* Kommen Konsolen und Handys auf diesen gehosteten Server? Der Stand vom Root hat Vorrang. */
+function hostedBedrock(s, r) {
+  const typ = String((r && r.type) || s.type || '');
+  if (typ === 'bedrock') return true;
+  const geyser = (r && r.geyser !== undefined) ? r.geyser : s.geyser;
+  return typ === 'java' && !isModpack(s) && !!geyser;
+}
+
+/* Art der gehosteten Instanz („bedrock“ oder „java“) – was der Root meldet, sonst die lokale Kopie. */
+function _hostedTyp(s, r) {
+  return String((r && r.type) || s.type || 'java');
+}
+
+/* Adresse, auf die der Bot die Freunde leitet: was der Root meldet, sonst seine Unterdomäne. */
+function hostedXboxAddr(s, r, x) {
+  if (x.address) return x.address + (x.port ? ':' + x.port : '');
+  const a = hostedAddress(s, r);
+  const port = hostedPorts(r).bedrock || a.port;
+  return a.host ? a.host + (port ? ':' + port : '') : '–';
+}
+
+function hostedXboxCard(s, r) {
+  const x = state.hosted.xbox;
+  const head = (cls, text) => `<div class="card-head"><h3>🎮 Xbox-Freunde-Modus</h3><span class="pill ${cls}">${text}</span></div>`;
+  if (!x) {
+    return `${head('pill-grey', 'Wird geladen')}
+      <p class="small mb0 muted">Der Zustand wird beim Root-Server abgefragt …</p>`;
+  }
+  if (x.supported === false) {
+    return `${head('pill-grey', 'Noch nicht bereit')}
+      <p class="small">Der Xbox-Freunde-Modus <b>steht auf dem Root-Server noch nicht bereit</b>.
+         Auf diesem PC gibt es ihn schon; dort im Rechenzentrum muss der Betreiber den Dienst dafür
+         erst aktualisieren.</p>
+      <div class="note note-info mb0"><p class="mb0">${esc(x.hint || '')}</p></div>`;
+  }
+  if (!x.enabled) {
+    return `${head('pill-grey', 'Aus')}
+      <p class="small">Dein Server erscheint bei allen Freunden eines <b>Bot-Kontos</b> in der
+         Freundesliste – Xbox, PS5 und Switch treten dann einfach über <b>Freunde → Beitreten</b> bei,
+         ganz ohne DNS-Umstellung.</p>
+      <div class="note note-info"><b>Auf dem Root-Server läuft der Bot rund um die Uhr weiter</b> –
+        auch wenn dieser PC aus ist. Die Anmeldung bleibt dort gespeichert.</div>
+      <div class="btn-row"><button class="btn btn-primary btn-sm" id="btnHxSetup">Jetzt einrichten</button>
+        <a class="btn btn-sm" href="#" data-gohelp="friends">Wie funktioniert das?</a></div>`;
+  }
+  let body = '';
+  if (x.state === 'login') {
+    body = `<div class="note note-warn" style="margin:8px 0">
+      <b>Anmeldung nötig.</b> Öffne <a href="${MS_LINK_URL}" target="_blank" rel="noopener noreferrer">microsoft.com/link</a>
+      und gib diesen Code ein – mit dem <b>Bot-Konto</b>, nicht mit deinem Spielkonto:
+      <div class="code-big">${esc(x.code)}</div>
+      <div class="btn-row"><a class="btn btn-primary btn-sm" href="${MS_LINK_URL}" target="_blank" rel="noopener noreferrer">microsoft.com/link öffnen</a>
+        <button class="btn btn-sm" id="btnHxCopy">Code kopieren</button></div>
+      <p class="small mb0" style="margin-top:8px">Die Anmeldung gilt für den Bot auf dem Root-Server –
+        einmal eingeben genügt, danach bleibt sie dort gespeichert.</p></div>`;
+  } else if (x.state === 'online') {
+    body = `<div class="note note-ok" style="margin:8px 0"><b>Online${x.gamertag ? ' als ' + esc(x.gamertag) : ''}.</b>
+      Freunde dieses Kontos sehen jetzt „${esc(x.host_name || s.name)}“ unter <b>Freunde</b> und können beitreten –
+      auch wenn dieser PC aus ist. Neue Mitspieler müssen dem Bot-Konto auf Xbox Live folgen, es folgt
+      automatisch zurück.</div>`;
+  } else if (x.state === 'starting') {
+    body = `<div class="muted small" style="margin:8px 0">Der Bot startet auf dem Root-Server …
+      ${x.token_cached ? 'Die Anmeldung ist dort gespeichert.' : 'Gleich erscheint ein Anmelde-Code.'}</div>`;
+  } else {
+    body = `<div class="muted small" style="margin:8px 0">Der Bot ist gestoppt.
+      ${x.token_cached ? 'Die Anmeldung ist auf dem Root-Server gespeichert – Start genügt.'
+        : 'Beim Start wird ein Anmelde-Code angezeigt.'}
+      ${x.autostart !== false ? '<br>Er startet auf dem Root-Server automatisch zusammen mit dem Server.' : ''}</div>`;
+  }
+  if (x.error && x.state !== 'online') body += `<div class="small" style="color:var(--red);margin:4px 0 8px">${esc(x.error)}</div>`;
+  const pill = x.state === 'online' ? ['pill-green', 'Online']
+    : x.state === 'login' ? ['pill-blue', 'Anmelden']
+    : x.state === 'starting' ? ['pill-grey', 'Startet'] : ['pill-grey', 'Gestoppt'];
+  return `${head(pill[0], pill[1])}
+    ${body}
+    <div class="muted small">Freunde werden auf <code>${esc(hostedXboxAddr(s, r, x))}</code> geleitet
+      · Anzeigename „${esc(x.host_name || s.name)}“ · Bot läuft auf dem Root-Server</div>
+    <div class="btn-row" style="margin-top:10px">
+      ${x.running ? '<button class="btn btn-sm" id="btnHxStop">■ Bot stoppen</button>'
+        : '<button class="btn btn-primary btn-sm" id="btnHxStart">▶ Bot starten</button>'}
+      <button class="btn btn-sm" id="btnHxSetup">⚙ Ändern</button>
+      <button class="btn btn-sm" id="btnHxReset" title="Anmeldung auf dem Root-Server verwerfen und neu anmelden">Neu anmelden</button>
+      <button class="btn btn-sm btn-danger" id="btnHxDisable">Aus</button>
+    </div>`;
+}
+
+/* Ein Schaltweg der Karte. Kennt der Root-Server ihn nicht, bleibt es bei der ruhigen Meldung. */
+async function hostedXboxAction(s, weg, gutText) {
+  const id = hostedLink(s).instance;
+  try {
+    const d = await api('cloud/xbox/' + weg, { method: 'POST', body: { instance: id } });
+    if (d.supported === false) { toast(d.hint || 'Das kann der Root-Server noch nicht.', true); return false; }
+    if (d.xbox) state.hosted.xbox = d.xbox;
+    toast(d.message || gutText);
+    await loadHostedXbox(s);
+    return true;
+  } catch (e) { toast(e.message, true); return false; }
+}
+
+function bindHostedXbox(s) {
+  const karte = $('#hostedXboxCard');
+  if (!karte) return;
+  state.hosted.xboxSig = JSON.stringify(state.hosted.xbox || {});
+  const setup = $('#btnHxSetup'); if (setup) setup.onclick = () => startXboxWizard(s);
+  const start = $('#btnHxStart');
+  if (start) start.onclick = async () => { start.disabled = true; if (!await hostedXboxAction(s, 'start', 'Der Bot wird gestartet …')) start.disabled = false; };
+  const stop = $('#btnHxStop');
+  if (stop) stop.onclick = async () => { stop.disabled = true; if (!await hostedXboxAction(s, 'stop', 'Der Bot wird gestoppt …')) stop.disabled = false; };
+  const reset = $('#btnHxReset');
+  if (reset) reset.onclick = async () => {
+    if (!(await askConfirm({
+      tone: 'danger', title: 'Gespeicherte Anmeldung verwerfen?', confirmText: 'Verwerfen',
+      text: 'Die Verbindung des Bot-Kontos wird auf dem Root-Server gelöscht. Beim nächsten Start '
+        + 'zeigt die Karte einen neuen Code, den du auf microsoft.com/link eingeben musst.',
+    }))) return;
+    await hostedXboxAction(s, 'reset', 'Anmeldung verworfen.');
+    paintHosted();
+  };
+  const disable = $('#btnHxDisable');
+  if (disable) disable.onclick = async () => {
+    if (!(await askConfirm({
+      tone: 'danger', title: 'Xbox-Freunde-Modus ausschalten?', confirmText: 'Ausschalten',
+      text: 'Der Server verschwindet aus der Freundesliste auf Xbox, PlayStation und Switch. '
+        + 'Deine Freunde kommen dann nur noch über die Adresse auf den Server.',
+    }))) return;
+    if (await hostedXboxAction(s, 'disable', 'Der Xbox-Freunde-Modus ist aus.')) paintHosted();
+  };
+  const copy = $('#btnHxCopy');
+  if (copy) copy.onclick = () => copyText((state.hosted.xbox || {}).code || '', 'Code');
+  $$('[data-gohelp]', karte).forEach((el) => el.onclick = (e) => { e.preventDefault(); showHelp(el.dataset.gohelp); });
+}
+
+/* Zustand holen und die Karte nachziehen, ohne die ganze Seite neu zu zeichnen. */
+async function loadHostedXbox(s) {
+  const id = hostedLink(s).instance;
+  if (!id) return null;
+  try {
+    const d = await api('cloud/xbox?instance=' + encodeURIComponent(id));
+    if (state.hosted.instance !== id) return null;    // in der Zwischenzeit weitergeklickt
+    state.hosted.xbox = d || null;
+  } catch (e) {
+    // Ein Fehler hier darf die Übersicht nicht stören – die Karte zeigt dann den Grund.
+    if (state.hosted.instance === id && !state.hosted.xbox) {
+      state.hosted.xbox = { supported: false, hint: e.message };
+    }
+  }
+  const sig = JSON.stringify(state.hosted.xbox || {});
+  const karte = $('#hostedXboxCard');
+  if (karte && sig !== state.hosted.xboxSig) {
+    karte.innerHTML = hostedXboxCard(s, hostedRemote(s) || {});
+    bindHostedXbox(s);
+  }
+  return state.hosted.xbox;
 }
 
 /* ---------- Verbinden (ohne FritzBox und Portfreigabe – die gibt es auf dem Root nicht) */
@@ -2471,10 +2896,18 @@ function hostedSettings(s, r) {
      Datei sonst gleich wieder um.</div>` : ''}
   <div id="hostedProps"><div class="muted small">server.properties wird vom Root-Server geholt …</div></div>
 
+  ${(set.type || _hostedTyp(s, r)) === 'bedrock' ? '' : iconSection()
+    + (laeuft ? `<div class="note note-warn">Einzelne Dateien nimmt der Root-Server nur bei
+       <b>gestopptem</b> Server an – das Serverbild lässt sich darum erst nach dem Stoppen wechseln.
+       Es wirkt ohnehin erst beim nächsten Start.</div>` : '')}
+
   <h2>Auf diesen PC zurückholen</h2>
   <p class="muted">Alle Dateien werden übertragen und einzeln mit Prüfsumme verglichen. Erst danach
      wird der Ordner auf dem Root-Server gelöscht und die Kopie auf diesem PC wieder freigegeben.
      Löschen und Neuinstallieren gibt es hier erst wieder, wenn der Server zurück ist.</p>
+  ${(state.hosted.xbox || {}).enabled ? `<div class="note note-info"><b>Der Xbox-Freunde-Modus kommt
+     mit zurück.</b> Die Anmeldung des Bot-Kontos wandert wieder auf diesen PC und der Bot läuft
+     danach hier – deine Freunde sehen den Server dann nur noch, solange dieser PC eingeschaltet ist.</div>` : ''}
   <div class="btn-row">
     <button class="btn" data-cloud-pull-local="${esc(hostedLink(s).instance || '')}">⬇ Zurück auf diesen PC holen</button>
     <button class="btn" data-cloud-goto="1">Bereich „Cloud“ öffnen</button>
@@ -2578,7 +3011,13 @@ function bindHostedServer(s) {
     } catch (e) { toast(e.message, true); stop.disabled = false; }
   };
 
-  if (state.tab === 'overview') loadHostedMiniLog(s);
+  if (state.tab === 'overview') {
+    loadHostedMiniLog(s);
+    if ($('#hostedXboxCard')) { bindHostedXbox(s); loadHostedXbox(s).catch(() => {}); }
+  } else if (!state.hosted.xbox && hostedBedrock(s, r)) {
+    // Auch abseits der Übersicht einmal holen: der Hinweis zum Zurückholen hängt daran.
+    loadHostedXbox(s).catch(() => {});
+  }
 
   if (state.tab === 'players') {
     if (!state.players.data || state.players.instance !== id) loadPlayers(s, true);
@@ -2616,6 +3055,7 @@ function bindHostedServer(s) {
     if (speichern) speichern.onclick = () => saveHostedSettings(s);
     if (!state.hosted.props) loadHostedProps(s);
     else { const box = $('#hostedProps'); if (box) { box.innerHTML = hostedPropsBox(!!r.running); bindHostedProps(s); } }
+    bindIcon(s, true, r.running ? 'Der Server auf dem Root-Server läuft – bitte zuerst stoppen.' : '');
   }
 
   // Beim ersten Öffnen ist noch kein Stand da (die Cloud-Liste kommt nur jede Minute) – einmal
@@ -2660,19 +3100,35 @@ async function saveHostedSettings(s) {
 /* ------------------------------------------------------------------ Assistent: Xbox-Freunde-Modus */
 
 const XBOX_STEPS = ['So funktioniert es', 'Deine Angaben', 'Einrichtung', 'Anmeldung'];
+/* Auf dem Root-Server macht die Einrichtung der Dienst dort – das Programm hat keinen Fortschritt
+   zu zeigen und geht von den Angaben direkt zur Anmeldung. */
+const XBOX_STEPS_ROOT = ['So funktioniert es', 'Deine Angaben', 'Anmeldung'];
+const xbSteps = (w) => (w.hosted ? XBOX_STEPS_ROOT : XBOX_STEPS);
+const xbIndex = (w) => (w.hosted && w.step === 3 ? 2 : w.step);
 
 function startXboxWizard(s) {
-  const x = s.xbox || {};
+  const hosted = isHostedServer(s);
+  const x = (hosted ? state.hosted.xbox : s.xbox) || {};
   state.xbox = {
     serverId: s.id, step: 0,
-    host_name: s.xbox_host_name || s.name,
-    mode: s.xbox_address && s.xbox_address !== state.system.local_ip ? 'inet' : 'lan',
+    hosted,
+    instance: hosted ? hostedLink(s).instance : '',
+    host_name: (hosted ? x.host_name : s.xbox_host_name) || s.name,
+    // Auf dem Root-Server gibt es keine Wahl: der Bot nennt die Adresse des Rechenzentrums.
+    mode: hosted ? 'root'
+      : (s.xbox_address && s.xbox_address !== state.system.local_ip ? 'inet' : 'lan'),
     address: s.xbox_address && s.xbox_address !== state.system.local_ip ? s.xbox_address : (s.public_address || ''),
-    autostart: s.xbox_autostart !== false,
+    autostart: hosted ? x.autostart !== false : s.xbox_autostart !== false,
     jobId: null, job: null, status: x,
   };
   state.view = 'xbox';
   render();
+}
+
+/* Vor dem Verlassen des Assistenten: der Karte auf der Serverseite den frischen Stand mitgeben. */
+function xbLeave(w) {
+  if (w.hosted && w.status) state.hosted.xbox = w.status;
+  openServer(w.serverId);
 }
 
 function renderXboxWizard() {
@@ -2680,8 +3136,27 @@ function renderXboxWizard() {
   if (!s) return renderWelcome();
   const lanIp = state.system.local_ip || '…';
   const port = s.type === 'bedrock' ? s.port : s.bedrock_port;
+  const rootAddr = w.hosted ? hostedXboxAddr(s, hostedRemote(s) || {}, w.status || {}) : '';
   let body = '';
-  if (w.step === 0) body = `
+  if (w.step === 0 && w.hosted) body = `
+    <p class="lead">Ein <b>Bot-Konto</b> meldet sich <b>auf dem Root-Server</b> bei Xbox Live an und „hostet“ deinen
+       Server scheinbar als Welt. Jeder, der mit diesem Konto befreundet ist, sieht den Server unter
+       <b>Freunde</b> und tritt mit einem Klick bei – auf Xbox, PS5, Switch, Handy und PC.</p>
+    <div class="grid2">
+      <div class="card"><div class="pill pill-green">Du brauchst</div>
+        <ul style="margin:8px 0 0"><li>Ein <b>Microsoft-Konto als Bot</b>. Empfohlen ist ein <b>Zweitkonto</b> (kostenlos anlegbar), nicht dein Spielkonto –
+            das Werkzeug ahmt einen Spieler nach, Microsoft könnte das theoretisch sperren.</li>
+          <li>Das Konto braucht einen <b>Xbox-Gamertag</b> (wird beim ersten Besuch von <code>xbox.com</code> angelegt).</li>
+          <li>Deine Freunde <b>folgen dem Bot-Konto</b> auf Xbox Live – es folgt automatisch zurück.</li></ul></div>
+      <div class="card"><div class="pill pill-blue">Auf dem Root-Server</div>
+        <ul style="margin:8px 0 0"><li><b>Der Bot läuft dort, nicht auf diesem PC</b> – deine Freunde sehen den Server
+            also auch dann in der Freundesliste, wenn dieser PC aus ist.</li>
+          <li>Die Anmeldung bleibt auf dem Root-Server gespeichert. Der Code von <code>microsoft.com/link</code>
+            wird nur einmal gebraucht.</li>
+          <li><b>Keine Portfreigabe nötig</b> – geleitet wird auf <code>${esc(rootAddr)}</code>.</li>
+          <li>Verwendet wird das quelloffene Projekt <b>MCXboxBroadcast</b> (github.com/MCXboxBroadcast) – der Root-Server lädt es selbst.</li></ul></div>
+    </div>`;
+  else if (w.step === 0) body = `
     <p class="lead">Ein <b>Bot-Konto</b> meldet sich auf diesem PC bei Xbox Live an und „hostet“ deinen Server scheinbar als Welt.
        Jeder, der mit diesem Konto befreundet ist, sieht den Server unter <b>Freunde</b> und tritt mit einem Klick bei –
        auf Xbox, PS5, Switch, Handy und PC. Kein DNS-Trick nötig.</p>
@@ -2696,6 +3171,23 @@ function renderXboxWizard() {
             Portfreigabe (Tab „Verbinden“). Im gleichen WLAN klappt es sofort.</li>
           <li>Der Bot läuft nur, solange der Server läuft, und startet mit ihm.</li>
           <li>Verwendet wird das quelloffene Projekt <b>MCXboxBroadcast</b> (github.com/MCXboxBroadcast) – wird automatisch geladen.</li></ul></div>
+    </div>`;
+  else if (w.step === 1 && w.hosted) body = `
+    <p class="lead">Zwei Angaben – beide lassen sich später ändern.</p>
+    <div class="grid2" style="margin-top:0">
+      <div>
+        ${fieldInput('xb_host', 'Anzeigename in der Freundesliste', w.host_name, { hint: 'So heißt die „Welt“, die deine Freunde sehen.' })}
+        ${fieldCheck('xb_auto', 'Automatisch mit dem Server starten', 'Empfohlen. Der Bot startet und stoppt auf dem Root-Server zusammen mit dem Server.', w.autostart)}
+      </div>
+      <div>
+        <div class="field"><label>Wohin werden Freunde geleitet?</label>
+          <div class="addr addr-pub"><div><div class="a-k">Adresse des Root-Servers</div>
+            <div class="a-v">${esc(rootAddr)}</div></div><span class="pill pill-green">fest</span></div>
+          <div class="hint">Das gibt der Root-Server selbst vor – hier ist nichts einzustellen.
+            Eine Portfreigabe zu Hause braucht es dafür nicht.</div></div>
+        <div class="note note-info mb0"><b>Der Bot läuft auf dem Root-Server.</b> Die Anmeldung bleibt
+          dort gespeichert, und deine Freunde sehen den Server auch dann, wenn dieser PC aus ist.</div>
+      </div>
     </div>`;
   else if (w.step === 1) body = `
     <p class="lead">Ein paar Angaben – alles lässt sich später ändern.</p>
@@ -2725,6 +3217,8 @@ function renderXboxWizard() {
     const x = w.status || {};
     if (x.state === 'online') body = `<div class="note note-ok"><b>Geschafft${x.gamertag ? ' – angemeldet als ' + esc(x.gamertag) : ''}!</b>
       <p>Der Server erscheint jetzt bei allen Freunden des Bot-Kontos unter <b>Freunde</b> als „${esc(w.host_name)}“.</p>
+      ${w.hosted ? `<p><b>Der Bot läuft auf dem Root-Server.</b> Deine Freunde sehen den Server also auch
+        dann, wenn dieser PC aus ist – die Anmeldung bleibt dort gespeichert.</p>` : ''}
       <p class="mb0"><b>Für neue Mitspieler:</b> Auf Xbox/PS5/Switch/Handy den Gamertag des Bot-Kontos als Freund hinzufügen – der Bot nimmt automatisch an.
       Danach im Spiel auf <b>Freunde</b> gehen und beitreten.</p></div>`;
     else if (x.state === 'login') body = `<div class="card" style="text-align:center">
@@ -2736,15 +3230,22 @@ function renderXboxWizard() {
       <div class="btn-row" style="justify-content:center;margin-top:10px"><a class="btn btn-primary" href="${MS_LINK_URL}" target="_blank" rel="noopener noreferrer">microsoft.com/link öffnen</a>
         <button class="btn" id="xb_copy">Code kopieren</button></div>
       <p class="muted small" style="margin-top:12px">Der Code ist ca. 15 Minuten gültig; danach erscheint automatisch ein neuer.</p></div>`;
-    else body = `<div class="card"><div class="steprow active"><span class="mark"></span> Bot startet … gleich erscheint der Anmelde-Code${x.token_cached ? ' (oder die gespeicherte Anmeldung wird verwendet)' : ''}.</div>
+    else if (x.supported === false) body = `<div class="note note-warn mb0"><b>Der Xbox-Freunde-Modus
+      steht auf dem Root-Server noch nicht bereit.</b><p class="mb0">${esc(x.hint || '')}</p></div>`;
+    else body = `<div class="card"><div class="steprow active"><span class="mark"></span>
+      ${w.hosted ? 'Der Root-Server richtet ein und startet den Bot … gleich erscheint der Anmelde-Code'
+        : 'Bot startet … gleich erscheint der Anmelde-Code'}${x.token_cached ? ' (oder die gespeicherte Anmeldung wird verwendet)' : ''}.</div>
+      ${w.hosted ? '<div class="muted small" style="margin-top:8px">MCXboxBroadcast wird dort geladen – das dauert beim ersten Mal eine Minute.</div>' : ''}
       ${x.error ? `<div class="small" style="color:var(--red);margin-top:8px">${esc(x.error)}</div>` : ''}</div>`;
   }
-  const canBack = w.step === 1 || (w.step === 0);
+  const steps = xbSteps(w);
+  const nr = xbIndex(w);
   return `
-  <div class="head"><div><h1>Xbox-Freunde-Modus</h1><div class="head-sub">${esc(s.name)} · Schritt ${w.step + 1} von 4 · ${XBOX_STEPS[w.step]}</div></div>
+  <div class="head"><div><h1>Xbox-Freunde-Modus${w.hosted ? ' <span class="cloud-tag" title="Läuft auf dem Root-Server">☁</span>' : ''}</h1>
+      <div class="head-sub">${esc(s.name)} · Schritt ${nr + 1} von ${steps.length} · ${steps[nr]}${w.hosted ? ' · auf dem Root-Server' : ''}</div></div>
     <button class="btn btn-sm" id="xbCancel">${w.step >= 2 ? 'Zur Übersicht' : 'Abbrechen'}</button></div>
   <div class="page">
-    ${stepBar(XBOX_STEPS, w.step)}
+    ${stepBar(steps, nr)}
     ${body}
     <div class="wizard-nav">
       <button class="btn" id="xbBack" ${w.step === 1 ? '' : 'disabled'}>← Zurück</button>
@@ -2757,7 +3258,7 @@ function renderXboxWizard() {
 
 function bindXboxWizard() {
   const w = state.xbox;
-  $('#xbCancel').onclick = () => openServer(w.serverId);
+  $('#xbCancel').onclick = () => xbLeave(w);
   $('#xbBack').onclick = () => { collectXbox(); w.step = 0; render(); };
   const next = $('#xbNext'); if (next) next.onclick = () => { w.step = 1; render(); };
   const pub = $('#xb_pub'); if (pub) pub.onclick = async () => {
@@ -2767,16 +3268,28 @@ function bindXboxWizard() {
   };
   const go = $('#xbGo'); if (go) go.onclick = async () => {
     collectXbox();
-    if (w.mode === 'inet' && !w.address) { toast('Bitte die öffentliche Adresse eintragen oder „Heimnetz“ wählen.', true); return; }
     go.disabled = true;
+    // Auf dem Root-Server richtet der Dienst selbst ein – es gibt keinen Fortschritt zu zeigen,
+    // also geht es von den Angaben gleich zur Anmeldung.
+    if (w.hosted) {
+      try {
+        const d = await api('cloud/xbox/setup', { method: 'POST', body: {
+          instance: w.instance, host_name: w.host_name, autostart: w.autostart } });
+        if (d.supported === false) { toast(d.hint || 'Das kann der Root-Server noch nicht.', true); w.status = d; }
+        else if (d.xbox) w.status = d.xbox;
+        w.step = 3; render();
+      } catch (e) { toast(e.message, true); go.disabled = false; }
+      return;
+    }
+    if (w.mode === 'inet' && !w.address) { toast('Bitte die öffentliche Adresse eintragen oder „Heimnetz“ wählen.', true); go.disabled = false; return; }
     try {
       const d = await api(`servers/${w.serverId}/xbox/setup`, { method: 'POST', body: {
         xbox_host_name: w.host_name, xbox_address: w.mode === 'lan' ? '' : w.address, xbox_autostart: w.autostart } });
       w.jobId = d.job_id; w.job = null; w.step = 2; render(); pollXboxJob();
     } catch (e) { toast(e.message, true); go.disabled = false; }
   };
-  const copy = $('#xb_copy'); if (copy) copy.onclick = () => navigator.clipboard?.writeText(w.status.code).then(() => toast('Code kopiert.'));
-  const done = $('#xbDone'); if (done) done.onclick = () => openServer(w.serverId);
+  const copy = $('#xb_copy'); if (copy) copy.onclick = () => copyText((w.status || {}).code || '', 'Code');
+  const done = $('#xbDone'); if (done) done.onclick = () => xbLeave(w);
   if (w.step === 3) pollXboxStatus();
 }
 
@@ -2810,9 +3323,12 @@ function pollXboxStatus() {
     const w = state.xbox;
     if (state.view !== 'xbox' || !w || w.step !== 3) { clearInterval(state.timers.xbox); return; }
     try {
-      const st = await api(`servers/${w.serverId}/xbox`);
+      const st = w.hosted
+        ? await api('cloud/xbox?instance=' + encodeURIComponent(w.instance))
+        : await api(`servers/${w.serverId}/xbox`);
       const changed = JSON.stringify(st) !== JSON.stringify(w.status);
       w.status = st;
+      if (w.hosted) state.hosted.xbox = st;          // die Karte auf der Serverseite mitziehen
       if (changed) render();
     } catch { /* nächster Tick */ }
   };
@@ -3915,12 +4431,19 @@ function startCloudJob(res, label) {
 async function cloudUpload(serverId) {
   const s = state.servers.find((x) => x.id === serverId);
   if (!s) return;
+  // Der Ordner „xbox“ des Servers liegt im Serverordner und wird mit übertragen – damit zieht die
+  // Anmeldung des Bot-Kontos mit um, und der Bot läuft danach auf dem Root-Server weiter.
+  const xboxHinweis = (s.xbox && s.xbox.enabled)
+    ? '\n\nDer Xbox-Freunde-Modus wird mitgenommen: die Anmeldung des Bot-Kontos zieht mit auf den '
+      + 'Root-Server, und der Bot läuft dort weiter – auch wenn dieser PC aus ist. Deine Freunde '
+      + 'sehen den Server also weiterhin in ihrer Freundesliste.'
+    : '';
   const ok = await askConfirm({
     tone: 'danger', icon: '⬆', title: `„${s.name}“ auf den Root-Server verschieben?`,
     confirmText: 'Jetzt verschieben',
     text: 'Alle Dateien dieses Servers werden mit Prüfsumme übertragen. Danach ist die Kopie auf diesem PC '
       + 'gesperrt – ein Server ist immer nur an einer Stelle spielbar. Zurückholen kannst du ihn jederzeit.'
-      + '\n\nDer Ordner „backups“ bleibt auf diesem PC.',
+      + '\n\nDer Ordner „backups“ bleibt auf diesem PC.' + xboxHinweis,
   });
   if (!ok) return;
   state.cloud.busy = serverId;
@@ -3934,12 +4457,20 @@ async function cloudDownload(instance) {
   const d = cloudData();
   const s = (d.servers || []).find((x) => x.id === instance);
   const name = s ? s.name : 'Server';
+  // Gegenrichtung: die Anmeldung kommt mit den Dateien zurück, der Bot läuft danach wieder hier –
+  // und braucht diesen PC eingeschaltet.
+  const xb = state.hosted.instance === instance ? state.hosted.xbox : null;
+  const xboxHinweis = (xb && xb.enabled)
+    ? '\n\nDer Xbox-Freunde-Modus kommt mit zurück: die Anmeldung des Bot-Kontos wandert wieder auf '
+      + 'diesen PC und der Bot läuft danach hier. Deine Freunde sehen den Server dann nur noch, '
+      + 'solange dieser PC eingeschaltet ist.'
+    : '';
   const ok = await askConfirm({
     tone: 'danger', icon: '⬇', title: `„${name}“ auf diesen PC zurückholen?`,
     confirmText: 'Jetzt zurückholen',
     text: 'Der Server wird auf dem Root-Server gestoppt, alle Dateien werden übertragen und einzeln geprüft. '
       + 'Erst danach wird der Ordner auf dem Root-Server gelöscht und die Kopie auf diesem PC wieder freigegeben.'
-      + '\n\nSpieler, die gerade online sind, fliegen dabei vom Server.',
+      + '\n\nSpieler, die gerade online sind, fliegen dabei vom Server.' + xboxHinweis,
   });
   if (!ok) return;
   state.cloud.busy = instance;
@@ -4282,6 +4813,9 @@ function cloudServerCard(s) {
       <p class="small">Der ganze Serverordner wird mit Prüfsumme je Datei übertragen und läuft danach auf dem
          Root-Server – auch wenn dieser PC aus ist. <b>Die Kopie auf diesem PC ist danach gesperrt</b>
          (ein Server ist immer nur an einer Stelle spielbar); zurückholen kannst du ihn jederzeit.</p>
+      ${s.xbox && s.xbox.enabled ? `<div class="note note-info"><b>Der Xbox-Freunde-Modus zieht mit um.</b>
+        Die Anmeldung des Bot-Kontos wird mitgenommen, und der Bot läuft auf dem Root-Server weiter –
+        auch wenn dieser PC aus ist.</div>` : ''}
       <div class="btn-row">
         <button class="btn btn-sm btn-primary" data-cloud-push="${esc(s.id)}" ${s.installed && !s.running && !s.installing ? '' : 'disabled'}
           ${s.running ? 'title="Bitte den Server zuerst stoppen."' : ''}>⬆ Auf den Root-Server verschieben</button>

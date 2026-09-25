@@ -1118,6 +1118,164 @@ def remote_file_info(remote_id: str, path: str, *, mit_hash: bool = False) -> di
     return _api("GET", f"/api/servers/{urllib.parse.quote(remote_id)}/files", query=query)
 
 
+# ------------------------------------------------- Xbox-Freunde-Modus auf dem Root-Server
+# MCXboxBroadcast meldet Xbox-Live-Freunden nur eine Adresse und einen Port – der Bot müsste also
+# nicht auf derselben Maschine wie der Server laufen. Auf dem Root soll er es trotzdem: dann bleiben
+# Anmeldung und Bot dort, und die Freunde sehen den Server auch, wenn dieser PC aus ist.
+# Die Felder sind dieselben wie bei ``manager.xbox_status`` – die Oberfläche kennt nur eine Karte.
+
+#: Ein Root-Server, der diese Wege noch nicht ausgerollt hat, antwortet mit einem davon.
+#: 405 ist dabei: dann gibt es den Weg, aber nicht die Methode – aus Sicht der Karte dasselbe.
+XBOX_FEHLT = (404, 405, 501)
+XBOX_HINWEIS = ("Der Xbox-Freunde-Modus steht auf dem Root-Server noch nicht bereit. Sobald der "
+                "Betreiber den Dienst dort aktualisiert hat, lässt er sich von hier aus einrichten.")
+#: Zustände, die der Bot melden darf (alles andere wird aus „running“ abgeleitet).
+XBOX_STATES = ("off", "starting", "login", "online")
+
+
+def _xbox_route(remote_id: str, rest: str) -> str:
+    return f"/api/servers/{urllib.parse.quote(remote_id)}/xbox{rest}"
+
+
+def _xbox_call(remote_id: str, rest: str, *, method: str = "GET", body=None) -> dict | None:
+    """Ein Aufruf an den Root-Server – ``None``, wenn er diesen Weg noch nicht kennt.
+
+    Nur die Wege des Xbox-Modus werden so behandelt: ein 404 heißt hier „noch nicht ausgerollt“,
+    und die Karte sagt das ruhig, statt einen Fehler über die halbe Seite zu legen.
+    """
+    try:
+        data = _api(method, _xbox_route(remote_id, rest), body=body)
+    except CloudError as exc:
+        if exc.status in XBOX_FEHLT:
+            return None
+        raise
+    return data if isinstance(data, dict) else {}
+
+
+def _xbox_leer(*, hint: str = "", supported: bool = True) -> dict:
+    """Karte ohne Stand vom Root-Server – dieselben Felder wie ``manager.xbox_status``."""
+    return {"supported": bool(supported), "hint": hint, "hosted": True,
+            "enabled": False, "installed": False, "running": False, "state": "off",
+            "code": "", "url": "", "gamertag": "", "error": "",
+            "address": "", "port": 0, "host_name": "", "autostart": True, "token_cached": False}
+
+
+def _xbox_port(roh: dict) -> int:
+    try:
+        port = int(str(roh.get("port") or 0).strip())
+    except (TypeError, ValueError):
+        return 0
+    return port if 1 <= port <= 65535 else 0
+
+
+def _xbox_view(data: dict) -> dict:
+    """Antwort des Root-Servers auf die Felder bringen, die die Oberfläche von lokal kennt.
+
+    Alles kommt von der Gegenseite und wird deshalb beschnitten und geprüft – ein zu langer
+    Gamertag oder eine fremde Adresse im Feld ``url`` soll die Karte nicht aufreißen.
+    """
+    roh = data.get("xbox") if isinstance(data.get("xbox"), dict) else data
+    if not isinstance(roh, dict):
+        roh = {}
+    url = str(roh.get("url") or "").strip()[:200]
+    zustand = str(roh.get("state") or "").strip().lower()
+    out = _xbox_leer()
+    out.update(
+        enabled=bool(roh.get("enabled")),
+        installed=bool(roh.get("installed")),
+        running=bool(roh.get("running")),
+        state=zustand if zustand in XBOX_STATES else ("online" if roh.get("running") else "off"),
+        # Der Anmeldecode von Microsoft ist kurz und alphanumerisch – mehr wird nicht angezeigt.
+        code=re.sub(r"[^A-Za-z0-9]", "", str(roh.get("code") or ""))[:16].upper(),
+        url=url if url.startswith("https://") else "",
+        gamertag=str(roh.get("gamertag") or "").strip()[:64],
+        error=str(roh.get("error") or "").strip()[:500],
+        address=str(roh.get("address") or "").strip()[:200],
+        port=_xbox_port(roh),
+        host_name=str(roh.get("host_name") or "").strip()[:64],
+        autostart=bool(roh.get("autostart", True)),
+        token_cached=bool(roh.get("token_cached")),
+    )
+    return out
+
+
+def _xbox_antwort(remote_id: str, data: dict | None, *, meldung: str) -> dict:
+    """Gemeinsame Antwort der Schaltwege: kennt der Root sie nicht, sagt die Karte das."""
+    if data is None:
+        return {"ok": False, "supported": False, "hint": XBOX_HINWEIS}
+    out = {"ok": True, "supported": True,
+           "message": str(data.get("message") or meldung)[:300]}
+    # Schickt der Root gleich den neuen Stand mit, zeigt die Karte ihn ohne zweite Anfrage.
+    if isinstance(data.get("xbox"), dict):
+        out["xbox"] = _xbox_view(data)
+    return out
+
+
+def remote_xbox_status(remote_id: str) -> dict:
+    """Zustand des Bots auf dem Root-Server (off | starting | login | online)."""
+    data = _xbox_call(remote_id, "/status")
+    if data is None:
+        return _xbox_leer(hint=XBOX_HINWEIS, supported=False)
+    return _xbox_view(data)
+
+
+def remote_xbox_setup(remote_id: str, *, host_name: str = "", address: str = "",
+                      autostart: bool = True, enabled: bool = True) -> dict:
+    """Bot auf dem Root-Server einrichten: Jar holen, Konfiguration schreiben, starten.
+
+    Die Adresse bleibt in der Regel leer – dann nimmt der Root seine eigene, öffentlich
+    erreichbare Adresse samt Bedrock-Port. Genau das ist der Gewinn gegenüber dem PC.
+    """
+    body: dict = {"enabled": bool(enabled), "autostart": bool(autostart)}
+    if host_name:
+        body["host_name"] = str(host_name)[:64]
+    if address:
+        body["address"] = str(address)[:200]
+    data = _xbox_call(remote_id, "/setup", method="POST", body=body)
+    if data is None:
+        return {"ok": False, "supported": False, "hint": XBOX_HINWEIS}
+    _drop_cache()
+    out = _xbox_antwort(remote_id, data, meldung="Der Xbox-Freunde-Modus wird auf dem Root-Server "
+                                                 "eingerichtet.")
+    for key in ("job_id", "job"):                     # falls der Root seinen Fortschritt meldet
+        if key in data:
+            out[key] = data[key]
+    return out
+
+
+def remote_xbox_start(remote_id: str) -> dict:
+    return _xbox_antwort(remote_id, _xbox_call(remote_id, "/start", method="POST", body={}),
+                         meldung="Der Bot wird auf dem Root-Server gestartet.")
+
+
+def remote_xbox_stop(remote_id: str) -> dict:
+    return _xbox_antwort(remote_id, _xbox_call(remote_id, "/stop", method="POST", body={}),
+                         meldung="Der Bot auf dem Root-Server wird gestoppt.")
+
+
+def remote_xbox_reset(remote_id: str) -> dict:
+    """Gespeicherte Anmeldung auf dem Root-Server verwerfen – beim Start kommt ein neuer Code."""
+    return _xbox_antwort(remote_id, _xbox_call(remote_id, "/reset", method="POST", body={}),
+                         meldung="Die Anmeldung auf dem Root-Server wurde verworfen.")
+
+
+def remote_xbox_disable(remote_id: str) -> dict:
+    """Ausschalten: erst den Bot stoppen, dann die Einstellung auf dem Root umlegen.
+
+    Ein eigener Weg dafür ist nicht verabredet; ``setup`` trägt die Einstellungen, also auch
+    ``enabled: false``. Der Stopp vorher wirkt selbst dann, wenn der Root das Feld übergeht.
+    """
+    halt = remote_xbox_stop(remote_id)
+    if not halt.get("supported", True):
+        return halt
+    aus = remote_xbox_setup(remote_id, enabled=False, autostart=False)
+    if not aus.get("supported", True):
+        return aus
+    return {"ok": True, "supported": True,
+            "message": "Der Xbox-Freunde-Modus ist auf dem Root-Server ausgeschaltet.",
+            **({"xbox": aus["xbox"]} if isinstance(aus.get("xbox"), dict) else {})}
+
+
 # ------------------------------------------------- Einzelne Dateien hoch und herunter
 
 def remote_file_upload(remote_id: str, quelle, ziel: str = "", *, progress=None) -> dict:

@@ -8,6 +8,7 @@ gebraucht: als Ziel dient ein einfacher TCP-Horcher, der alles zurückschickt.
 """
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import pathlib
@@ -1109,6 +1110,259 @@ class EinstellungTest(unittest.TestCase):
         finally:
             router.schliesse_protokoll()
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- Schlafende Server
+
+class Weckdienst:
+    """Ersatz für den Dienst mcsmd: nimmt den Weckruf an und merkt sich, was ankam."""
+
+    def __init__(self, antwort: dict | None = None, status: int = 200) -> None:
+        self.antwort = dict(antwort or {"ok": True, "gestartet": True,
+                                        "meldung": router.MELDUNG_STARTET})
+        self.status = int(status)
+        self.rufe: list[dict] = []
+        self._lock = threading.Lock()
+        aussen = self
+
+        class Griff(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt, *args):                      # noqa: A003
+                pass
+
+            def do_POST(self):                                      # noqa: N802
+                laenge = int(self.headers.get("Content-Length") or 0)
+                rumpf = self.rfile.read(laenge) if laenge else b"{}"
+                try:
+                    daten = json.loads(rumpf.decode("utf-8"))
+                except ValueError:
+                    daten = {}
+                with aussen._lock:
+                    aussen.rufe.append({"pfad": self.path,
+                                        "geheimnis": self.headers.get("X-MCSM-Router", ""),
+                                        "daten": daten})
+                aus = json.dumps(aussen.antwort, ensure_ascii=False).encode("utf-8")
+                self.send_response(aussen.status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(aus)))
+                self.end_headers()
+                self.wfile.write(aus)
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Griff)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       kwargs={"poll_interval": 0.05}, daemon=True)
+        self.thread.start()
+
+    def anzahl(self) -> int:
+        with self._lock:
+            return len(self.rufe)
+
+    def stoppe(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(5)
+
+
+class SchlafTest(unittest.TestCase):
+    """Ein gehosteter Server, der gerade aus ist, aber geweckt werden darf."""
+
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="mcsm-router-schlaf-"))
+        self.datei = self.tmp / "routes.json"
+        self.geheimnis_datei = self.tmp / "router_secret"
+        self.geheimnis_datei.write_text("g" * 64 + "\n", encoding="utf-8")
+        self.env_backup = {k: os.environ.get(k) for k in
+                           ("MCSM_ROUTER_API", "MCSM_ROUTER_SECRET")}
+        os.environ["MCSM_ROUTER_SECRET"] = str(self.geheimnis_datei)
+        self.dienste: list[Dienst] = []
+        self.weckdienste: list[Weckdienst] = []
+        # Ein Port, auf dem sicher niemand lauscht: der „schlafende Server“.
+        tot = socket.socket()
+        tot.bind(("127.0.0.1", 0))
+        self.toter_port = tot.getsockname()[1]
+        tot.close()
+
+    def tearDown(self) -> None:
+        for dienst in self.dienste:
+            dienst.stoppe()
+        for weck in self.weckdienste:
+            weck.stoppe()
+        for name, wert in self.env_backup.items():
+            if wert is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = wert
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def weckdienst(self, **mehr) -> Weckdienst:
+        neu = Weckdienst(**mehr)
+        self.weckdienste.append(neu)
+        os.environ["MCSM_ROUTER_API"] = f"http://127.0.0.1:{neu.port}"
+        return neu
+
+    def tabelle(self, inhalt: dict) -> None:
+        self.datei.write_text(json.dumps(inhalt, ensure_ascii=False), encoding="utf-8")
+
+    def dienst(self, **mehr) -> Dienst:
+        neu = Dienst(self.datei, **mehr)
+        self.dienste.append(neu)
+        return neu
+
+    def schlaefer(self, **mehr) -> dict:
+        eintrag = {"port": self.toter_port, "instanz": "efc71eb9c547",
+                   "name": "Eutopia", "max": 20, "wecken": True}
+        eintrag.update(mehr)
+        return {"eutopia": eintrag}
+
+    @staticmethod
+    def erstes_json(antwort: bytes) -> dict:
+        _kennziffer, rumpf = pakete(antwort)[0]
+        text, _ = router.lese_string(rumpf, 0, max_bytes=65535)
+        return json.loads(text)
+
+    # ---------------------------------------------------------------- Tabelle
+
+    def test_tabelle_liest_die_neuen_felder(self) -> None:
+        self.tabelle(self.schlaefer())
+        tabelle = router.Routen(self.datei, domain=DOMAIN, pruef_abstand=0.0)
+        treffer = tabelle.finde("eutopia." + DOMAIN)
+        self.assertIsNotNone(treffer)
+        self.assertEqual(treffer.anzeige, "Eutopia")
+        self.assertEqual(treffer.max_spieler, 20)
+        self.assertTrue(treffer.wecken)
+
+    def test_alte_tabelle_ohne_neue_felder_bleibt_lesbar(self) -> None:
+        self.tabelle({"eutopia": 25566})
+        tabelle = router.Routen(self.datei, domain=DOMAIN, pruef_abstand=0.0)
+        treffer = tabelle.finde("eutopia." + DOMAIN)
+        self.assertEqual(treffer.port, 25566)
+        self.assertEqual(treffer.anzeige, "")
+        self.assertFalse(treffer.wecken)
+
+    # ---------------------------------------------------------------- Ping
+
+    def test_ping_auf_schlafenden_server_sieht_normal_aus(self) -> None:
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=1) + STATUS_ANFRAGE)
+            antwort = lies_bis_ende(klient)
+        daten = self.erstes_json(antwort)
+        self.assertEqual(daten["version"]["name"], "Eutopia")
+        self.assertEqual(daten["players"], {"max": 20, "online": 0, "sample": []})
+        self.assertEqual(daten["description"]["text"],
+                         "Server ist ausgeschaltet – tritt bei, um ihn zu starten")
+        # Keine Fehlermeldung: also auch keine Fehlerfarbe.
+        self.assertNotIn("color", daten["description"])
+        self.assertEqual(dienst.verteiler.zahlen["schlaeft"], 1)
+
+    def test_ping_beantwortet_auch_die_laufzeitmessung(self) -> None:
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        nutzlast = b"\x08\x07\x06\x05\x04\x03\x02\x01"
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=1)
+                           + STATUS_ANFRAGE + ping_anfrage(nutzlast))
+            antwort = lies_bis_ende(klient)
+        teile = pakete(antwort)
+        self.assertEqual(len(teile), 2, "Statusantwort und Laufzeitmessung erwartet")
+        self.assertEqual(teile[1], (router.PAKET_PING, nutzlast))
+
+    def test_ohne_ruhezustand_bleibt_es_bei_laeuft_nicht(self) -> None:
+        """Wer den Ruhezustand abgeschaltet hat, soll keine Weck-Einladung sehen."""
+        self.tabelle(self.schlaefer(wecken=False))
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=1) + STATUS_ANFRAGE)
+            antwort = lies_bis_ende(klient)
+        daten = self.erstes_json(antwort)
+        self.assertEqual(daten["description"]["text"], "Dieser Server läuft gerade nicht")
+
+    # ---------------------------------------------------------------- Beitritt weckt
+
+    def test_beitritt_weckt_und_trennt_freundlich(self) -> None:
+        weck = self.weckdienst()
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=2))
+            antwort = lies_bis_ende(klient)
+        daten = self.erstes_json(antwort)
+        self.assertEqual(daten["text"], router.MELDUNG_STARTET)
+        self.assertEqual(weck.anzahl(), 1)
+        ruf = weck.rufe[0]
+        self.assertEqual(ruf["pfad"], "/api/router/wake")
+        self.assertEqual(ruf["geheimnis"], "g" * 64)
+        self.assertEqual(ruf["daten"]["instanz"], "efc71eb9c547")
+        self.assertEqual(ruf["daten"]["marke"], "eutopia")
+        self.assertEqual(dienst.verteiler.zahlen["geweckt"], 1)
+
+    def test_uebergabe_weckt_ebenso(self) -> None:
+        """Zustand 3 („transfer“, ab 1.20.5) ist ein Beitritt."""
+        weck = self.weckdienst()
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=3))
+            lies_bis_ende(klient)
+        self.assertEqual(weck.anzahl(), 1)
+
+    def test_ping_weckt_nicht(self) -> None:
+        weck = self.weckdienst()
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=1) + STATUS_ANFRAGE)
+            lies_bis_ende(klient)
+        self.assertEqual(weck.anzahl(), 0, "Ein Blick in die Serverliste darf nichts starten")
+
+    def test_abgelehnter_weckruf_nennt_den_grund(self) -> None:
+        grund = "Dein Pass erlaubt 1 gleichzeitig laufenden Server – es läuft bereits Welt-B."
+        self.weckdienst(antwort={"ok": False, "gestartet": False, "meldung": grund})
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=2))
+            antwort = lies_bis_ende(klient)
+        self.assertEqual(self.erstes_json(antwort)["text"], grund)
+        self.assertEqual(dienst.verteiler.zahlen["weckung_abgelehnt"], 1)
+
+    def test_fehler_des_dienstes_wird_zur_hoeflichen_meldung(self) -> None:
+        self.weckdienst(antwort={"error": "Bitte neu anmelden."}, status=404)
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=2))
+            antwort = lies_bis_ende(klient)
+        self.assertEqual(self.erstes_json(antwort)["text"], "Bitte neu anmelden.")
+
+    def test_ohne_dienst_bleibt_der_spieler_nicht_ratlos(self) -> None:
+        os.environ["MCSM_ROUTER_API"] = "http://127.0.0.1:1"        # dort lauscht niemand
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient(frist=8.0) as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=2))
+            antwort = lies_bis_ende(klient, frist=8.0)
+        self.assertEqual(self.erstes_json(antwort)["text"], router.MELDUNG_WECKEN_FEHLT)
+
+    def test_ohne_geheimnis_wird_gar_nicht_gerufen(self) -> None:
+        weck = self.weckdienst()
+        self.geheimnis_datei.unlink()
+        self.tabelle(self.schlaefer())
+        dienst = self.dienst()
+        with dienst.klient() as klient:
+            klient.sendall(handshake("eutopia." + DOMAIN, zustand=2))
+            antwort = lies_bis_ende(klient)
+        self.assertEqual(weck.anzahl(), 0)
+        self.assertEqual(self.erstes_json(antwort)["text"], router.MELDUNG_WECKEN_FEHLT)
+
+    def test_geheimnis_wird_frisch_gelesen(self) -> None:
+        """Startet der Dienst neu, gilt sofort das neue Geheimnis – ohne Neustart des Verteilers."""
+        self.assertEqual(router.geheimnis(), "g" * 64)
+        self.geheimnis_datei.write_text("h" * 64 + "\n", encoding="utf-8")
+        self.assertEqual(router.geheimnis(), "h" * 64)
 
 
 if __name__ == "__main__":

@@ -347,6 +347,45 @@ def _signal_group(proc: subprocess.Popen, sig: int, hard: bool = False, run_as: 
         pass
 
 
+def signal_gruppe(proc: subprocess.Popen, sig: int, *, hard: bool = False,
+                  run_as: str = "") -> None:
+    """Öffentlicher Zugang zu `_signal_group`.
+
+    Nicht nur der Server läuft in eigener Sitzung unter dem Benutzer des Kontos: der Bot des
+    Xbox-Freunde-Modus (`core/xbox.py`) tut es genauso und wird genauso beendet. Damit gibt es
+    für „Signal an die ganze Prozessgruppe“ nur eine Stelle.
+    """
+    _signal_group(proc, sig, hard=hard, run_as=run_as)
+
+
+def signal_pid_gruppe(pid: int, sig: int, *, run_as: str = "") -> bool:
+    """Signal an die Prozessgruppe einer **bekannten** Kennung (vergessener Prozess aus einem
+    früheren Lauf). ``False``, wenn es den Prozess nicht mehr gibt."""
+    try:
+        pgid = os.getpgid(int(pid)) if _linux() else int(pid)
+    except OSError:                        # ProcessLookupError ist ein OSError
+        return False
+    try:
+        if _linux():
+            if run_as:
+                return isolation.signal_group(run_as, pgid, sig)
+            os.killpg(pgid, sig)
+        else:                                                   # pragma: no cover - nur Linux
+            os.kill(int(pid), sig)
+        return True
+    except OSError:
+        return False
+
+
+def prozess_cmdline(pid: int) -> str:
+    """``/proc/<pid>/cmdline`` als Text (leer, wenn nicht lesbar). Darf jeder lesen."""
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as fh:
+            return fh.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
+
+
 def _proc_stat(pid: int) -> list[str] | None:
     """Felder ab „state“ aus /proc/<pid>/stat (der Prozessname kann Leerzeichen enthalten)."""
     try:
@@ -461,6 +500,16 @@ def _proc_uid(pid: int) -> int | None:
         return None
 
 
+def prozess_besitzer(pid: int) -> int | None:
+    """Besitzer eines Prozesses (öffentlich, für `core/xbox.py`)."""
+    return _proc_uid(pid)
+
+
+def prozess_laeuft(pid: int) -> bool:
+    """Gibt es diesen Prozess noch? (öffentlich, für `core/xbox.py`)"""
+    return _proc_stat(pid) is not None
+
+
 def _erwartete_uid(spec: RunSpec) -> int | None:
     if spec.run_as:
         return isolation.uid_of(spec.run_as)
@@ -478,11 +527,7 @@ def _passt_zur_instanz(pid: int, spec: RunSpec) -> bool:
     als zusätzliche Bestätigung – ``readlink /proc/<pid>/cwd`` verlangt ``PTRACE_MODE_READ`` und
     scheitert, sobald Daemon und Server unter verschiedenen Benutzern laufen.
     """
-    try:
-        with open(f"/proc/{int(pid)}/cmdline", "rb") as fh:
-            cmdline = fh.read().decode("utf-8", "replace")
-    except OSError:
-        cmdline = ""
+    cmdline = prozess_cmdline(pid)
     # Absichtlich nicht „Instanzordner kommt irgendwo vor“: Auch die kurzen Hilfsaufrufe des
     # Dienstes (``chmod -Rf g+rwX <instanzordner>`` aus isolation.grant_group) tragen ihn in der
     # Kommandozeile und würden sonst als laufender Server gelten.

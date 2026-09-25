@@ -62,6 +62,7 @@ class Basis(unittest.TestCase):
         # Zustand im Speicher zurücksetzen (Ports ohne Bind-Versuch: unabhängig von der Maschine)
         mcsmd.POOL = mcsmd.ports.PortPool(probe=False)
         mcsmd.REGISTRY = mcsmd.runner.RunnerRegistry(on_exit=mcsmd.on_runner_exit)
+        mcsmd.XBOX = mcsmd.xbox.BroadcasterRegistry()
         mcsmd.JOBS.clear()
         mcsmd._runtime.update({"ports": [], "warned": {}, "last_expiry_check": 0,
                                "housekeeping_at": 0, "save_all_at": 0, "admin_invite": "",
@@ -1046,11 +1047,16 @@ class HilfenTest(Basis):
 
     def test_alle_routen_haben_eine_rechtepruefung(self):
         """Ohne Anmeldung erreichbar sind nur die Anmeldewege, die Erreichbarkeitsprüfung und
-        die Oberfläche selbst (die ihre Daten anschließend angemeldet holt)."""
+        die Oberfläche selbst (die ihre Daten anschließend angemeldet holt).
+
+        ``/api/router/wake`` trägt kein Sitzungstoken, weil der Verteiler kein Konto hat – dafür
+        prüft die Route selbst Rückschleife und gemeinsames Geheimnis (siehe WeckrufTest).
+        """
         offen = {entry["regex"].pattern for entry in mcsmd.ROUTES if not entry["auth"]
                  and not entry["admin"]}
         self.assertEqual(offen, {
             r"^/api/health$",
+            r"^/api/router/wake$",
             r"^/api/auth/invite$",
             r"^/api/auth/logout$",
             r"^(?:/api)?/auth/discord/start$",
@@ -1472,11 +1478,14 @@ class VerteilerTest(Basis):
         token, _uid = self.make_user()
         server = self.make_server(token, name="Mein Server")
         self.set_state(server["id"], "hosted")
-        mcsmd.instances.set_ports(server["id"], {"java": 25570})
         mcsmd.schreibe_routen("Test")
         pfad = mcsmd.routen.routes_path()
         data = json.loads(pfad.read_text(encoding="utf-8"))
-        self.assertEqual(data["mein-server"], {"port": 25570, "instanz": server["id"]})
+        # Der Port kommt jetzt schon beim Anlegen aus dem PortPool – nicht erst beim Start.
+        port = mcsmd.ports_live_of(server["id"])["port"]
+        self.assertEqual(data["mein-server"],
+                         {"port": port, "instanz": server["id"], "name": "Mein Server",
+                          "max": mcsmd.routen.MAX_SPIELER_VORGABE, "wecken": True})
 
     def test_zurueckgeholte_instanz_verschwindet_aus_der_tabelle(self):
         token, uid = self.make_user()
@@ -1863,6 +1872,686 @@ class DateiHashTest(Basis):
                                         f"?action=info&path=server.properties", token=token)
         self.assertEqual(status, 200, data)
         self.assertNotIn("sha256", data)
+
+
+# ---------------------------------------------------------------- Feste Ports
+
+class PortVergabeTest(Basis):
+    """Befund: „Eutopia“ stand mit ``ports: {}`` in der Datenbank – und damit nicht in der
+    Tabelle des Verteilers. Der Port muss schon beim Anlegen da sein – aber nur für eine Instanz,
+    die wirklich auf dem Root liegt."""
+
+    def test_instanz_auf_dem_root_hat_sofort_einen_port(self):
+        """Premium: sie entsteht direkt hier und muss ab der ersten Sekunde erreichbar sein."""
+        token, uid = self.make_user()
+        self.issue_pass(uid, kind="premium", days=1)
+        status, data = self.call("POST", "/api/servers",
+                                 {"name": "Mein Server", "origin": "premium"}, token=token)
+        self.assertEqual(status, 201, data)
+        server = data["server"]
+        self.assertEqual(server["state"], "hosted")
+        self.assertTrue(server["ports"].get("java"), "Beim Anlegen fehlt der Port")
+        self.assertEqual(server["ports"]["java"], mcsmd.ports_live_of(server["id"])["port"])
+        self.assertNotEqual(server["ports"]["java"], mcsmd.routen.ROUTER_PORT)
+        self.assertIn("mein-server", json.loads(
+            mcsmd.routen.routes_path().read_text(encoding="utf-8")))
+
+    def test_instanz_nur_auf_dem_pc_bekommt_keinen_port(self):
+        """Sonst räumte ein einziges Konto den Bereich mit Servern leer, die es nie hochlädt.
+
+        ``MAX_INSTANCES_PER_USER`` erlaubt 500 angelegte Server je Konto, der Java-Bereich hat
+        rund 136 Ports für **alle** Konten. Eine Instanz im Zustand ``local_only`` steht ohnehin
+        nicht in ``routes.json`` – der Port täte dort nichts.
+        """
+        token, _uid = self.make_user()
+        server = self.make_server(token, name="Nur auf dem PC")
+        self.assertEqual(server["state"], "local_only")
+        self.assertEqual(server["ports"], {})
+        self.assertEqual(mcsmd.ports_live_of(server["id"]), {})
+        self.assertNotIn("nur-auf-dem-pc", json.loads(
+            mcsmd.routen.routes_path().read_text(encoding="utf-8")))
+
+    def test_viele_angelegte_instanzen_verbrauchen_den_bereich_nicht(self):
+        token, _uid = self.make_user()
+        for nummer in range(12):
+            self.make_server(token, name=f"Welt {nummer}")
+        self.assertEqual(mcsmd.POOL.free_ports(mcsmd.ports.JAVA_POOL),
+                         mcsmd.ports.POOLS[mcsmd.ports.JAVA_POOL].size - 1,
+                         "Angelegte Server dürfen nur den Port des Verteilers belegen")
+
+    def test_port_kommt_mit_der_uebertragung(self):
+        """Sobald die Instanz hier liegt, braucht sie ihre Adresse – ohne ersten Start."""
+        token, _uid = self.make_user()
+        server = self.make_server(token, name="Mein Server")
+        self.assertEqual(server["ports"], {})
+        gehostet = self.set_state(server["id"], "hosted")
+        self.assertTrue(gehostet["ports"].get("java"), "Nach dem Hochladen fehlt der Port")
+        data = json.loads(mcsmd.routen.routes_path().read_text(encoding="utf-8"))
+        self.assertEqual(data["mein-server"]["port"], gehostet["ports"]["java"])
+
+    def test_gehostete_instanz_steht_ohne_ersten_start_in_der_tabelle(self):
+        token, _uid = self.make_user()
+        server = self.make_server(token, name="Eutopia")
+        self.set_state(server["id"], "hosted")
+        data = json.loads(mcsmd.routen.routes_path().read_text(encoding="utf-8"))
+        self.assertIn("eutopia", data)
+        self.assertEqual(data["eutopia"]["instanz"], server["id"])
+        self.assertTrue(data["eutopia"]["port"])
+
+    def test_port_bleibt_nach_einem_stopp_erhalten(self):
+        """Sonst verschwände ein schlafender Server wieder aus der Tabelle."""
+        token, uid = self.make_user()
+        server = self.make_server(token, name="Eutopia")
+        port = self.set_state(server["id"], "hosted")["ports"]["java"]
+        inst = mcsmd.instances.get_instance(server["id"])
+        mcsmd.on_runner_exit(FalscherRunner(server["id"]), 0)
+        self.assertEqual(mcsmd.ports_live_of(server["id"]).get("port"), port)
+        self.assertEqual(mcsmd.instances.get_instance(server["id"])["ports"]["java"], port)
+        data = json.loads(mcsmd.routen.routes_path().read_text(encoding="utf-8"))
+        self.assertEqual(data[inst["marke"]]["port"], port)
+
+    def test_alte_instanz_ohne_port_wird_beim_start_versorgt(self):
+        """Genau der Fall des Betreibers: Datensatz aus einer früheren Fassung, ports leer."""
+        token, _uid = self.make_user()
+        server = self.make_server(token, name="Eutopia")
+        self.set_state(server["id"], "hosted")
+        # Zustand von früher herstellen: Buchung weg, Datensatz leer.
+        mcsmd.POOL.release(server["id"])
+        mcsmd.instances.set_ports(server["id"], {})
+        mcsmd.schreibe_routen("Test")
+        self.assertNotIn("eutopia", json.loads(
+            mcsmd.routen.routes_path().read_text(encoding="utf-8")))
+        mcsmd.startup()
+        inst = mcsmd.instances.get_instance(server["id"])
+        self.assertTrue(inst["ports"].get("java"), "Der Port wurde nicht nachgetragen")
+        data = json.loads(mcsmd.routen.routes_path().read_text(encoding="utf-8"))
+        self.assertEqual(data["eutopia"]["port"], inst["ports"]["java"])
+
+    def test_zurueckgeholte_instanz_gibt_den_port_zurueck(self):
+        """Wieder auf dem PC: der Port gehört nicht mehr dieser Instanz."""
+        token, _uid = self.make_user()
+        server = self.make_server(token, name="Mein Server")
+        self.assertTrue(self.set_state(server["id"], "hosted")["ports"]["java"])
+        self.set_state(server["id"], "local_only")
+        self.assertEqual(mcsmd.instances.get_instance(server["id"])["ports"], {})
+        self.assertEqual(mcsmd.ports_live_of(server["id"]), {})
+        self.assertNotIn("mein-server", json.loads(
+            mcsmd.routen.routes_path().read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------- Ersatz für einen Server
+
+class FalscherRunner:
+    """Ersatz für einen laufenden Minecraft-Server: kein Java, kein Prozess, nur Buchführung."""
+
+    def __init__(self, instance_id: str, *, spieler: int = 0, companion: bool = True,
+                 ready: bool = True, antwortet: bool = True):
+        class Spec:
+            def __init__(self) -> None:
+                self.instance_id = str(instance_id)
+                self.companion = bool(companion)
+                self.ram_mb = 2048
+                self.is_java = True
+                self.directory = None
+                self.run_as = ""
+                self.name = "Ersatz"
+
+        self.spec = Spec()
+        self.active_spec = self.spec
+        self.running = True
+        self.ready = bool(ready)
+        self.stopping = False
+        self.adopted = False
+        self.befehle: list[str] = []
+        self.gestoppt: list[int] = []
+        self._spieler = int(spieler)
+        self._antwortet = bool(antwortet)
+        self._zeilen: list[str] = []
+
+    def console(self, since: int = 0, tail=None) -> dict:
+        return {"next": len(self._zeilen), "lines": list(self._zeilen[int(since):])}
+
+    def send(self, command: str) -> None:
+        text = str(command).strip()
+        self.befehle.append(text)
+        if text == "list" and self._antwortet:
+            self._zeilen.append(f"There are {self._spieler} of a max of 20 players online:")
+
+    def log(self, text: str) -> None:
+        self._zeilen.append(str(text))
+
+    def announce(self, text: str) -> bool:
+        self.befehle.append(f"say {text}")
+        return True
+
+    def stop(self, timeout: int = 0, announce_seconds: int = 0) -> None:
+        self.gestoppt.append(int(announce_seconds))
+        self.running = False
+        self.stopping = True
+
+    def status(self) -> dict:
+        return {"id": self.spec.instance_id, "running": self.running, "ready": self.ready}
+
+
+# ---------------------------------------------------------------- Weckruf des Verteilers
+
+class WeckrufTest(Basis):
+    """Der Verteiler meldet „jemand will auf <Instanz>“ – über die Rückschleife mit Geheimnis."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token, self.uid = self.make_user()
+        self.server = self.make_server(self.token, name="Eutopia")
+        self.set_state(self.server["id"], "hosted")
+        self.geheimnis = mcsmd.ensure_router_secret()
+        self.starts: list[str] = []
+        self.echter_start = mcsmd.start_instanz
+
+        def ersatz(inst):
+            iid = str(inst.get("id") or "")
+            self.starts.append(iid)
+            time.sleep(0.3)                      # ein echter Start braucht auch einen Moment
+            mcsmd.REGISTRY._runners[iid] = FalscherRunner(iid)
+            mcsmd.instances.set_running(iid, True)
+            return {"port": 25566}, mcsmd.REGISTRY._runners[iid]
+
+        mcsmd.start_instanz = ersatz
+
+    def tearDown(self) -> None:
+        mcsmd.start_instanz = self.echter_start
+        mcsmd.WAKE_LOCKS.clear()
+        super().tearDown()
+
+    def wake(self, body=None, *, geheimnis: str | None = None, headers=None):
+        kopf = dict(headers or {})
+        wert = self.geheimnis if geheimnis is None else geheimnis
+        if wert:
+            kopf["X-MCSM-Router"] = wert
+        return self.call("POST", "/api/router/wake",
+                         body if body is not None else {"instanz": self.server["id"]},
+                         headers=kopf)
+
+    def test_das_geheimnis_liegt_nur_fuer_den_dienst_bereit(self):
+        pfad = mcsmd.router_secret_path()
+        self.assertTrue(pfad.is_file())
+        self.assertGreaterEqual(len(self.geheimnis), 32)
+        # Ein zweiter Aufruf legt kein neues an – der Verteiler soll nicht ausgesperrt werden.
+        self.assertEqual(mcsmd.ensure_router_secret(), self.geheimnis)
+        if hasattr(os, "geteuid"):                    # Rechte gibt es nur unter Linux
+            self.assertEqual(pfad.stat().st_mode & 0o777, 0o600)
+
+    def test_ohne_geheimnis_gibt_es_diese_adresse_nicht(self):
+        status, data = self.wake(geheimnis="")
+        self.assertEqual(status, 404, data)
+        self.assertEqual(self.starts, [])
+
+    def test_falsches_geheimnis_wird_abgewiesen(self):
+        status, data = self.wake(geheimnis="x" * 64)
+        self.assertEqual(status, 404, data)
+        self.assertEqual(self.starts, [])
+
+    def test_aufruf_aus_dem_offenen_netz_wird_abgewiesen(self):
+        """Hinter nginx trägt jede Anfrage X-Forwarded-For – ein echter Weckruf nie."""
+        status, data = self.wake(headers={"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(status, 404, data)
+        status, data = self.wake(headers={"X-Real-IP": "203.0.113.7"})
+        self.assertEqual(status, 404, data)
+        self.assertEqual(self.starts, [])
+
+    def test_weckruf_startet_den_server(self):
+        status, data = self.wake()
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["gestartet"])
+        self.assertEqual(data["meldung"], mcsmd.MELDUNG_STARTET)
+        self.assertEqual(self.starts, [self.server["id"]])
+
+    def test_die_marke_genuegt_als_angabe(self):
+        status, data = self.wake({"marke": "eutopia"})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["gestartet"])
+
+    def test_unbekannter_server(self):
+        status, data = self.wake({"instanz": "gibt-es-nicht"})
+        self.assertEqual(status, 404, data)
+        self.assertIn("gibt es hier nicht", data["meldung"])
+
+    def test_laufender_server_wird_nicht_zweimal_gestartet(self):
+        status, data = self.wake()
+        self.assertEqual(status, 200, data)
+        status, data = self.wake()
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["gestartet"])
+        self.assertEqual(data["meldung"], mcsmd.MELDUNG_STARTET)
+        self.assertEqual(len(self.starts), 1)
+
+    def test_mehrere_gleichzeitige_versuche_starten_einmal(self):
+        """Ein Spieler drückt fünfmal auf „Beitreten“ – der Server geht einmal an."""
+        ergebnisse: list = []
+        sperre = threading.Lock()
+
+        def versuch():
+            antwort = self.wake()
+            with sperre:
+                ergebnisse.append(antwort)
+
+        faeden = [threading.Thread(target=versuch) for _ in range(5)]
+        for faden in faeden:
+            faden.start()
+        for faden in faeden:
+            faden.join(30)
+        self.assertEqual(len(ergebnisse), 5)
+        self.assertEqual(len(self.starts), 1, "Der Server wurde mehrfach gestartet")
+        for status, data in ergebnisse:
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["ok"], data)
+            self.assertEqual(data["meldung"], mcsmd.MELDUNG_STARTET)
+
+    def test_ohne_pass_nennt_die_meldung_den_grund(self):
+        mcsmd.start_instanz = self.echter_start          # der echte Weg soll ablehnen
+        status, data = self.wake()
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["ok"])
+        self.assertIn("keinen gültigen Pass", data["meldung"])
+
+    def test_zurueckgeholter_server_wird_nicht_geweckt(self):
+        self.set_state(self.server["id"], "awaiting_pull")
+        status, data = self.wake()
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["ok"])
+        self.assertIn("zurückgeholt", data["meldung"])
+        self.assertEqual(self.starts, [])
+
+
+# ---------------------------------------------------------------- Ruhezustand bei Leerstand
+
+class RuhezustandTest(Basis):
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token, self.uid = self.make_user()
+        self.issue_pass(self.uid)
+        self.server = self.make_server(self.token, name="Eutopia")
+        self.set_state(self.server["id"], "hosted")
+        self.iid = self.server["id"]
+
+    def laufender(self, **mehr) -> FalscherRunner:
+        """Die Instanz als laufend eintragen und einen Ersatz-Server anhängen."""
+        lang_genug = mcsmd.store_hosted.now() - 10 * mcsmd.HIBERNATION_GRACE
+        mcsmd.instances.set_running(self.iid, True, now=lang_genug)
+        fake = FalscherRunner(self.iid, **mehr)
+        mcsmd.REGISTRY._runners[self.iid] = fake
+        return fake
+
+    def warte_bis_aus(self, fake: FalscherRunner, frist: float = 8.0) -> None:
+        ende = time.time() + frist
+        while fake.running and time.time() < ende:
+            time.sleep(0.05)
+        self.assertFalse(fake.running, "Der Server ist nicht in den Ruhezustand gegangen")
+
+    # -- Einstellungen -------------------------------------------------
+
+    def test_vorgaben(self):
+        self.assertTrue(self.server["hibernation"])
+        self.assertEqual(self.server["hibernation_minutes"], 15)
+        self.assertEqual(mcsmd.instances.HIBERNATION_MINUTES_DEFAULT, 15)
+
+    def test_einstellungen_sind_ueber_die_api_aenderbar(self):
+        status, data = self.call("POST", f"/api/servers/{self.iid}/settings",
+                                 {"hibernation": False, "hibernation_minutes": 45},
+                                 token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["server"]["hibernation"])
+        self.assertEqual(data["server"]["hibernation_minutes"], 45)
+        status, data = self.call("GET", f"/api/servers/{self.iid}", token=self.token)
+        self.assertFalse(data["server"]["hibernation"])
+        self.assertEqual(data["server"]["hibernation_minutes"], 45)
+
+    def test_unsinnige_wartezeit_wird_abgelehnt(self):
+        status, data = self.call("POST", f"/api/servers/{self.iid}/settings",
+                                 {"hibernation_minutes": 0}, token=self.token)
+        self.assertEqual(status, 400, data)
+        self.assertIn("Wartezeit", data["error"])
+
+    def test_abgeschalteter_ruhezustand_steht_in_der_tabelle(self):
+        self.call("POST", f"/api/servers/{self.iid}/settings", {"hibernation": False},
+                  token=self.token)
+        data = json.loads(mcsmd.routen.routes_path().read_text(encoding="utf-8"))
+        self.assertFalse(data["eutopia"]["wecken"])
+        self.call("POST", f"/api/servers/{self.iid}/settings", {"hibernation": True},
+                  token=self.token)
+        data = json.loads(mcsmd.routen.routes_path().read_text(encoding="utf-8"))
+        self.assertTrue(data["eutopia"]["wecken"])
+
+    def test_sleeping_wird_ausgeliefert(self):
+        status, data = self.call("GET", f"/api/servers/{self.iid}", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["server"]["sleeping"], "Gehostet und aus heißt: schläft")
+        self.laufender()
+        status, data = self.call("GET", f"/api/servers/{self.iid}", token=self.token)
+        self.assertFalse(data["server"]["sleeping"])
+
+    def test_schlafender_server_zaehlt_nicht_als_laufend(self):
+        """Platz und Arbeitsspeicher sind im Pass wieder frei."""
+        status, data = self.call("GET", "/api/me", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["slots_used"], 0)
+        self.assertEqual(data["ram_used_mb"], 0)
+        self.assertEqual(data["ram_free_mb"], data["ram_total_mb"])
+        # Und er lässt sich sofort wieder starten – die Prüfung sagt „ja“.
+        status, data = self.call("GET", f"/api/servers/{self.iid}", token=self.token)
+        self.assertTrue(data["server"]["check_start"]["ok"], data["server"]["check_start"])
+
+    # -- Einschlafen ---------------------------------------------------
+
+    def test_leerer_server_geht_nach_der_wartezeit_schlafen(self):
+        mcsmd.instances.set_hibernation(self.iid, minutes=1)
+        fake = self.laufender(spieler=0)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        self.assertEqual(mcsmd._runtime["leer_seit"].get(self.iid), jetzt)
+        self.assertTrue(fake.running, "Noch ist die Wartezeit nicht um")
+        mcsmd.ruhezustand_pruefen(jetzt + 61)
+        self.warte_bis_aus(fake)
+        self.assertIn("save-all", fake.befehle)
+        self.assertEqual(fake.gestoppt, [mcsmd.HIBERNATION_ANNOUNCE])
+
+    def test_spieler_auf_dem_server_verhindert_den_ruhezustand(self):
+        mcsmd.instances.set_hibernation(self.iid, minutes=1)
+        fake = self.laufender(spieler=2)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        mcsmd.ruhezustand_pruefen(jetzt + 3600)
+        self.assertTrue(fake.running)
+        self.assertEqual(fake.gestoppt, [])
+
+    def test_unbekannte_spielerzahl_verhindert_den_ruhezustand(self):
+        """Antwortet der Server nicht, wird niemand hinausgeworfen."""
+        mcsmd.instances.set_hibernation(self.iid, minutes=1)
+        fake = self.laufender(spieler=0, antwortet=False)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        mcsmd.ruhezustand_pruefen(jetzt + 3600)
+        self.assertTrue(fake.running)
+
+    def test_abgeschalteter_ruhezustand_laesst_den_server_laufen(self):
+        mcsmd.instances.set_hibernation(self.iid, enabled=False, minutes=1)
+        fake = self.laufender(spieler=0)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        mcsmd.ruhezustand_pruefen(jetzt + 3600)
+        self.assertTrue(fake.running)
+        self.assertEqual(mcsmd._runtime["leer_seit"], {})
+
+    def test_schonfrist_nach_dem_start(self):
+        mcsmd.instances.set_hibernation(self.iid, minutes=1)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.instances.set_running(self.iid, True, now=jetzt)
+        fake = FalscherRunner(self.iid, spieler=0)
+        mcsmd.REGISTRY._runners[self.iid] = fake
+        mcsmd.ruhezustand_pruefen(jetzt + 120)
+        self.assertEqual(mcsmd._runtime["leer_seit"], {})
+        self.assertTrue(fake.running)
+        # Nach der Schonfrist läuft die Uhr.
+        spaeter = jetzt + mcsmd.HIBERNATION_GRACE + 1
+        mcsmd.ruhezustand_pruefen(spaeter)
+        self.assertEqual(mcsmd._runtime["leer_seit"].get(self.iid), spaeter)
+
+    def test_welt_die_noch_laedt_wird_nicht_schlafen_gelegt(self):
+        mcsmd.instances.set_hibernation(self.iid, minutes=1)
+        fake = self.laufender(spieler=0, ready=False)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        mcsmd.ruhezustand_pruefen(jetzt + 3600)
+        self.assertTrue(fake.running)
+
+    def test_laufende_uebertragung_verhindert_den_ruhezustand(self):
+        mcsmd.instances.set_hibernation(self.iid, minutes=1)
+        inhalt = b"Ein Plugin"
+        status, data = self.call(
+            "POST", f"/api/servers/{self.iid}/upload/begin",
+            {"manifest": {"version": 1, "files": [
+                {"path": "plugins/Neu.jar", "size": len(inhalt),
+                 "sha256": sha256_of(inhalt)}]}},
+            token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(mcsmd.uebertragung_laeuft(self.iid))
+        fake = self.laufender(spieler=0)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        mcsmd.ruhezustand_pruefen(jetzt + 3600)
+        self.assertTrue(fake.running)
+        self.assertEqual(mcsmd._runtime["leer_seit"], {})
+
+    def test_ein_start_stellt_die_uhr_zurueck(self):
+        mcsmd.instances.set_hibernation(self.iid, minutes=5)
+        fake = self.laufender(spieler=0)
+        jetzt = mcsmd.store_hosted.now()
+        mcsmd.ruhezustand_pruefen(jetzt)
+        self.assertIn(self.iid, mcsmd._runtime["leer_seit"])
+        mcsmd._leerstand_vergessen(self.iid)
+        self.assertEqual(mcsmd._runtime["leer_seit"], {})
+        self.assertTrue(fake.running)
+
+    def test_spielerzahl_kommt_zuerst_vom_begleit_plugin(self):
+        """Mit status.json muss kein Konsolenbefehl geschickt werden."""
+        inst = mcsmd.instances.get_instance(self.iid)
+        ordner = mcsmd.companion.plugin_dir(mcsmd.instance_dir(inst))
+        ordner.mkdir(parents=True, exist_ok=True)
+        (ordner / "status.json").write_text(
+            json.dumps({"online": 3, "updated": time.time()}), encoding="utf-8")
+        fake = self.laufender(spieler=0)
+        self.assertEqual(mcsmd.spielerzahl(mcsmd.instances.get_instance(self.iid), fake), 3)
+        self.assertNotIn("list", fake.befehle)
+
+
+# --------------------------------------------------------------------------- Xbox-Freunde-Modus
+
+class XboxTest(Basis):
+    """Die Dienst-Seite des Xbox-Freunde-Modus: Wege, Felder, Adresse und Port.
+
+    Es wird kein Bot gestartet – geprüft wird, was der Dienst darüber sagt und womit er ihn
+    starten würde. Der Bot selbst hat eigene Selbsttests (test_xbox.py).
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token, self.uid = self.make_user()
+        self.issue_pass(self.uid)
+        self.server = self.make_server(self.token, name="Eutopia")
+        self.set_state(self.server["id"], "hosted")
+        self.iid = self.server["id"]
+        self.inst = mcsmd.instances.get_instance(self.iid)
+        self.folder = mcsmd.instance_dir(self.inst)
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def mit_crossplay(self) -> None:
+        """Geyser vortäuschen – ohne Crossplay hat der Xbox-Freunde-Modus keinen Bedrock-Port."""
+        (self.folder / "plugins").mkdir(parents=True, exist_ok=True)
+        (self.folder / "plugins" / "Geyser-Spigot.jar").write_bytes(b"kein echtes Jar")
+        geyser = self.folder / "plugins" / "Geyser-Spigot"
+        geyser.mkdir(parents=True, exist_ok=True)
+        (geyser / "config.yml").write_text(
+            "bedrock:\n  address: 0.0.0.0\n  port: 19140\n", encoding="utf-8")
+
+    # -- Adresse und Port ----------------------------------------------
+
+    def test_beworben_wird_die_oeffentliche_adresse(self):
+        """Nie 127.0.0.1: die Konsole des Freundes baut die Verbindung selbst dorthin auf."""
+        self.assertEqual(mcsmd.xbox_address(), "arcardia-nexus.de")
+        self.assertNotIn(mcsmd.xbox_address().lower(), mcsmd.xbox.LOOPBACK)
+
+    def test_adresse_ist_uebersteuerbar(self):
+        os.environ[mcsmd.XBOX_ADDRESS_ENV] = "mc.example.org"
+        try:
+            self.assertEqual(mcsmd.xbox_address(), "mc.example.org")
+        finally:
+            os.environ.pop(mcsmd.XBOX_ADDRESS_ENV, None)
+
+    def test_port_kommt_aus_der_geyser_konfiguration(self):
+        self.mit_crossplay()
+        inst = mcsmd.instances.get_instance(self.iid)
+        self.assertEqual(mcsmd.geyser_bedrock_port(self.folder), 19140)
+        self.assertEqual(mcsmd.xbox_bedrock_port(inst, self.folder), 19140)
+
+    def test_gebuchter_port_hat_vorrang(self):
+        self.mit_crossplay()
+        mcsmd.POOL.allocate_for(self.iid, "java", geyser=True, max_players=20)
+        inst = mcsmd.instances.get_instance(self.iid)
+        gebucht = mcsmd.ports_live_of(self.iid)["bedrock_port"]
+        self.assertEqual(mcsmd.xbox_bedrock_port(inst, self.folder), gebucht)
+
+    def test_spec_nennt_adresse_port_und_namen(self):
+        self.mit_crossplay()
+        (self.folder / "server.properties").write_text(
+            "motd=Eutopia Survival\nmax-players=42\n", encoding="utf-8")
+        spec = mcsmd.build_xbox_spec(mcsmd.instances.get_instance(self.iid))
+        self.assertEqual(spec.address, "arcardia-nexus.de")
+        self.assertEqual(spec.port, 19140)
+        self.assertEqual(spec.name, "Eutopia")
+        self.assertEqual(spec.motd, "Eutopia Survival")
+        self.assertEqual(spec.max_players, 42)
+        self.assertTrue(spec.query_server)
+
+    # -- Zustand -------------------------------------------------------
+
+    def test_status_hat_die_felder_des_pc_programms(self):
+        self.mit_crossplay()
+        status, data = self.call("GET", f"/api/servers/{self.iid}/xbox", token=self.token)
+        self.assertEqual(status, 200, data)
+        for feld in ("enabled", "autostart", "installed", "running", "state", "code", "url",
+                     "gamertag", "error", "address", "port", "host_name", "token_cached",
+                     "state_text", "possible"):
+            self.assertIn(feld, data)
+        self.assertFalse(data["enabled"])
+        self.assertFalse(data["running"])
+        self.assertEqual(data["address"], "arcardia-nexus.de")
+        self.assertEqual(data["port"], 19140)
+        self.assertTrue(data["possible"])
+
+    def test_status_auch_unter_dem_ausgeschriebenen_namen(self):
+        self.mit_crossplay()
+        status, data = self.call("GET", f"/api/servers/{self.iid}/xbox/status", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["address"], "arcardia-nexus.de")
+
+    def test_java_ohne_crossplay_nennt_den_grund(self):
+        status, data = self.call("GET", f"/api/servers/{self.iid}/xbox", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["possible"])
+        self.assertIn("Crossplay", data["reason"])
+        self.assertIn("Crossplay", data["state_text"])
+
+    def test_serveransicht_bringt_den_zustand_mit(self):
+        status, data = self.call("GET", f"/api/servers/{self.iid}", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertIn("xbox", data["server"])
+        self.assertFalse(data["server"]["xbox_enabled"])
+        self.assertTrue(data["server"]["xbox_autostart"])
+
+    # -- Einrichten und Schalten ---------------------------------------
+
+    def test_einrichten_ohne_crossplay_wird_abgelehnt(self):
+        status, data = self.call("POST", f"/api/servers/{self.iid}/xbox/setup", {},
+                                 token=self.token)
+        self.assertEqual(status, 409, data)
+        self.assertIn("Crossplay", data["error"])
+
+    def test_stoppen_ohne_laufenden_bot(self):
+        status, data = self.call("POST", f"/api/servers/{self.iid}/xbox/stop", {},
+                                 token=self.token)
+        self.assertEqual(status, 409, data)
+        self.assertIn("läuft", data["error"])
+
+    def test_ausschalten_setzt_die_einstellung(self):
+        mcsmd.instances.set_xbox(self.iid, enabled=True)
+        status, data = self.call("POST", f"/api/servers/{self.iid}/xbox/disable", {},
+                                 token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["server"]["xbox_enabled"])
+        self.assertFalse(mcsmd.instances.xbox_enabled(mcsmd.instances.get_instance(self.iid)))
+
+    def test_anmeldung_verwerfen_loescht_nur_den_token(self):
+        self.mit_crossplay()
+        token = mcsmd.xbox.token_path(self.folder)
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text("{}", encoding="utf-8")
+        status, data = self.call("POST", f"/api/servers/{self.iid}/xbox/reset", {},
+                                 token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertFalse(token.exists())
+        self.assertTrue((self.folder / "plugins" / "Geyser-Spigot.jar").is_file())
+
+    def test_einstellungen_schalten_den_modus(self):
+        """Die Schalter sind auch über den Einstellungen-Weg erreichbar (Reiter „Einstellungen“)."""
+        status, data = self.call("POST", f"/api/servers/{self.iid}/settings",
+                                 {"xbox_enabled": True, "xbox_autostart": False},
+                                 token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["server"]["xbox_enabled"])
+        self.assertFalse(data["server"]["xbox_autostart"])
+        status, data = self.call("POST", f"/api/servers/{self.iid}/settings",
+                                 {"xbox_enabled": "aus"}, token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["server"]["xbox_enabled"])
+        status, data = self.call("POST", f"/api/servers/{self.iid}/settings",
+                                 {"xbox_enabled": "vielleicht"}, token=self.token)
+        self.assertEqual(status, 400, data)
+
+    def test_konsole_des_bots(self):
+        status, data = self.call("GET", f"/api/servers/{self.iid}/xbox/console", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["lines"], [])
+        self.assertFalse(data["running"])
+
+    def test_fremdes_konto_kommt_nicht_heran(self):
+        """Ein anderes Konto darf den Bot weder sehen noch schalten (403, wie überall)."""
+        fremd, _ = self.make_user("Fremd")
+        for weg in ("xbox", "xbox/status", "xbox/console"):
+            status, data = self.call("GET", f"/api/servers/{self.iid}/{weg}", token=fremd)
+            self.assertEqual(status, 403, data)
+        for weg in ("xbox/setup", "xbox/start", "xbox/stop", "xbox/reset", "xbox/disable"):
+            status, data = self.call("POST", f"/api/servers/{self.iid}/{weg}", {}, token=fremd)
+            self.assertEqual(status, 403, data)
+
+
+class CrossplayChatTest(Basis):
+    """``enforce-secure-profile`` und das Serverbild – beides vor jedem Start."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token, self.uid = self.make_user()
+        self.issue_pass(self.uid)
+        self.server = self.make_server(self.token, name="Eutopia")
+        self.set_state(self.server["id"], "hosted")
+        self.folder = mcsmd.instance_dir(mcsmd.instances.get_instance(self.server["id"]))
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.props = self.folder / "server.properties"
+
+    def test_crossplay_erlaubt_bedrock_spielern_den_chat(self):
+        self.props.write_text("motd=Eutopia\nenforce-secure-profile=true\n", encoding="utf-8")
+        self.assertTrue(mcsmd.ensure_crossplay_chat(self.folder, True))
+        werte = mcsmd.read_properties(self.props)
+        self.assertEqual(werte["enforce-secure-profile"], "false")
+        self.assertEqual(werte["motd"], "Eutopia")            # nichts anderes angefasst
+        # Beim zweiten Mal wird nicht wieder geschrieben.
+        self.assertFalse(mcsmd.ensure_crossplay_chat(self.folder, True))
+
+    def test_ohne_crossplay_bleibt_die_einstellung_stehen(self):
+        self.props.write_text("enforce-secure-profile=true\n", encoding="utf-8")
+        self.assertFalse(mcsmd.ensure_crossplay_chat(self.folder, False))
+        self.assertEqual(mcsmd.read_properties(self.props)["enforce-secure-profile"], "true")
+
+    def test_serverbild_wird_gesetzt_aber_nie_ueberschrieben(self):
+        if not mcsmd.SERVER_ICON.is_file():                   # pragma: no cover
+            self.skipTest("assets/server-icon.png liegt hier nicht")
+        ziel = self.folder / "server-icon.png"
+        self.assertTrue(mcsmd.ensure_server_icon(self.folder))
+        self.assertEqual(ziel.read_bytes(), mcsmd.SERVER_ICON.read_bytes())
+        ziel.write_bytes(b"eigenes Bild des Besitzers")
+        self.assertFalse(mcsmd.ensure_server_icon(self.folder))
+        self.assertEqual(ziel.read_bytes(), b"eigenes Bild des Besitzers")
 
 
 if __name__ == "__main__":

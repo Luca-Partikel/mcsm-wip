@@ -43,6 +43,22 @@ _VERSION_RE = re.compile(r"[0-9][0-9A-Za-z.\-_]{0,31}")
 RAM_MIN_MB = 1024
 RAM_MAX_MB = passes.RAM_TOTAL_MAX_MB
 
+# Ruhezustand bei Leerstand. Steht eine gehostete Instanz `hibernation_minutes` ohne Spieler,
+# speichert der Dienst die Welt und fährt den Server herunter. Ein schlafender Server zählt
+# **nicht** als laufend: Platz und Arbeitsspeicher sind im Pass wieder frei. Beim nächsten
+# Beitritt weckt ihn der Verteiler (siehe hosted/router.py und mcsmd.py).
+HIBERNATION_DEFAULT = True
+HIBERNATION_MINUTES_DEFAULT = 15
+HIBERNATION_MINUTES_MIN = 1
+HIBERNATION_MINUTES_MAX = 1440
+
+# Xbox-Freunde-Modus (MCXboxBroadcast, siehe core/xbox.py). Ein Bot-Konto zeigt den Server allen
+# seinen Xbox-Live-Freunden als beitretbare Welt – für Konsolenspieler oft der einzige Weg auf
+# einen fremden Server. Die Einstellungen heißen wie im Programm auf dem PC (core/store.py),
+# damit die Oberfläche nichts umlernen muss.
+XBOX_ENABLED_DEFAULT = False
+XBOX_AUTOSTART_DEFAULT = True
+
 # DNS-Marke (Unterdomäne) einer Instanz: eine gültige Marke im Sinne von RFC 1035.
 MARKE_MAX = 63
 _MARKE_RE = re.compile(r"[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?")
@@ -173,6 +189,61 @@ def clean_version(raw) -> str:
     return value
 
 
+def clean_hibernation(raw) -> bool:
+    """„Ruhezustand bei Leerstand“ an oder aus."""
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return HIBERNATION_DEFAULT
+    if isinstance(raw, int):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in ("1", "ja", "an", "ein", "true", "yes", "on"):
+        return True
+    if text in ("0", "nein", "aus", "false", "no", "off"):
+        return False
+    raise ValueError("„Ruhezustand bei Leerstand“ muss „an“ oder „aus“ sein.")
+
+
+def clean_hibernation_minutes(raw) -> int:
+    """Wartezeit bis zum Ruhezustand in Minuten."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("Die Wartezeit bis zum Ruhezustand muss eine ganze Zahl "
+                         "in Minuten sein.") from None
+    if not HIBERNATION_MINUTES_MIN <= value <= HIBERNATION_MINUTES_MAX:
+        raise ValueError(f"Die Wartezeit bis zum Ruhezustand muss zwischen "
+                         f"{HIBERNATION_MINUTES_MIN} und {HIBERNATION_MINUTES_MAX} Minuten liegen.")
+    return value
+
+
+def _clean_schalter(raw, was: str, vorgabe: bool) -> bool:
+    """Ein „an/aus“-Wert aus der API. Derselbe Wortschatz wie beim Ruhezustand."""
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return vorgabe
+    if isinstance(raw, int):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in ("1", "ja", "an", "ein", "true", "yes", "on"):
+        return True
+    if text in ("0", "nein", "aus", "false", "no", "off"):
+        return False
+    raise ValueError(f"„{was}“ muss „an“ oder „aus“ sein.")
+
+
+def clean_xbox_enabled(raw) -> bool:
+    """Xbox-Freunde-Modus für diesen Server eingeschaltet?"""
+    return _clean_schalter(raw, "Xbox-Freunde-Modus", XBOX_ENABLED_DEFAULT)
+
+
+def clean_xbox_autostart(raw) -> bool:
+    """Soll der Bot zusammen mit dem Server starten und stoppen?"""
+    return _clean_schalter(raw, "Bot mit dem Server starten", XBOX_AUTOSTART_DEFAULT)
+
+
 def clean_ports(raw, server_type: str) -> dict:
     """Ports prüfen. Erlaubt sind die Schlüssel „java“ und „bedrock“ in ihren Bereichen."""
     if raw is None:
@@ -217,6 +288,68 @@ def instances_of(owner: str) -> list[dict]:
 
 def is_running(instance: dict) -> bool:
     return bool(instance.get("running")) and instance.get("state") == "hosted"
+
+
+def hibernation_enabled(instance: dict) -> bool:
+    """Darf dieser Server bei Leerstand von selbst einschlafen? (Vorgabe: ja)
+
+    Instanzen aus der Zeit vor dieser Fassung tragen das Feld nicht – für sie gilt die Vorgabe.
+    Ein unbrauchbarer Wert im Datensatz wird ebenso behandelt: lieber schlafen legen als eine
+    leere Welt Tag und Nacht laufen lassen.
+    """
+    wert = (instance or {}).get("hibernation")
+    if wert is None:
+        return HIBERNATION_DEFAULT
+    try:
+        return clean_hibernation(wert)
+    except ValueError:
+        return HIBERNATION_DEFAULT
+
+
+def hibernation_minutes(instance: dict) -> int:
+    """Wartezeit bis zum Ruhezustand in Minuten (Vorgabe 15)."""
+    try:
+        return clean_hibernation_minutes((instance or {}).get("hibernation_minutes"))
+    except ValueError:
+        return HIBERNATION_MINUTES_DEFAULT
+
+
+def xbox_enabled(instance: dict) -> bool:
+    """Ist der Xbox-Freunde-Modus für diesen Server eingeschaltet? (Vorgabe: nein)
+
+    Instanzen aus der Zeit vor dieser Fassung tragen das Feld nicht – und ein unbrauchbarer Wert
+    gilt wie „aus“: ein Bot, der ungefragt eine Sitzung bei Xbox Live ankündigt, wäre schlimmer
+    als einer, der nicht startet.
+    """
+    wert = (instance or {}).get("xbox_enabled")
+    if wert is None:
+        return XBOX_ENABLED_DEFAULT
+    try:
+        return clean_xbox_enabled(wert)
+    except ValueError:
+        return XBOX_ENABLED_DEFAULT
+
+
+def xbox_autostart(instance: dict) -> bool:
+    """Startet und stoppt der Bot mit dem Server? (Vorgabe: ja)"""
+    wert = (instance or {}).get("xbox_autostart")
+    if wert is None:
+        return XBOX_AUTOSTART_DEFAULT
+    try:
+        return clean_xbox_autostart(wert)
+    except ValueError:
+        return XBOX_AUTOSTART_DEFAULT
+
+
+def is_sleeping(instance: dict) -> bool:
+    """Schläft dieser Server gerade?
+
+    Gehostet, nicht laufend und Ruhezustand eingeschaltet. Für den Spieler sieht ein solcher
+    Server in der Serverliste normal aus; tritt er bei, weckt der Verteiler ihn.
+    """
+    return (str((instance or {}).get("state") or "") == "hosted"
+            and not bool((instance or {}).get("running"))
+            and hibernation_enabled(instance))
 
 
 def running_of(owner: str) -> list[dict]:
@@ -283,8 +416,13 @@ def create_instance(owner: str, name: str, *, server_type: str = "java", flavor:
     Premium-Instanzen entstehen direkt auf dem Root (Zustand ``hosted``), lokale Instanzen beginnen
     als ``local_only`` und werden danach hochgeladen.
 
-    Ein Port wird hier **nicht** vergeben: den holt sich der Daemon beim Start aus dem PortPool.
-    Sonst würden angelegte Server den knappen Portbereich für alle Konten blockieren.
+    Ein Port wird hier **nicht** vergeben – dieses Modul kennt den PortPool des Daemons nicht.
+    Der Daemon holt ihn in ``mcsmd.ensure_port``, und zwar für jede Instanz, die auf dem Root
+    liegt (``hosted``) oder gerade hochgeladen wird (``uploading``): nur die steht in
+    ``routes.json``, und nur sie braucht eine Adresse. Eine Instanz, die noch **nur auf dem PC**
+    liegt (``local_only``), bekommt keinen – sonst hielten die bis zu
+    ``MAX_INSTANCES_PER_USER`` angelegten, nie hochgeladenen Server eines einzigen Kontos den
+    knappen Bereich von rund 136 Java-Ports für alle Konten besetzt.
     """
     name = clean_name(name)
     server_type = clean_type(server_type)
@@ -328,6 +466,13 @@ def create_instance(owner: str, name: str, *, server_type: str = "java", flavor:
                 "started_at": 0,
                 "parked_at": 0,
                 "size_bytes": 0,
+                # Ruhezustand bei Leerstand: an, nach 15 Minuten ohne Spieler.
+                "hibernation": HIBERNATION_DEFAULT,
+                "hibernation_minutes": HIBERNATION_MINUTES_DEFAULT,
+                # Xbox-Freunde-Modus: aus, bis der Besitzer ihn einrichtet. Der Bot startet dann
+                # mit dem Server (siehe core/xbox.py).
+                "xbox_enabled": XBOX_ENABLED_DEFAULT,
+                "xbox_autostart": XBOX_AUTOSTART_DEFAULT,
                 # Die DNS-Marke (Unterdomäne) vergibt core/routes.py, sobald der Daemon die
                 # Instanz kennt. Sie bleibt danach gleich, auch wenn der Server umbenannt wird –
                 # die Spieler sollen ihre Adresse behalten.
@@ -389,6 +534,44 @@ def set_ports(instance_id: str, ports: dict, *, now: int | None = None) -> dict:
             if port in taken:
                 raise ValueError(f"Der Port {port} ist schon an einen anderen Server vergeben.")
         return _patch(instance_id, {"ports": wanted}, now=now)
+
+
+def set_hibernation(instance_id: str, *, enabled=None, minutes=None,
+                    now: int | None = None) -> dict:
+    """Ruhezustand bei Leerstand einstellen: an/aus und die Wartezeit in Minuten.
+
+    Beide Angaben sind einzeln änderbar; ``None`` lässt den bisherigen Wert stehen.
+    """
+    changes: dict = {}
+    if enabled is not None:
+        changes["hibernation"] = clean_hibernation(enabled)
+    if minutes is not None:
+        changes["hibernation_minutes"] = clean_hibernation_minutes(minutes)
+    if not changes:
+        instance = get_instance(instance_id)
+        if not instance:
+            raise ValueError(_missing(instance_id))
+        return instance
+    return _patch(instance_id, changes, now=now)
+
+
+def set_xbox(instance_id: str, *, enabled=None, autostart=None,
+             now: int | None = None) -> dict:
+    """Xbox-Freunde-Modus einstellen: an/aus und „mit dem Server starten“.
+
+    Beide Angaben sind einzeln änderbar; ``None`` lässt den bisherigen Wert stehen.
+    """
+    changes: dict = {}
+    if enabled is not None:
+        changes["xbox_enabled"] = clean_xbox_enabled(enabled)
+    if autostart is not None:
+        changes["xbox_autostart"] = clean_xbox_autostart(autostart)
+    if not changes:
+        instance = get_instance(instance_id)
+        if not instance:
+            raise ValueError(_missing(instance_id))
+        return instance
+    return _patch(instance_id, changes, now=now)
 
 
 def clean_marke(raw) -> str:
@@ -453,6 +636,10 @@ def set_state(instance_id: str, state: str, *, force: bool = False, now: int | N
             changes["parked_at"] = 0
         if state == "local_only":
             changes["size_bytes"] = 0
+            # Der feste Port gehört zur Zeit auf dem Root-Server. Ist der Server zurück auf dem
+            # PC, gibt der Datensatz ihn frei – sonst behauptete er eine Nummer, die längst ein
+            # anderer Server hat, und `routes.json` bekäme daraus eine falsche Weiterleitung.
+            changes["ports"] = {}
         return _patch(instance_id, changes, now=stamp)
 
 
@@ -514,6 +701,15 @@ def public_instance(instance: dict) -> dict:
         "state_text": state_text(instance.get("state", "local_only")),
         "origin": instance.get("origin", "local"),
         "running": is_running(instance),
+        "hibernation": hibernation_enabled(instance),
+        "hibernation_minutes": hibernation_minutes(instance),
+        # Xbox-Freunde-Modus: derselbe Name wie im Programm auf dem PC (core/store.py). Den
+        # Zustand des Bots selbst liefert `/api/servers/<id>/xbox`.
+        "xbox_enabled": xbox_enabled(instance),
+        "xbox_autostart": xbox_autostart(instance),
+        # „schläft“ ist ein eigener Zustand neben „läuft“ und „gestoppt“: gehostet, aus und
+        # Ruhezustand an. Der Daemon setzt den Wert nach dem wirklichen Prozess noch einmal neu.
+        "sleeping": is_sleeping(instance),
         "created_at": int(instance.get("created_at") or 0),
         "updated_at": int(instance.get("updated_at") or 0),
         "started_at": int(instance.get("started_at") or 0),
@@ -555,7 +751,7 @@ def check_start(instance_id: str, *, now: int | None = None,
     name = str(instance.get("name") or "Dieser Server")
     state = str(instance.get("state") or "local_only")
     if state != "hosted":
-        return StartCheck(False, "zustand", _state_reason(name, state))
+        return StartCheck(False, "zustand", state_reason(name, state))
     if instance.get("running"):
         return StartCheck(False, "laeuft_schon", f"„{name}“ läuft schon.")
 
@@ -637,8 +833,12 @@ def release_start(instance_id: str, *, now: int | None = None) -> None:
         pass                     # Datensatz inzwischen weg – dann gibt es auch nichts zurückzunehmen
 
 
-def _state_reason(name: str, state: str) -> str:
-    """Warum ein Server in diesem Zustand nicht startet."""
+def state_reason(name: str, state: str) -> str:
+    """Warum ein Server in diesem Zustand nicht startet – fertiger deutscher Satz.
+
+    Der Daemon nimmt denselben Satz für die Trennmeldung, wenn ein Beitritt einen Server wecken
+    soll, der gerade nicht auf dem Root liegt.
+    """
     return {
         "local_only": f"„{name}“ liegt nur auf deinem PC – lade ihn erst hoch, dann kann er hier laufen.",
         "uploading": f"„{name}“ wird gerade hochgeladen – bitte warten, bis die Übertragung fertig ist.",

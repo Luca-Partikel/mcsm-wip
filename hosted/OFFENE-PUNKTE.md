@@ -50,7 +50,48 @@ gemeldeten Stelle wieder auf – aber nur fünfmal, danach bleibt sie liegen. Fe
 * beim Programmstart erkennen, dass eine Übertragung offen ist, und **von selbst** weitermachen,
 * sichtbarer Fortschritt mit Geschwindigkeit und Restzeit, auch wenn man den Bereich verlässt.
 
-## 4. Schlafende Server: Wecken beim Beitritt, Ruhe bei Leerstand
+## 4. Schlafende Server: Wecken beim Beitritt, Ruhe bei Leerstand – erledigt am 26.09.
+
+**Nachgemessen am 26.09. auf dem Root**, mit eigenen Testinstanzen (Eutopia wurde nicht angefasst;
+sie lief die ganze Zeit mit zwei Spielern weiter) und mit einem eigenen Minecraft-Handshake von
+einem Rechner ausserhalb:
+
+1. Eine gehostete Instanz hat den Port und die Route **ab der Anlage**: Port 25691, Eintrag
+   `pruef-schlaefer` in `routes.json`, `started_at: 0` – ohne jeden Start.
+2. Status-Ping auf `pruef-schlaefer.arcardia-nexus.de` bei ausgeschaltetem Server:
+   `{"version":{"name":"Pruef Schlaefer"},"players":{"max":10,"online":0},`
+   `"description":{"text":"Server ist ausgeschaltet – tritt bei, um ihn zu starten"}}` –
+   keine Fehlerfarbe, die Spielerplätze kommen aus `server.properties`.
+3. Beitritt weckt: Protokoll `„Pruef Schlaefer“ (1711805b0add) wurde durch einen Beitritt geweckt
+   und gestartet.`, der Spieler bekommt „Der Server startet gerade …“. Drei Weckrufe (zwei
+   gleichzeitig, einer vier Sekunden später) ergaben **genau einen** Start.
+4. Ablehnung nennt den Grund: „Dein Pass erlaubt 1 gleichzeitig laufenden Server – es läuft bereits
+   Pruef Schlaefer.“ / „Du hast gerade keinen gültigen Pass – …“ / „Der Server ist nicht vollständig
+   installiert (server.jar fehlt).“ Ist der Dienst selbst aus, hört der Spieler „Dieser Server ist
+   ausgeschaltet und lässt sich gerade nicht wecken. Bitte später noch einmal versuchen.“ – der
+   Verteiler antwortet auf Pings trotzdem weiter.
+5. Leerstand (Wartezeit zum Prüfen auf 1 Minute gesetzt): `save-all` → „Saved the game“ → sauberer
+   Stopp, Protokoll `stand 1 Minuten ohne Spieler – die Welt wird gespeichert und der Server geht in
+   den Ruhezustand`. Danach zählt das Konto 0 laufende Server und 0 MB Arbeitsspeicher, und die
+   Startprüfung des **zweiten** Servers, die vorher am Kontingent scheiterte, sagt wieder „ok“.
+6. Schonfrist greift: Start um 01:09:21, die Leerstands-Uhr begann erst um 01:14:31 (fünf Minuten
+   später) und der Server schlief um 01:15:31 ein – trotz einer Wartezeit von einer Minute.
+
+**Dabei behoben:** `ensure_port` gab auch Instanzen im Zustand `local_only` einen Port. Die liegen
+nur auf dem PC, stehen nicht in `routes.json` – aber `MAX_INSTANCES_PER_USER` erlaubt 500 angelegte
+Server je Konto, und der Java-Bereich hat rund 136 Ports für **alle** Konten. Ein einziges Konto
+hätte den Bereich mit Servern leerräumen können, die es niemals hochlädt; danach bekäme kein
+wirklich gehosteter Server mehr eine Adresse – genau der Fehler, um den es hier geht. Der Port
+kommt jetzt nur für `hosted` und `uploading` (`mcsmd.PORT_ZUSTAENDE`). Nachgemessen: fünf angelegte
+Server mit Herkunft „local“ belegen keinen Port, ein Premium-Server bekommt ihn sofort, und
+`local_only → hosted → local_only` vergibt ihn und gibt ihn wieder zurück.
+
+**Offen dazu:** Punkt 5 der Liste unten – die Oberfläche auf dem PC muss den Schalter
+„Ruhezustand bei Leerstand“ und den Zustand „schläft“ noch anzeigen. Der Dienst liefert beides
+(`hibernation`, `hibernation_minutes`, `sleeping` in `/api/servers`).
+
+<details>
+<summary>Ursprünglicher Befund und Bauplan</summary>
 
 **Beobachtet:** `eutopia.arcardia-nexus.de` meldet „Diesen Server gibt es hier nicht". Ursache ist nicht
 der Verteiler – der kennt drei Meldungen (unbekannt / läuft nicht / voll). Die Instanz steht als
@@ -82,6 +123,8 @@ nicht erst in der Tabelle.
    Wartezeit in Minuten. Standard an, 15 Minuten. In der Übersicht ein eigener Zustand „schläft"
    neben „läuft" und „gestoppt".
 
+</details>
+
 ## 5. Eine einzige Serverliste – Cloud ist nur ein Merkmal, kein eigener Ort
 
 **Beanstandung des Betreibers (mit Bildschirmfoto):** Die Seitenleiste trennt heute „MEINE SERVER" und
@@ -100,3 +143,24 @@ nicht erst in der Tabelle.
   **Keine Serverlisten mehr** – die stehen in der Seitenleiste.
 * Der Wechsel zwischen den Orten (verschieben / zurückholen) gehört an den Server selbst, nicht in eine
   eigene Liste.
+
+
+## 6. Xbox-Freunde-Modus auf dem Root – erledigt am 26.09.
+
+**War:** Die Konsolenspieler des Betreibers kamen über den Xbox-Freunde-Modus herein. Beim Umzug
+auf den Root kam die Anmeldung mit (`xbox/cache/cache.json` lag im Instanzordner), aber es lief
+dort kein Bot – und in der mitgezogenen `xbox/config.yml` stand noch `ip: 94.114.30.114`, die
+Heimadresse des Betreibers. Seine Freunde sahen den Server also nicht mehr.
+
+**Jetzt:** `hosted/core/xbox.py` betreibt den Bot je Instanz auf dem Root, beworben werden
+`arcardia-nexus.de:19132` und der Instanzname. Nachgemessen am 26.09. auf dem Root: Der Bot
+meldet sich mit der mitgezogenen Anmeldung als `Shapzyy5977` an, die Xbox-Live-Sitzung steht, und
+er startet und stoppt mit dem Server. Der Server wurde dafür nicht neu gestartet.
+
+**Offen dazu:**
+
+* `enforce-secure-profile=false` steht jetzt in `server.properties`, wirkt aber erst beim
+  **nächsten** Start des Servers – bis dahin können Bedrock-Spieler weiter nicht im Chat
+  schreiben. Dasselbe gilt für `server-icon.png` (Paper liest es beim Start).
+* Die Oberfläche auf dem PC muss die Routen noch bedienen (Reiter „Xbox-Freunde-Modus“ für einen
+  gehosteten Server, Anmelde-Code anzeigen). Die Felder heissen wie lokal.
