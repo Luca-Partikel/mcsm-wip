@@ -437,6 +437,26 @@ def apply_config(cfg: dict, initial: bool = False) -> None:
             remove_crossplay_plugins(sdir)
         if companion.applies(cfg) and (sdir / "plugins").exists():
             companion.write_config(cfg)
+        ensure_server_icon(sdir)
+
+
+SERVER_ICON = store.BASE / "assets" / "server-icon.png"
+
+
+def ensure_server_icon(sdir: pathlib.Path) -> None:
+    """Standardbild für die Serverliste setzen, solange der Besitzer keins hinterlegt hat.
+
+    Minecraft zeigt `server-icon.png` (64x64) in der Mehrspieler-Liste. Ohne Datei bleibt dort das
+    graue Standardbild. Ein eigenes Bild des Besitzers wird nie überschrieben – nur wenn gar keins
+    da ist, legt der Manager seins hin.
+    """
+    ziel = sdir / "server-icon.png"
+    if ziel.exists() or not SERVER_ICON.is_file():
+        return
+    try:
+        shutil.copy2(SERVER_ICON, ziel)
+    except OSError as exc:
+        log.info("Serverbild konnte nicht gesetzt werden: %s", exc)
 
 
 CROSSPLAY_JARS = ("Geyser-Spigot.jar", "floodgate-spigot.jar", "ViaVersion.jar", "ViaBackwards.jar")
@@ -1443,6 +1463,7 @@ class Instance:
                 cmd = [str(java), f"-Xms{max(512, ram // 2)}M", f"-Xmx{ram}M",
                        "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
                        "-Dstdin.encoding=UTF-8", *flags, "-jar", "server.jar", "nogui"]
+                ensure_server_icon(sdir)
                 if cfg.get("geyser"):
                     # Sicherstellen, dass Bedrock-Spieler im Chat schreiben dürfen (siehe apply_config).
                     patch_properties(sdir / "server.properties", {"enforce-secure-profile": "false"})
