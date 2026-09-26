@@ -136,6 +136,9 @@ sleep:
   announce: true
   # Beim Überspringen auch Regen und Gewitter beenden
   clear_weather: true
+  # Nach einem Übersprung so lange Ruhe (Sekunden). Ohne das meldet es sich bei Gewitter
+  # im Sekundentakt erneut, weil dann jede Tageszeit zählt.
+  cooldown_seconds: 60
 
 # Begrüßung beim Beitritt. Platzhalter: <name>, <server_name>, <online>, <max>
 welcome:
