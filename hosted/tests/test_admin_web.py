@@ -18,7 +18,8 @@ SPEC = Path(__file__).resolve().parents[1] / "spec-admin.md"
 
 # Kennungen, die die Seite selbst erzeugt (Rückfragekasten, Serverfenster) – nicht im HTML.
 ERZEUGTE_IDS = {"askBack", "askNo", "askYes",
-                "srvBack", "srvZu", "srvKonsole", "srvPill"}
+                "srvBack", "srvZu", "srvKonsole", "srvPill",
+                "srvBefehl", "srvSenden"}
 # „view“ ist nur der Anfang von $('#view' + Name) und keine eigene Kennung.
 BERECHNETE_IDS = {"view"}
 # Klassen, die nur als Markierung für das Skript dienen und absichtlich kein Aussehen haben.

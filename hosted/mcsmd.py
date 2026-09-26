@@ -2520,6 +2520,55 @@ def h_router_wake(req: Req):
     return wecke_instanz(inst)
 
 
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/restart$")
+def h_server_restart(req: Req, iid: str):
+    """Neu starten: mit Ansage stoppen, auf das Ende warten, wieder hochfahren.
+
+    Läuft im Hintergrund – der Browser darf zugemacht werden, der Neustart geht trotzdem zu Ende.
+    """
+    inst = req.instance(iid)
+    data = req.json(required=False)
+    try:
+        announce = max(0, min(900, int(data.get("announce_seconds") or 0)))
+    except (TypeError, ValueError):
+        announce = 0
+    run = REGISTRY.find(iid)
+    if run is None or not run.running:
+        raise ApiError(f"„{inst.get('name')}“ läuft nicht – benutze „Starten“.", 409)
+
+    def arbeit() -> None:
+        name = str(inst.get("name") or iid)
+        try:
+            _stop_runner(run, announce)
+            # Auf das wirkliche Ende warten, sonst kollidiert der neue Start mit dem alten Port.
+            frist = time.time() + STOP_TIMEOUT + announce + 30
+            while time.time() < frist:
+                aktuell = REGISTRY.find(iid)
+                if aktuell is None or not aktuell.running:
+                    break
+                time.sleep(0.5)
+            else:
+                log_event(f"Neustart von {name} abgebrochen: der Server ist nicht rechtzeitig beendet.")
+                return
+            time.sleep(1.0)
+            frisch = instances.get_instance(iid)
+            if frisch is None:
+                return
+            ok, grund = start_instanz(frisch)
+            if ok:
+                log_event(f"{name} wurde neu gestartet.")
+            else:
+                log_event(f"Neustart von {name} gescheitert: {grund}")
+        except Exception:                                   # noqa: BLE001 – nie den Thread sprengen
+            log_event(f"Neustart von {name} gescheitert:\n" + traceback.format_exc())
+
+    threading.Thread(target=arbeit, daemon=True, name=f"restart-{iid}").start()
+    return 202, {"ok": True, "announce_seconds": announce,
+                 "message": (f"„{inst.get('name')}“ wird neu gestartet"
+                             + (f" – die Spieler bekommen {announce} Sekunden Vorwarnung." if announce
+                                else " – ohne Vorwarnung."))}
+
+
 @route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/command$")
 def h_server_command(req: Req, iid: str):
     inst = req.instance(iid)

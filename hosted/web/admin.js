@@ -1351,6 +1351,32 @@ async function startServer(id) {
   }
 }
 
+async function restartServer(id) {
+  const inst = state.instances.find((i) => i.id === id);
+  const drauf = Number((inst || {}).players_online || 0);
+  const value = await ask({
+    title: 'Server neu starten?',
+    text: `„${esc(inst ? inst.name : id)}“ wird heruntergefahren und gleich wieder hochgefahren. ${drauf > 0
+      ? '<b>' + drauf + (drauf === 1 ? ' Spieler ist' : ' Spieler sind') + ' gerade drauf</b> und bekommt'
+        + (drauf === 1 ? '' : 'en') + ' vorher einen Countdown.'
+      : 'Gerade spielt niemand.'} Die Welt wird gespeichert, danach kommt der Server von selbst zurück.`,
+    ok: 'Neu starten',
+    fields: [{ name: 'sek', label: 'Vorwarnzeit in Sekunden', type: 'number',
+               value: drauf > 0 ? 30 : 5, min: 0, max: 900, hint: '0 = sofort und ohne Ansage.' }],
+  });
+  if (value === null) return;
+  let sek = parseInt(value.sek, 10);
+  if (!Number.isFinite(sek) || sek < 0) sek = 0;
+  try {
+    const d = await api('/api/servers/' + encodeURIComponent(id) + '/restart',
+                        { method: 'POST', body: { announce_seconds: Math.min(900, sek) } });
+    toast(d.message || 'Der Server wird neu gestartet.');
+    await tick();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 async function stopServer(id) {
   const inst = state.instances.find((i) => i.id === id);
   const drauf = Number((inst || {}).players_online || 0);
@@ -1413,9 +1439,16 @@ function showServer(id) {
         </div>
         <h4 class="srv-konsole-titel">Konsole</h4>
         <div class="console" id="srvKonsole">Wird geladen …</div>
+        <div class="cmd-row">
+          <input type="text" id="srvBefehl" autocomplete="off" spellcheck="false"
+                 placeholder="${inst.running ? 'Befehl eingeben, z. B. list oder say Hallo' : 'Server läuft nicht'}"
+                 ${inst.running ? '' : 'disabled'} aria-label="Befehl an den Server">
+          <button class="btn" id="srvSenden" ${inst.running ? '' : 'disabled'}>Senden</button>
+        </div>
         <div class="btn-row">
           ${inst.state === 'hosted' && !inst.running
             ? `<button class="btn btn-primary" data-startsrv="${esc(inst.id)}">Starten</button>` : ''}
+          ${inst.running ? `<button class="btn" data-restartsrv="${esc(inst.id)}">Neu starten</button>` : ''}
           ${inst.running ? `<button class="btn btn-danger" data-stopsrv="${esc(inst.id)}">Stoppen</button>` : ''}
           <button class="btn" id="srvZu">Schließen</button>
         </div>
@@ -1439,6 +1472,28 @@ function showServer(id) {
   state.srvClose = zu;
   konsoleHolen(id);
   srvTimer = setInterval(() => konsoleHolen(id), 3000);
+  const feld = $('#srvBefehl');
+  const senden = async () => {
+    const text = String((feld || {}).value || '').trim();
+    if (!text) return;
+    feld.value = '';
+    try {
+      await api('/api/servers/' + encodeURIComponent(id) + '/command',
+                { method: 'POST', body: { command: text } });
+      setTimeout(() => konsoleHolen(id), 400);
+    } catch (e) {
+      toast(e.message, true);
+      feld.value = text;
+    }
+    feld.focus();
+  };
+  if (feld) {
+    feld.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); senden(); } };
+    $('#srvSenden').onclick = senden;
+    if (!feld.disabled) feld.focus();
+  }
+  const neu = $('[data-restartsrv]');
+  if (neu) neu.onclick = () => restartServer(id);
 }
 
 async function konsoleHolen(id) {

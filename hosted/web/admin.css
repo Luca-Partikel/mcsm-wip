@@ -495,3 +495,13 @@ input[type=checkbox] { accent-color: var(--green); width: auto; cursor: pointer;
   color: var(--amber); font-size: 12.5px; padding: 7px var(--gutter); text-align: center;
   position: relative; z-index: 6;
 }
+
+/* Befehlszeile unter der Konsole im Serverfenster */
+.cmd-row { display: flex; gap: 8px; margin: 8px 0 4px; }
+.cmd-row input {
+  flex: 1; min-width: 0; padding: 8px 11px; border-radius: 8px;
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+  font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+}
+.cmd-row input:focus { outline: none; border-color: var(--green); }
+.cmd-row input:disabled { opacity: .5; cursor: not-allowed; }
