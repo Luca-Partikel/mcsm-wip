@@ -1,8 +1,10 @@
 package de.mcsm.companion;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -32,6 +34,8 @@ public final class SleepManager implements Runnable {
     private final CompanionPlugin plugin;
     /** Welten, deren Nacht gerade übersprungen wird (kein zweiter Anlauf, kein Vanilla-Sprung). */
     private final Set<UUID> skipping = new HashSet<>();
+    /** Wann zuletzt übersprungen wurde – sonst löst es bei Gewitter sofort wieder aus. */
+    private final Map<UUID, Long> zuletzt = new HashMap<>();
 
     public SleepManager(CompanionPlugin plugin) {
         this.plugin = plugin;
@@ -68,6 +72,13 @@ public final class SleepManager implements Runnable {
 
     private void evaluate(World world) {
         if (skipping.contains(world.getUID())) {
+            return;
+        }
+        // Nach einem Übersprung eine Weile Ruhe geben. Ohne das meldet sich das System im
+        // Sekundentakt erneut: bei Gewitter zählt jede Tageszeit, und ein Spieler, der liegen
+        // bleibt (bei Bedrock über Geyser der Normalfall), löst sofort den nächsten aus.
+        Long letzte = zuletzt.get(world.getUID());
+        if (letzte != null && System.currentTimeMillis() - letzte < sperrzeitMillis()) {
             return;
         }
         boolean night = isNight(world);
@@ -139,6 +150,7 @@ public final class SleepManager implements Runnable {
     /** Startet den weichen Übergang und meldet, wer die Nacht übersprungen hat. */
     private void skip(World world, List<Player> sleeping) {
         skipping.add(world.getUID());
+        zuletzt.put(world.getUID(), System.currentTimeMillis());
         YamlConfiguration y = plugin.settings().raw();
         if (y.getBoolean("sleep.announce", true)) {
             StringBuilder names = new StringBuilder();
@@ -150,10 +162,8 @@ public final class SleepManager implements Runnable {
             }
             // Mehrere Schläfer brauchen den Plural, sonst steht da "Steve, Alex überspringt".
             String verb = sleeping.size() > 1 ? "überspringen" : "überspringt";
-            Bukkit.broadcast(Msg.prefixed("<gray>Gute Nacht! <white><who></white> <gray><verb> die Nacht in</gray>"
-                            + " <white><world></white><gray>.</gray></gray>",
-                    Msg.text("who", names.toString()), Msg.text("verb", verb),
-                    Msg.text("world", world.getName())));
+            Bukkit.broadcast(Msg.prefixed("<gray>Gute Nacht! <white><who></white> <gray><verb> die Nacht.</gray></gray>",
+                    Msg.text("who", names.toString()), Msg.text("verb", verb)));
         }
         final long from = world.getFullTime();
         final long target = ((from / 24000L) + 1L) * 24000L;
@@ -193,9 +203,16 @@ public final class SleepManager implements Runnable {
         }.runTaskTimer(plugin, STEP_TICKS, STEP_TICKS);
     }
 
+    /** Wie lange nach einem Übersprung Ruhe ist (Sekunden, 5 bis 600). */
+    private long sperrzeitMillis() {
+        int v = plugin.settings().raw().getInt("sleep.cooldown_seconds", 60);
+        return Math.max(5, Math.min(600, v)) * 1000L;
+    }
+
     /** Hängen gebliebene Übergänge beim Abschalten vergessen. */
     public void shutdown() {
         skipping.clear();
+        zuletzt.clear();
     }
 
     private static boolean isNight(World world) {
