@@ -164,3 +164,50 @@ er startet und stoppt mit dem Server. Der Server wurde dafür nicht neu gestarte
   schreiben. Dasselbe gilt für `server-icon.png` (Paper liest es beim Start).
 * Die Oberfläche auf dem PC muss die Routen noch bedienen (Reiter „Xbox-Freunde-Modus“ für einen
   gehosteten Server, Anmelde-Code anzeigen). Die Felder heissen wie lokal.
+
+## 7. Weltensicherungen für Pass-Inhaber (Wunsch vom 28.09.)
+
+**Soll:** Wer einen Pass hat, kann seine gehosteten Welten jederzeit sichern – und zwar so, dass die
+Sicherung **auf seinem eigenen PC** liegt, nicht nur auf dem Root.
+
+1. **Jederzeit sichern.** Knopf am Server: Der Root packt die Welten (nur die Welten, nicht Jar,
+   Bibliotheken oder Zwischenspeicher), das Programm lädt sie herunter und legt sie unter dem
+   Programmordner in `backups/<servername>/` ab. Dateiname mit Datum und Uhrzeit.
+   Fortschritt im vorhandenen Auftragsfenster, Wiederaufnahme wie bei jeder Übertragung.
+2. **Wiederherstellen per Auswahl.** Liste der vorhandenen Sicherungen mit Datum und Größe;
+   eine auswählen, hochladen, Welt ersetzen.
+   **Zwingend vorher:** eine eigene Sicherung des jetzigen Standes anlegen, **eigens benannt**
+   (z. B. `vor-wiederherstellung_<datum>_<uhrzeit>`), damit ein Fehlgriff nie den aktuellen Stand
+   kostet. Erst wenn die durch ist, wird ersetzt.
+   Der Server muss dafür gestoppt sein – läuft er, vorher mit Ansage stoppen und danach wieder starten.
+3. **Täglich automatisch.** Ist das Programm offen, prüft es einmal am Tag, ob für jeden gehosteten
+   Server des Benutzers heute schon gesichert wurde – wenn nicht, legt es **eine** Sicherung an.
+   Ohne Nachfrage, im Hintergrund, sichtbar im Auftragsfenster. Abschaltbar je Server.
+   Alte Sicherungen aufräumen (Vorschlag: die letzten 7 täglichen behalten, von Hand angelegte nie
+   löschen), damit die Platte des Benutzers nicht vollläuft.
+
+Gilt sinngemäß auch für lokale Server – dort gibt es die Sicherung schon (`backup_worlds`), sie
+muss nur denselben Weg und dieselbe Oberfläche bekommen.
+
+## 8. Ping-Anzeige eines schlafenden Servers (Wunsch vom 28.09.)
+
+Die Serverliste zeigt für einen schlafenden Server heute das graue Standardbild und eine einzige
+graue Zeile. Soll:
+
+* **Serverbild mitschicken** – der Verteiler liest `server-icon.png` der Instanz und hängt es als
+  `favicon` (`data:image/png;base64,…`, 64×64) an die Statusantwort.
+* **Zwei Zeilen wie im Spiel:** Zeile 1 `✦ MCSM ¦ <Servername>` in der Handschrift des Plugins,
+  Zeile 2 „Tritt bei, um den Server zu starten" – **nicht grau**, sondern in einer kräftigen Farbe
+  (Vorschlag: Grün wie die Marke, bei Ablehnungen Rot).
+
+## 9. Farbe des Servernamens einstellbar (Wunsch vom 28.09.)
+
+Der Servername taucht an vielen Stellen auf: MOTD, Tablist-Kopfzeile, Seitenleiste, Trennbildschirm,
+`/status`, Begrüßung. Soll: **eine** Einstellung im Programm für Farbe oder Farbverlauf des Namens,
+die überall gleich wirkt.
+
+* Im Programm eine Auswahl fertiger Anstriche (Grün-Verlauf wie bisher, Blau, Violett, Gold, Rot,
+  schlichtes Weiß) plus ein freies Feld für eigene MiniMessage-Angaben, mit Vorschau.
+* Der Manager schreibt daraus einen verwalteten Schlüssel in die Plugin-Konfiguration
+  (z. B. `server_name_format` mit `<server_name>` als Platzhalter, Standard der heutige Verlauf).
+* Das Plugin benutzt an **allen** Anzeigestellen denselben Helfer, damit nichts mehr abweicht.
