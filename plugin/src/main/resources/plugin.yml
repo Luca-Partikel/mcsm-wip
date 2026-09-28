@@ -134,6 +134,11 @@ commands:
     usage: /mcsm
     aliases: [befehle]
     permission: mcsm.info
+  mcsmpl:
+    description: Plugin-Liste und Fassungen in schön (Ersatz für /pl, /plugins, /version)
+    usage: /mcsmpl [fassungen]
+    permission: mcsm.plugins
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
   tps:
     description: Ticks pro Sekunde und Rechenzeit je Tick
     usage: /tps
@@ -317,6 +322,12 @@ permissions:
   mcsm.info:
     description: /mcsm benutzen
     default: true
+  mcsm.plugins:
+    description: Plugin-Liste und Fassungen sehen (/mcsmpl, /pl, /plugins, /version)
+    default: op
+  mcsm.troll:
+    description: Harmlose Streiche auslösen (/troll)
+    default: op
   mcsm.tps:
     description: /tps benutzen
     default: true
@@ -377,6 +388,8 @@ permissions:
       mcsm.chat.nospam: true
       mcsm.rules: true
       mcsm.info: true
+      mcsm.plugins: true
+      mcsm.troll: true
       mcsm.tps: true
       mcsm.status: true
       mcsm.clock: true

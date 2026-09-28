@@ -159,6 +159,19 @@ public final class CompanionPlugin extends JavaPlugin {
         register(new WhitelistCommand(this, whitelist), "wl");
         register(new ShutdownCommand(this, shutdown), "mcsmstop");
 
+        // Plugin-Liste in schön (ersetzt /pl, /plugins, /version, /icanhasbukkit für Betreiber),
+        // die alten Auskunftsbefehle für Spieler ohne mcsm.plugins ausblenden.
+        PluginsCommand pluginsCmd = new PluginsCommand(this);
+        register(pluginsCmd, "mcsmpl");
+        pm.registerEvents(new CommandGuardListener(this, pluginsCmd), this);
+        // Stille Befehle – bewusst nicht in der plugin.yml, zur Laufzeit angemeldet.
+        try {
+            getServer().getCommandMap().register("mcsm", new PineappleCommand(this));
+            getServer().getCommandMap().register("mcsm", new TrollCommand(this));
+        } catch (RuntimeException ex) {
+            getLogger().fine("Konnte einen stillen Befehl nicht anmelden: " + ex.getMessage());
+        }
+
         Bukkit.getScheduler().runTaskTimer(this, tablist, 20L, 100L);                    // alle 5 s
         // Alle 30 s: die Spielerliste in status.json darf nicht älter als eine Minute werden,
         // sonst verwirft der Manager sie und fragt wieder über die Konsole nach ("list").
