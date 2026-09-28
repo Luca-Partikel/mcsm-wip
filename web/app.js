@@ -1863,28 +1863,30 @@ const BK_ICON = { manuell: '🗜️', taeglich: '🕒', vorher: '🛟' };
 function tabBackups(s) {
   const hosted = isHostedServer(s);
   return `
-  <section class="card">
-    <div class="card-head"><h3>🗜️ Weltensicherungen</h3>
-      <span class="muted small" id="bkWhere"></span></div>
-    <p class="mb0">Gesichert werden nur die <b>Welten</b> – nicht die Server-Software, nicht die
-      Plugins. Jede Sicherung landet als ZIP-Datei <b>auf diesem PC</b> im Programmordner unter
-      <code>backups\\&lt;Servername&gt;</code>.${hosted ? ' Die Welten holt das Programm dafür vom '
-      + 'Root-Server herunter – so liegt deine Sicherung auch dann hier, wenn der Server dort läuft.' : ''}</p>
-    <div class="btn-row bk-actions">
-      <button class="btn btn-primary" id="bkNow">🗜️ Jetzt sichern</button>
-      <button class="btn" id="bkOpen">📁 Ordner öffnen</button>
-      <button class="btn btn-sm" id="bkReload" title="Liste neu laden">⟳</button>
-    </div>
-    <label class="switch bk-daily"><input type="checkbox" id="bkDaily">
-      <span><span class="bk-daily-t">Einmal am Tag von selbst sichern</span>
-        <span class="bk-daily-d" id="bkDailyHint">solange das Programm läuft</span></span></label>
-    <div id="bkJob"></div>
-  </section>
-  <section class="card">
-    <div class="card-head"><h3>Vorhandene Sicherungen</h3>
-      <span class="muted small" id="bkCount"></span></div>
-    <div id="bkList"><div class="muted small">Wird geladen …</div></div>
-  </section>`;
+  <div class="bk-tab">
+    <section class="card bk-card">
+      <div class="card-head"><h3>🗜️ Weltensicherungen</h3>
+        <span class="muted small" id="bkWhere"></span></div>
+      <p class="bk-intro">Gesichert werden nur die <b>Welten</b> – nicht die Server-Software, nicht die
+        Plugins. Jede Sicherung landet als ZIP-Datei <b>auf diesem PC</b> im Programmordner unter
+        <code>backups\\&lt;Servername&gt;</code>.${hosted ? ' Die Welten holt das Programm dafür vom '
+        + 'Root-Server herunter – so liegt deine Sicherung auch dann hier, wenn der Server dort läuft.' : ''}</p>
+      <div class="btn-row bk-actions">
+        <button class="btn btn-primary" id="bkNow">🗜️ Jetzt sichern</button>
+        <button class="btn" id="bkOpen">📁 Ordner öffnen</button>
+        <button class="btn btn-sm" id="bkReload" title="Liste neu laden">⟳</button>
+      </div>
+      <label class="switch bk-daily"><input type="checkbox" id="bkDaily">
+        <span><span class="bk-daily-t">Einmal am Tag von selbst sichern</span>
+          <span class="bk-daily-d" id="bkDailyHint">solange das Programm läuft</span></span></label>
+      <div id="bkJob"></div>
+    </section>
+    <section class="card bk-card">
+      <div class="card-head"><h3>Vorhandene Sicherungen</h3>
+        <span class="muted small" id="bkCount"></span></div>
+      <div id="bkList"><div class="muted small">Wird geladen …</div></div>
+    </section>
+  </div>`;
 }
 
 function backupRows(s, d) {
