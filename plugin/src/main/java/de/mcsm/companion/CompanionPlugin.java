@@ -152,6 +152,7 @@ public final class CompanionPlugin extends JavaPlugin {
         register(new McsmCommand(this, metrics), "mcsm");
         register(new SidebarCommand(this, sidebar), "sb");
         register(new ClockCommand(clock), "uhr");
+        register(new StatusCommand(this, metrics), "tps", "status");
         register(new BanCommands(this, bans), "ban", "tempban", "unban", "banlist", "kick");
         register(new MuteCommands(this, bans), "mute", "tempmute", "unmute", "mutelist");
         register(new WarnCommands(this, bans), "warn", "warns");

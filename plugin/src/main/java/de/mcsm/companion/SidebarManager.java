@@ -36,8 +36,16 @@ public final class SidebarManager implements Runnable {
 
     public static final String DEFAULT_TITLE =
             "<gray>✦</gray> <gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient> <gray>✦</gray>";
-    /** Dünne Trennlinie in der Breite der Leiste. */
-    private static final String TRENNER = "<dark_gray><strikethrough>              </strikethrough></dark_gray>";
+    /**
+     * Durchgehende Trennlinie. Ein durchgestrichener Block aus Leerzeichen ergibt im Spiel einen
+     * ununterbrochenen Strich. Die Breite bestimmt zugleich die Breite der ganzen Leiste – sie ist
+     * deshalb bewusst die längste Zeile, damit nichts gequetscht wirkt und alles links bündig steht.
+     */
+    /** Leerzeile zwischen zwei Bloecken – gibt der Leiste Luft. */
+    private static final String LEER = " ";
+
+    private static final String TRENNER =
+            "<dark_gray><strikethrough>                       </strikethrough></dark_gray>";
     private static final String OBJECTIVE = "mcsm_sidebar";
     /** Unsichtbare, eindeutige Kennungen der Zeilen (reine Farbcodes). */
     private static final String[] SLOTS = new String[16];
@@ -191,28 +199,37 @@ public final class SidebarManager implements Runnable {
         // nicht wie eine Liste aus Schlüssel und Wert.
         List<String> out = new ArrayList<>();
         out.add(TRENNER);
-        out.add(" <green>❖</green> <gray>Position</gray>");
+        out.add(kopf("Position"));
         out.add(achse("X", loc.getBlockX()));
         out.add(achse("Y", loc.getBlockY()));
         out.add(achse("Z", loc.getBlockZ()));
-        out.add("");
-        out.add(" <green>❖</green> <gray>Zeit</gray>");
-        out.add("  <white>" + clock(world.getTime()) + "</white> " + wetter(world)
-                + bereich(world));
-        out.add("");
-        out.add(" <green>❖</green> <gray>Server</gray>");
-        out.add("  <white>" + plugin.vanish().visibleOnline() + "</white><dark_gray>/</dark_gray><gray>"
-                + Bukkit.getMaxPlayers() + "</gray> <dark_gray>online</dark_gray> <dark_gray>·</dark_gray> "
-                + metrics.tpsColored() + " <dark_gray>TPS</dark_gray>");
-        out.add("  <white>" + playtime(player) + "</white> <dark_gray>gespielt</dark_gray>");
+        out.add(LEER);
+        out.add(kopf("Zeit"));
+        out.add(wert(clock(world.getTime()) + "</white> " + wetter(world) + bereich(world)));
+        out.add(LEER);
+        out.add(kopf("Server"));
+        out.add(wert(plugin.vanish().visibleOnline() + "</white><dark_gray>/</dark_gray><gray>"
+                + Bukkit.getMaxPlayers() + "</gray> <dark_gray>online</dark_gray>"));
+        out.add(wert(metrics.tpsColored() + " <dark_gray>TPS</dark_gray>").replace("<white></white> ", ""));
+        out.add(wert(playtime(player) + "</white> <dark_gray>gespielt</dark_gray>"));
         out.add(TRENNER);
-        out.add("<dark_gray>" + plugin.settings().sponsorText + "</dark_gray>");
+        out.add(" <dark_gray>" + plugin.settings().sponsorText + "</dark_gray>");
         return out;
     }
 
-    /** Eine Achse der Position: Buchstabe grün, Zahl weiß, dazwischen Luft. */
-    private static String achse(String name, int wert) {
-        return "  <green>" + name + "</green>  <white>" + wert + "</white>";
+    /** Überschrift eines Blocks – eine Stufe eingerückt. */
+    private static String kopf(String text) {
+        return " <green>❖</green> <gray>" + text + "</gray>";
+    }
+
+    /** Wertzeile – zwei Stufen eingerückt, damit die Blöcke ruhig untereinander stehen. */
+    private static String wert(String inhalt) {
+        return "   <white>" + inhalt;
+    }
+
+    /** Eine Achse der Position: Buchstabe grün, Zahl weiß, feste Spalte für die Zahl. */
+    private static String achse(String name, int zahl) {
+        return "   <green>" + name + "</green>  <white>" + zahl + "</white>";
     }
 
     /**

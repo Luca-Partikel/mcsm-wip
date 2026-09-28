@@ -134,6 +134,17 @@ commands:
     usage: /mcsm
     aliases: [befehle]
     permission: mcsm.info
+  tps:
+    description: Ticks pro Sekunde und Rechenzeit je Tick
+    usage: /tps
+    aliases: [lag]
+    permission: mcsm.tps
+  status:
+    description: Ausfuehrlicher Zustand des Servers (Leistung, Speicher, Platte, Fassungen)
+    usage: /status
+    aliases: [serverinfo, zustand]
+    permission: mcsm.status
+    permission-message: "§7[§aMCSM§7] §cDazu hast du keine Berechtigung."
   uhr:
     description: Uhrzeit in der Actionbar an- oder ausschalten
     usage: /uhr [an|aus]
@@ -306,6 +317,12 @@ permissions:
   mcsm.info:
     description: /mcsm benutzen
     default: true
+  mcsm.tps:
+    description: /tps benutzen
+    default: true
+  mcsm.status:
+    description: /status benutzen (zeigt Speicher, Prozessor und Platte der Maschine)
+    default: op
   mcsm.clock:
     description: /uhr benutzen
     default: true
@@ -360,6 +377,8 @@ permissions:
       mcsm.chat.nospam: true
       mcsm.rules: true
       mcsm.info: true
+      mcsm.tps: true
+      mcsm.status: true
       mcsm.clock: true
       mcsm.sidebar: true
       mcsm.chat.color: true
