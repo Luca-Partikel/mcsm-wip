@@ -70,7 +70,7 @@ public final class PluginsCommand implements TabExecutor {
         Msg.send(to, "<gray>Plugins auf</gray> <white><server></white> <dark_gray>·</dark_gray> "
                         + "<green><aktiv></green><dark_gray>/</dark_gray><gray><gesamt></gray>"
                         + " <dark_gray>aktiv</dark_gray>",
-                Msg.text("server", plugin.settings().serverName),
+                Msg.serverName("server", plugin.settings()),
                 Msg.number("aktiv", aktiv.size()),
                 Msg.number("gesamt", alle.size()));
 
@@ -92,7 +92,7 @@ public final class PluginsCommand implements TabExecutor {
     /** Kurze Fassungsübersicht – der Ersatz für /version und /icanhasbukkit. */
     public void fassungen(CommandSender to) {
         Msg.send(to, "<gray>Fassungen von</gray> <white><server></white>",
-                Msg.text("server", plugin.settings().serverName));
+                Msg.serverName("server", plugin.settings()));
         Msg.line(to, "<green>❖</green> <gray>Server</gray>");
         Msg.line(to, "  <gray>Minecraft</gray> <white><mc></white>"
                         + " <dark_gray>·</dark_gray> <gray>Plugins</gray> <white><anzahl></white>"

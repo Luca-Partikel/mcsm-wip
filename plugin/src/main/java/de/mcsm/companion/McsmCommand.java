@@ -91,7 +91,7 @@ public final class McsmCommand implements TabExecutor {
         sender.sendMessage(Msg.prefixed("<green><bold><server></bold></green> <dark_gray>|</dark_gray> "
                         + "<gray>Minecraft <white><mc></white>, <white><online></white>/<white><max></white> online, "
                         + "TPS </gray>" + metrics.tpsColored() + "<gray>, läuft seit <white><up></white></gray>",
-                Msg.text("server", cfg.serverName),
+                Msg.serverName("server", cfg),
                 Msg.text("mc", Bukkit.getMinecraftVersion()),
                 Msg.number("online", plugin.vanish().visibleOnline()),
                 Msg.number("max", Bukkit.getMaxPlayers()),

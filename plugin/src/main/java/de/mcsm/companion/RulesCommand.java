@@ -37,7 +37,7 @@ public final class RulesCommand implements TabExecutor {
         }
         sender.sendMessage(Msg.mm("<dark_gray>――――――――――――――――――</dark_gray>"));
         sender.sendMessage(Msg.prefixed("<green><bold>Regeln auf <server></bold></green>",
-                Msg.text("server", plugin.settings().serverName)));
+                Msg.serverName("server", plugin.settings())));
         int i = 0;
         for (String rule : rules) {
             i++;

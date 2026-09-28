@@ -259,7 +259,7 @@ public final class ShutdownService {
                 Msg.text("sekunden", human(seconds)),
                 Msg.number("zahl", seconds),
                 Msg.text("grund", reason),
-                Msg.text("server_name", plugin.settings().serverName));
+                Msg.serverName("server_name", plugin.settings()));
     }
 
     /** "1:30 Minuten", "45 Sekunden" – kurze deutsche Zeitangabe. */

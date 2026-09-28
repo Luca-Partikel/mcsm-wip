@@ -109,9 +109,9 @@ public final class TrollCommand extends Command {
                 getan = "Übelkeit";
             }
             case "guardian", "jumpscare" -> {
-                // Der Elder-Guardian-Fluch: derselbe Ton wie in Ozeanmonumenten, dazu die
-                // Abbaumüdigkeit – zusammen der „Tempel-Schreck“.
-                ziel.playSound(ort, Sound.ENTITY_ELDER_GUARDIAN_CURSE, 1.0f, 1.0f);
+                // Der grafische Elder-Guardian-Schreck: das geisterhafte Wächtergesicht legt sich
+                // über den Bildschirm (mit dem Fluch-Ton), dazu die Abbaumüdigkeit – wie im Tempel.
+                ziel.showElderGuardian();
                 ziel.addPotionEffect(new PotionEffect(PotionEffectType.MINING_FATIGUE, 10 * 20, 2, false, false));
                 getan = "Wächter-Schreck";
             }

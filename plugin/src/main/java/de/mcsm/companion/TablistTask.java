@@ -22,7 +22,7 @@ public final class TablistTask implements Runnable {
             return;
         }
         TagResolver tags = TagResolver.resolver(
-                Msg.text("server_name", cfg.serverName),
+                Msg.serverName("server_name", cfg),
                 Msg.number("online", plugin.vanish().visibleOnline()),
                 Msg.number("max", Bukkit.getMaxPlayers()),
                 Placeholder.parsed("sponsor", cfg.sponsorText),

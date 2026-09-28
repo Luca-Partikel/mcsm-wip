@@ -25,7 +25,7 @@ public final class PingListener implements Listener {
         if (cfg.motdEigen) {
             String zweite = cfg.motdLine.isBlank() ? "" : "\n" + cfg.motdLine;
             event.motd(Msg.mm(Msg.MOTD_KOPF + zweite,
-                              Msg.text("server_name", cfg.serverName)));
+                              Msg.serverName("server_name", cfg)));
         }
         int hidden = 0;
         for (Player v : plugin.vanish().vanishedPlayers()) {

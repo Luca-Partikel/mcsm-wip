@@ -58,7 +58,7 @@ public final class AutoBroadcastTask implements Runnable {
         String text = messages.get(Math.floorMod(next, messages.size()));
         next = Math.floorMod(next + 1, messages.size());
         TagResolver tags = TagResolver.resolver(
-                Msg.text("server_name", plugin.settings().serverName),
+                Msg.serverName("server_name", plugin.settings()),
                 Msg.number("online", plugin.vanish().visibleOnline()),
                 Msg.number("max", Bukkit.getMaxPlayers()));
         Bukkit.broadcast(Msg.prefixed(text, tags));

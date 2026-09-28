@@ -326,7 +326,7 @@ public final class WhitelistService {
     }
 
     private TagResolver serverTag() {
-        return Msg.text("server_name", plugin.settings().serverName);
+        return Msg.serverName("server_name", plugin.settings());
     }
 
     /** Mehrzeiligen Text aus einer Liste bauen; leere Liste = mitgelieferter Standard. */

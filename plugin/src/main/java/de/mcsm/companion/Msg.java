@@ -62,4 +62,29 @@ public final class Msg {
     public static TagResolver number(String key, long value) {
         return Placeholder.unparsed(key, Long.toString(value));
     }
+
+    /** Der Servername als fertiger Baustein in der im Programm gewählten Farbe bzw. dem Verlauf. */
+    public static Component serverNameComponent(Config cfg) {
+        String name = cfg.serverName == null ? "" : cfg.serverName;
+        if (!cfg.nameGefaerbt()) {
+            return Component.text(name);
+        }
+        String safe = MM.escapeTags(name);
+        String snip = (cfg.nameColor2 != null && !cfg.nameColor2.isBlank())
+                ? "<gradient:" + cfg.nameColor + ":" + cfg.nameColor2 + ">" + safe + "</gradient>"
+                : "<color:" + cfg.nameColor + ">" + safe + "</color>";
+        return mm(snip);
+    }
+
+    /**
+     * Platzhalter für den Servernamen. Ist im Programm eine Farbe gesetzt, kommt der Name als
+     * fertig gefärbter Baustein – seine Farbe schlägt die der Vorlage, damit er überall gleich
+     * aussieht. Ohne eigene Farbe bleibt es schlichter Text, sodass die jeweilige Vorlage
+     * (etwa der Tablist-Verlauf) weiter greift.
+     */
+    public static TagResolver serverName(String key, Config cfg) {
+        return cfg.nameGefaerbt()
+                ? Placeholder.component(key, serverNameComponent(cfg))
+                : Placeholder.unparsed(key, cfg.serverName == null ? "" : cfg.serverName);
+    }
 }

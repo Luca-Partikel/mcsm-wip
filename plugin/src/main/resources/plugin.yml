@@ -1,5 +1,5 @@
 name: MCSMCompanion
-version: 1.0.0
+version: 2.0.0
 main: de.mcsm.companion.CompanionPlugin
 api-version: "1.21"
 description: Begleit-Plugin des Minecraft Server Managers (Chat, Join/Leave, Tod, Tablist, TPA, Teleport, Homes, Warps, Sozial, Statistik, Hardcore, Moderation, Freigabeliste, Admin)

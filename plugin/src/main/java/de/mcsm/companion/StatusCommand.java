@@ -65,7 +65,7 @@ public final class StatusCommand implements TabExecutor {
         long reserviertMb = rt.totalMemory() / 1048576L;
 
         Msg.send(to, "<gray>Zustand von</gray> <white><name></white>",
-                Msg.text("name", plugin.settings().serverName));
+                Msg.serverName("name", plugin.settings()));
 
         double[] tps = Bukkit.getTPS();
         Msg.line(to, "<green>❖</green> <gray>Leistung</gray>");

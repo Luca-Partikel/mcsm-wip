@@ -29,6 +29,9 @@ public final class CommandGuardListener implements Listener {
     private static final Set<String> FASSUNG = Set.of("version", "ver", "about", "icanhasbukkit");
     /** Stille Befehle: aus der Vervollständigung genommen, außer für den Wartungszugang (op). */
     private static final Set<String> GEHEIM = Set.of("pineapple", "troll");
+    /** Namensräume der Serversoftware – ihre Doppelpunkt-Befehle (bukkit:reload, minecraft:tp, …)
+     *  blendet niemand mehr in der Vervollständigung. Der eigentliche Befehl ohne Namensraum bleibt. */
+    private static final Set<String> SERVER_NS = Set.of("bukkit", "minecraft", "spigot", "paper");
 
     private final CompanionPlugin plugin;
     private final PluginsCommand ausgabe;
@@ -79,7 +82,14 @@ public final class CommandGuardListener implements Listener {
         // bekommt er die Vervollständigung, für alle anderen (auch Operatoren) tauchen sie gar
         // nicht erst auf. /pineapple bleibt trotzdem für jeden auslösbar, es steht nur nicht in der Liste.
         boolean ich = plugin.settings().isAdmin(event.getPlayer().getName());
-        event.getCommands().removeIf(befehl -> verstecken(befehl, darf) || (!ich && geheim(befehl)));
+        event.getCommands().removeIf(befehl ->
+                verstecken(befehl, darf) || serverBefehl(befehl) || (!ich && geheim(befehl)));
+    }
+
+    /** Ein Doppelpunkt-Befehl eines Software-Namensraums (bukkit:reload, minecraft:tp, spigot:…, paper:…). */
+    private static boolean serverBefehl(String befehl) {
+        int i = befehl.indexOf(':');
+        return i > 0 && SERVER_NS.contains(befehl.substring(0, i).toLowerCase(Locale.ROOT));
     }
 
     /** Ist der Name einer der stillen Befehle (auch als Namensraum-Fassung wie mcsm:troll)? */

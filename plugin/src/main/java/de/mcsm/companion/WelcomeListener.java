@@ -64,7 +64,7 @@ public final class WelcomeListener implements Listener {
         Config cfg = plugin.settings();
         TagResolver tags = TagResolver.resolver(
                 Msg.name("name", p),
-                Msg.text("server_name", cfg.serverName),
+                Msg.serverName("server_name", cfg),
                 Msg.number("online", plugin.vanish().visibleOnline()),
                 Msg.number("max", Bukkit.getMaxPlayers()));
         Component title = Msg.mm(str(y, "welcome.title", DEFAULT_TITLE), tags);

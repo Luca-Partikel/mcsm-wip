@@ -58,6 +58,10 @@ public final class Config {
     public String motdLine = "";
     /** Setzt das Plugin die Serverlisten-Anzeige selbst? (Zeile 1 fest, Zeile 2 = motd_line) */
     public boolean motdEigen = true;
+    /** Farbe des Servernamens (Hex, z. B. #3ddc84) – leer = keine eigene Farbe. Im Programm setzbar. */
+    public String nameColor = "";
+    /** Zweite Farbe für einen Farbverlauf des Servernamens (Hex) – leer = einfarbig. */
+    public String nameColor2 = "";
     public int maxHomes = 3;
     /** MCSM-Hardcore-Modus laut Manager (Laufzeitzustand siehe HardcoreManager/hardcore.yml). */
     public boolean hardcore = false;
@@ -122,6 +126,8 @@ public final class Config {
         }
         motdLine = str(y, "motd_line", "");
         motdEigen = y.getBoolean("motd_eigen", true);
+        nameColor = farbe(y.getString("name_color", ""));
+        nameColor2 = farbe(y.getString("name_color2", ""));
         maxHomes = Math.max(0, y.getInt("max_homes", 3));
         hardcore = y.getBoolean("hardcore", false);
         adminVanishGamemode = parseGameMode(y.getString("admin.vanish_gamemode"), GameMode.CREATIVE);
@@ -156,6 +162,20 @@ public final class Config {
     private static String str(YamlConfiguration y, String key, String def) {
         String v = y.getString(key, def);
         return v == null ? def : v;
+    }
+
+    /** Prüft eine Hex-Farbe (#RGB oder #RRGGBB); alles andere wird zu leer (keine eigene Farbe). */
+    private static String farbe(String v) {
+        if (v == null) {
+            return "";
+        }
+        String s = v.trim();
+        return s.matches("#[0-9a-fA-F]{6}") || s.matches("#[0-9a-fA-F]{3}") ? s : "";
+    }
+
+    /** Hat der Servername im Programm eine eigene Farbe bekommen? */
+    public boolean nameGefaerbt() {
+        return nameColor != null && !nameColor.isBlank();
     }
 
     /** Akzeptiert 0-3, Kurzformen und die englischen/deutschen Namen. */
