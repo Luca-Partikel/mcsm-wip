@@ -1792,14 +1792,14 @@ function tabBackups(s) {
       Plugins. Jede Sicherung landet als ZIP-Datei <b>auf diesem PC</b> im Programmordner unter
       <code>backups\\&lt;Servername&gt;</code>.${hosted ? ' Die Welten holt das Programm dafür vom '
       + 'Root-Server herunter – so liegt deine Sicherung auch dann hier, wenn der Server dort läuft.' : ''}</p>
-    <div class="btn-row">
+    <div class="btn-row bk-actions">
       <button class="btn btn-primary" id="bkNow">🗜️ Jetzt sichern</button>
       <button class="btn" id="bkOpen">📁 Ordner öffnen</button>
       <button class="btn btn-sm" id="bkReload" title="Liste neu laden">⟳</button>
     </div>
-    <label class="switch" style="margin-top:12px"><input type="checkbox" id="bkDaily">
-      Einmal am Tag von selbst sichern, solange das Programm läuft</label>
-    <p class="muted small mb0" id="bkDailyHint"></p>
+    <label class="switch bk-daily"><input type="checkbox" id="bkDaily">
+      <span><span class="bk-daily-t">Einmal am Tag von selbst sichern</span>
+        <span class="bk-daily-d" id="bkDailyHint">solange das Programm läuft</span></span></label>
     <div id="bkJob"></div>
   </section>
   <section class="card">
@@ -3131,11 +3131,19 @@ function hostedSettings(s, r) {
   <div class="btn-row"><button class="btn btn-primary" id="hsSave">Einstellungen speichern</button>
     <span class="muted small" id="hsHint"></span></div>
 
-  <h2>Alle Optionen (server.properties)</h2>
-  ${laeuft ? `<div class="note note-warn" style="margin-top:0">Der Server läuft. Stoppe ihn, um
-     <code>server.properties</code> auf dem Root-Server zu ändern – ein laufender Server schreibt die
-     Datei sonst gleich wieder um.</div>` : ''}
-  <div id="hostedProps"><div class="muted small">server.properties wird vom Root-Server geholt …</div></div>
+  <details class="opt-block">
+    <summary class="opt-sum">
+      <div><h2>Alle Optionen</h2>
+        <div class="opt-hint"><code>server.properties</code> – aufklappen zum Bearbeiten</div></div>
+      <span class="opt-ico" aria-hidden="true">▼</span>
+    </summary>
+    <div class="opt-body">
+      ${laeuft ? `<div class="note note-warn" style="margin-top:14px">Der Server läuft. Stoppe ihn, um
+        <code>server.properties</code> auf dem Root-Server zu ändern – ein laufender Server schreibt die
+        Datei sonst gleich wieder um.</div>` : ''}
+      <div id="hostedProps"><div class="muted small">server.properties wird vom Root-Server geholt …</div></div>
+    </div>
+  </details>
 
   ${(set.type || _hostedTyp(s, r)) === 'bedrock' ? '' : iconSection()
     + (laeuft ? `<div class="note note-warn">Einzelne Dateien nimmt der Root-Server nur bei
