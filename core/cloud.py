@@ -1047,9 +1047,11 @@ def remote_start(remote_id: str) -> dict:
             "server": remote_view(data.get("server") or {}) if data.get("server") else {}}
 
 
-def remote_stop(remote_id: str, announce_seconds: int = 0) -> dict:
+def remote_stop(remote_id: str, announce_seconds: int = 0, reason: str = "") -> dict:
+    # Der Grund erscheint den Spielern im Trennbildschirm; der Dienst reicht ihn an das Plugin weiter.
     data = _api("POST", f"/api/servers/{urllib.parse.quote(remote_id)}/stop",
-                body={"announce_seconds": int(announce_seconds or 0)})
+                body={"announce_seconds": int(announce_seconds or 0),
+                      "reason": " ".join(str(reason or "").split())[:120]})
     _drop_cache()
     return {"ok": True, "message": str(data.get("message") or "Der Server wird gestoppt.")}
 

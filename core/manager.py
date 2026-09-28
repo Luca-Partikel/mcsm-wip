@@ -1557,7 +1557,7 @@ class Instance:
         self.proc.stdin.flush()
         self.log(f"> {command.strip()}")
 
-    def _announce_stop(self) -> bool:
+    def _announce_stop(self, reason: str = "", seconds: int = 0) -> bool:
         """Paper-Server mit Begleit-Plugin: „mcsmstop 10“ sagt den Stopp im Spiel an und stoppt danach
         selbst (ohne Spieler online überspringt das Plugin den Countdown).
 
@@ -1567,15 +1567,20 @@ class Instance:
         if not companion.applies(self.cfg):
             return False
         mark = self.console(0)["next"]
+        sek = int(seconds) if seconds and seconds > 0 else STOP_COUNTDOWN
+        # Der Grund erscheint den Spielern im Trennbildschirm („Grund: …“). Zeilenumbrüche und
+        # überlange Texte werden gekürzt – es geht als ein einzelner Konsolenbefehl hinaus.
+        grund = " ".join(str(reason or "").split())[:120]
         try:
-            self.send(f"mcsmstop {STOP_COUNTDOWN}")
+            self.send(f"mcsmstop {sek}" + (f" {grund}" if grund else ""))
         except (RuntimeError, OSError):
             return False
         deadline = time.time() + ANNOUNCE_ANSWER
         while self.running:
             for line in self.console(mark)["lines"]:
                 if _ANNOUNCE_OK_RE.search(line):
-                    self.log(f"[Manager] Stopp wird im Spiel angekündigt ({STOP_COUNTDOWN} Sekunden) …")
+                    self.log(f"[Manager] Stopp wird im Spiel angekündigt ({sek} Sekunden)"
+                             + (f" – Grund: {grund}" if grund else "") + " …")
                     return True
             if time.time() >= deadline:
                 break
@@ -1583,11 +1588,12 @@ class Instance:
         self.log("[Manager] Der Server hat die Ankündigung nicht bestätigt – er wird direkt gestoppt.")
         return False
 
-    def stop(self, timeout: int = 45, announce: bool = False) -> None:
+    def stop(self, timeout: int = 45, announce: bool = False, reason: str = "",
+             seconds: int = 0) -> None:
         if not self.running or not self.proc:
             return
         self.stopping = True
-        if announce and self._announce_stop():
+        if announce and self._announce_stop(reason, seconds):
             # Dem Plugin Zeit für Countdown und Stopp lassen; danach wie bisher „stop“ hinterherschicken.
             waiting = time.time() + ANNOUNCE_WAIT
             while time.time() < waiting and self.running:

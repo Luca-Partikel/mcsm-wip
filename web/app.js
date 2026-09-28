@@ -240,6 +240,45 @@ function dialog(opts = {}) {
   });
 }
 
+/** Spieler gerade online – je nach Herkunft steht die Zahl in einem anderen Feld. */
+function playersOnline(s) {
+  const live = (s && s.live) || {};
+  const comp = ((s && s.companion) || {}).status || {};
+  for (const v of [s && s.players_online, live.players_online, comp.online]) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
+}
+
+/** Fragt Vorwarnzeit und Grund ab, bevor ein Server gestoppt wird.
+    Rückgabe: {seconds, reason} oder null bei Abbruch. */
+async function askStop(name, spieler = 0) {
+  const vorschlag = spieler > 0 ? 30 : 10;
+  const r = await dialog({
+    icon: '■', tone: 'danger', title: 'Server stoppen?',
+    sub: name,
+    html: spieler > 0
+      ? `<b>${spieler === 1 ? 'Ein Spieler ist' : spieler + ' Spieler sind'} gerade drauf.</b>
+         ${spieler === 1 ? 'Er bekommt' : 'Sie bekommen'} einen Countdown im Spiel und danach deinen Grund
+         im Trennbildschirm zu sehen. Die Welt wird gespeichert.`
+      : `Gerade spielt niemand. Der Server speichert und fährt herunter. Grund und Vorwarnzeit gelten,
+         falls doch noch jemand beitritt.`,
+    fields: [
+      { id: 'stopReason', label: 'Grund (erscheint den Spielern)', value: '',
+        placeholder: 'z. B. Wartung, Neustart, Feierabend', maxlength: 120,
+        hint: 'Leer lassen, wenn kein Grund angezeigt werden soll.' },
+      { id: 'stopSec', label: 'Vorwarnzeit in Sekunden', value: String(vorschlag),
+        placeholder: '10', maxlength: 3, hint: '0 = sofort und ohne Ansage.' },
+    ],
+    confirmText: 'Stoppen',
+  });
+  if (!r) return null;
+  let sek = parseInt(String(r.stopSec || '').trim(), 10);
+  if (!Number.isFinite(sek) || sek < 0) sek = 0;
+  return { seconds: Math.min(900, sek), reason: String(r.stopReason || '').trim().slice(0, 120) };
+}
+
 /** Ja/Nein-Dialog. Gefährliches („danger“) bekommt einen roten Knopf. */
 async function askConfirm(opts) {
   return (await dialog({ icon: opts.tone === 'danger' ? '⚠' : '❓', confirmText: 'Bestätigen', ...opts })) === true;
@@ -2080,8 +2119,15 @@ function bindServer() {
     } catch (e) { toast(e.message, true); }
   };
   $('#btnStop').onclick = async () => {
-    try { $('#btnStop').disabled = true; await api(`servers/${s.id}/stop`, { method: 'POST' }); toast('Server wird gestoppt …'); await refresh(); }
-    catch (e) { toast(e.message, true); }
+    const wahl = await askStop(s.name, playersOnline(s));
+    if (!wahl) return;
+    try {
+      $('#btnStop').disabled = true;
+      await api(`servers/${s.id}/stop`, { method: 'POST',
+        body: { announce_seconds: wahl.seconds, reason: wahl.reason } });
+      toast(wahl.seconds > 0 ? `Server wird in ${wahl.seconds} Sekunden gestoppt …` : 'Server wird gestoppt …');
+      await refresh();
+    } catch (e) { toast(e.message, true); $('#btnStop').disabled = false; }
   };
 
   if (state.tab === 'overview') {
@@ -4584,14 +4630,10 @@ function bindCloud() {
   $$('[data-cloud-stop]').forEach((el) => el.onclick = async () => {
     const id = el.dataset.cloudStop;
     const s = (cloudData().servers || []).find((x) => x.id === id) || {};
-    const ok = await askConfirm({
-      tone: 'danger', icon: '■', title: `„${s.name || 'Server'}“ stoppen?`, confirmText: 'Stoppen',
-      text: 'Die Spieler bekommen zehn Sekunden Vorwarnung, danach wird der Server sauber beendet '
-        + 'und die Welt gespeichert. Wer gerade spielt, fliegt dabei heraus.',
-    });
-    if (!ok) return;
+    const wahl = await askStop(s.name || 'Server', playersOnline(s));
+    if (!wahl) return;
     state.cloud.busy = id; el.disabled = true;
-    cloudSimple('cloud/stop', { instance: id, announce_seconds: 10 });
+    cloudSimple('cloud/stop', { instance: id, announce_seconds: wahl.seconds, reason: wahl.reason });
   });
   $$('[data-cloud-pull]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPull));
   $$('[data-cloud-pull-local]').forEach((el) => el.onclick = () => cloudDownload(el.dataset.cloudPullLocal));

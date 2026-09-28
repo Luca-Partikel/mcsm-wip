@@ -276,10 +276,19 @@ def api_start(_body, _query, server_id: str = "") -> dict:
     return {"ok": True}
 
 
-def api_stop(_body, _query, server_id: str = "") -> dict:
-    """Knopf „Stoppen“: auf Paper-Servern kündigt das Begleit-Plugin den Stopp erst im Spiel an."""
+def api_stop(body, _query, server_id: str = "") -> dict:
+    """Knopf „Stoppen“: auf Paper-Servern kündigt das Begleit-Plugin den Stopp erst im Spiel an.
+
+    `reason` erscheint den Spielern im Trennbildschirm, `announce_seconds` ist die Vorwarnzeit."""
     cfg = _require(store.get(server_id))
-    threading.Thread(target=manager.instance(cfg).stop, kwargs={"announce": True}, daemon=True).start()
+    reason = " ".join(str((body or {}).get("reason") or "").split())[:120]
+    try:
+        seconds = max(0, min(900, int((body or {}).get("announce_seconds") or 0)))
+    except (TypeError, ValueError):
+        seconds = 0
+    threading.Thread(target=manager.instance(cfg).stop,
+                     kwargs={"announce": True, "reason": reason, "seconds": seconds},
+                     daemon=True).start()
     threading.Thread(target=manager.stop_broadcaster, args=(cfg,), daemon=True).start()
     log.info("Server wird gestoppt: %s", cfg["name"])
     return {"ok": True}
@@ -770,7 +779,8 @@ def api_cloud_stop(body, query) -> dict:
         announce = max(0, min(900, int(body.get("announce_seconds") or 0)))
     except (TypeError, ValueError):
         announce = 0
-    return cloud.remote_stop(_cloud_instance(body, query), announce)
+    grund = " ".join(str(body.get("reason") or "").split())[:120]
+    return cloud.remote_stop(_cloud_instance(body, query), announce, grund)
 
 
 def api_cloud_command(body, query) -> dict:
