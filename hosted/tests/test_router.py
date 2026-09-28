@@ -1252,10 +1252,19 @@ class SchlafTest(unittest.TestCase):
         daten = self.erstes_json(antwort)
         self.assertEqual(daten["version"]["name"], "Eutopia")
         self.assertEqual(daten["players"], {"max": 20, "online": 0, "sample": []})
-        self.assertEqual(daten["description"]["text"],
-                         "Server ist ausgeschaltet – tritt bei, um ihn zu starten")
-        # Keine Fehlermeldung: also auch keine Fehlerfarbe.
-        self.assertNotIn("color", daten["description"])
+        # Zweizeilige Anzeige: Zeile 1 der Kopf „✦ MCSM ¦ <Name>“, Zeile 2 der Hinweis in kräftiger
+        # Farbe (nicht grau). Keine Fehlerfarbe auf der obersten Ebene.
+        beschr = daten["description"]
+        self.assertEqual(beschr["text"], "")
+        self.assertNotIn("color", beschr)
+        klartext = "".join(t.get("text", "") for t in beschr["extra"])
+        self.assertIn("MCSM", klartext)
+        self.assertIn("Eutopia", klartext)
+        self.assertIn("Tritt bei, um den Server zu starten", klartext)
+        zweite = [t for t in beschr["extra"] if t.get("text") == "Tritt bei, um den Server zu starten"]
+        self.assertTrue(zweite and zweite[0].get("color") not in (None, "gray", "dark_gray"))
+        # Ein schlafender Server bekommt trotzdem ein Serverbild in der Liste.
+        self.assertTrue(str(daten.get("favicon", "")).startswith("data:image/png;base64,"))
         self.assertEqual(dienst.verteiler.zahlen["schlaeft"], 1)
 
     def test_ping_beantwortet_auch_die_laufzeitmessung(self) -> None:

@@ -2902,7 +2902,9 @@ class KonsolenTest(Basis):
         versuch = b"\x05" + mcsmd.bedrock.MAGIC + b"\x0b" + b"\x00" * 400
         with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as sock:
             sock.sendto(versuch, ("127.0.0.1", port))
-        ende = time.time() + 20
+        # Großzügiges Fenster: auf dem Root startet ein echter (hier absichtlich fehlschlagender)
+        # Serverprozess unter sudo/JVM, das dauert deutlich länger als in der Testumgebung auf dem PC.
+        ende = time.time() + 90
         zeile2 = ""
         while time.time() < ende:
             # Nach dem Fehlschlag gibt der Dienst den Port wieder her und bindet neu. Der Port

@@ -52,6 +52,7 @@ Start von Hand (Selbsttest)::
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -108,6 +109,24 @@ MELDUNG_NAME = "Arcardia Nexus"
 
 # Schlafender Server: in der Serverliste sieht er normal aus, deshalb keine Fehlerfarbe.
 MELDUNG_SCHLAEFT = "Server ist ausgeschaltet – tritt bei, um ihn zu starten"
+# Zweite MOTD-Zeile für einen schlafenden Server – in kräftiger Farbe, nicht in Grau.
+ZWEITE_SCHLAEFT = "Tritt bei, um den Server zu starten"
+
+
+_FAVICON_CACHE = None
+
+
+def favicon() -> str:
+    """Das Serverbild als data:-URL (einmal geladen). Für einen schlafenden Server bekommt die
+    Serverliste so trotzdem ein Icon. Fehlt die Datei, bleibt es leer – dann eben ohne Bild."""
+    global _FAVICON_CACHE
+    if _FAVICON_CACHE is None:
+        try:
+            roh = (pathlib.Path(__file__).resolve().parent / "assets" / "server-icon.png").read_bytes()
+            _FAVICON_CACHE = "data:image/png;base64," + base64.b64encode(roh).decode("ascii")
+        except OSError:
+            _FAVICON_CACHE = ""
+    return _FAVICON_CACHE
 # Die beiden Sätze stehen wortgleich in mcsmd.py (zwei Prozesse, eine Sprache).
 MELDUNG_STARTET = ("Der Server startet gerade. "
                    "Bitte verbinde dich in etwa einer Minute noch einmal.")
@@ -457,30 +476,48 @@ def zerlege_alten_ping(puffer: bytes) -> tuple[str, int] | None:
 # --------------------------------------------------------------------------- Antworten
 
 def status_json(meldung: str, protokoll: int, *, name: str = MELDUNG_NAME,
-                max_spieler: int = 0, farbe: str = "red") -> str:
+                max_spieler: int = 0, farbe: str = "red",
+                kopf: bool = False, zweite: str = "", bild: str = "") -> str:
     """Statusantwort als JSON. Die Protokollversion des Clients wird gespiegelt, damit der
     Client die Meldung als gewöhnliche Serverbeschreibung anzeigt und nicht „nicht passend“.
 
-    Bei einem **schlafenden** Server werden Name und Spielerplätze mitgegeben und die Farbe
-    weggelassen: er soll in der Serverliste aussehen wie jeder andere, nur eben leer.
+    Bei einem **schlafenden** Server (``kopf=True``) steht in Zeile 1 der Kopf „✦ MCSM ¦ <Name>“
+    wie im Spiel, in Zeile 2 der Hinweis ``zweite`` in kräftiger Farbe, dazu das Serverbild
+    ``bild`` – so sieht der Eintrag in der Serverliste aus wie ein echter, nur eben leer.
     """
     gespiegelt = protokoll if 0 <= protokoll <= 0x7FFF_FFFF else -1
-    beschreibung: dict = {"text": str(meldung)}
-    if farbe:
-        beschreibung["color"] = str(farbe)
+    if kopf:
+        extra = [
+            {"text": "✦ ", "color": "gray"},
+            {"text": "MCSM", "color": "green", "bold": True},
+            {"text": " ¦ ", "color": "dark_gray"},
+            {"text": str(name or MELDUNG_NAME)[:60], "color": "white"},
+        ]
+        if zweite:
+            extra.append({"text": "\n"})
+            extra.append({"text": str(zweite)[:80], "color": "aqua"})
+        beschreibung: dict = {"text": "", "extra": extra}
+    else:
+        beschreibung = {"text": str(meldung)}
+        if farbe:
+            beschreibung["color"] = str(farbe)
     daten = {
         "version": {"name": str(name or MELDUNG_NAME)[:64], "protocol": gespiegelt},
         "players": {"max": max(0, int(max_spieler)), "online": 0, "sample": []},
         "description": beschreibung,
     }
+    if bild:
+        daten["favicon"] = str(bild)
     return json.dumps(daten, ensure_ascii=False, separators=(",", ":"))
 
 
 def status_paket(meldung: str, protokoll: int, *, name: str = MELDUNG_NAME,
-                 max_spieler: int = 0, farbe: str = "red") -> bytes:
+                 max_spieler: int = 0, farbe: str = "red",
+                 kopf: bool = False, zweite: str = "", bild: str = "") -> bytes:
     """Statusantwort (Zustand 1) als fertiges Paket."""
     return paket(PAKET_STATUS, schreibe_string(
-        status_json(meldung, protokoll, name=name, max_spieler=max_spieler, farbe=farbe)))
+        status_json(meldung, protokoll, name=name, max_spieler=max_spieler, farbe=farbe,
+                    kopf=kopf, zweite=zweite, bild=bild)))
 
 
 def ping_paket(nutzlast: bytes) -> bytes:
@@ -1083,14 +1120,16 @@ class Verteiler:
 
     def _antworte_status(self, klient: socket.socket, puffer: bytes, handshake: Handshake,
                          meldung: str, *, name: str = MELDUNG_NAME, max_spieler: int = 0,
-                         farbe: str = "red") -> None:
+                         farbe: str = "red", kopf: bool = False, zweite: str = "",
+                         bild: str = "") -> None:
         """Statusabfrage selbst beantworten: Statusantwort, danach die Laufzeitmessung."""
         rest = bytes(puffer[handshake.laenge:])
         # Die Statusanfrage (0x00, leer) kommt oft im selben Häppchen; sonst kurz nachlesen.
         if not rest:
             rest = self._lies_kurz(klient)
         sende(klient, status_paket(meldung, handshake.protokoll, name=name,
-                                   max_spieler=max_spieler, farbe=farbe))
+                                   max_spieler=max_spieler, farbe=farbe,
+                                   kopf=kopf, zweite=zweite, bild=bild))
         nutzlast = self._finde_ping(rest)
         if nutzlast is None:
             nutzlast = self._finde_ping(self._lies_kurz(klient))
@@ -1209,7 +1248,8 @@ class Verteiler:
 
     def _sage_ab(self, klient: socket.socket, puffer: bytes, zustand: int, protokoll: int,
                  meldung: str, alter_ping: bool, laenge: int = 0, *,
-                 name: str = MELDUNG_NAME, max_spieler: int = 0, farbe: str = "red") -> None:
+                 name: str = MELDUNG_NAME, max_spieler: int = 0, farbe: str = "red",
+                 kopf: bool = False, zweite: str = "", bild: str = "") -> None:
         """Absage mit deutscher Meldung, passend zum Zustand.
 
         ``laenge`` sagt, wie viele Byte des Puffers zum Handshake gehören – der Rest ist schon
@@ -1221,7 +1261,8 @@ class Verteiler:
             ersatz = Handshake(protokoll=protokoll, adresse="", port=0,
                                zustand=ZUSTAND_STATUS, laenge=int(laenge) or len(puffer))
             self._antworte_status(klient, puffer, ersatz, meldung, name=name,
-                                  max_spieler=max_spieler, farbe=farbe)
+                                  max_spieler=max_spieler, farbe=farbe,
+                                  kopf=kopf, zweite=zweite, bild=bild)
             return
         else:
             sende(klient, trenn_paket(meldung))
@@ -1246,7 +1287,8 @@ class Verteiler:
             self.melder("verteiler", f"„{adresse or route.name}“ schläft – {kurz} bekommt die "
                                      f"gewöhnliche Serverantwort (0/{route.max_spieler}).")
             self._sage_ab(klient, puffer, zustand, protokoll, MELDUNG_SCHLAEFT, alter_ping,
-                          laenge, name=anzeige, max_spieler=route.max_spieler, farbe="")
+                          laenge, name=anzeige, max_spieler=route.max_spieler, farbe="",
+                          kopf=True, zweite=ZWEITE_SCHLAEFT, bild=favicon())
             return
         darf, meldung = wecke(route)
         if darf:
