@@ -854,7 +854,83 @@ function companionFields(s, prefix) {
       + 'niemand merkt etwas. Aus&nbsp;= Minecraft speichert wieder selbst.', s.companion_autosave !== false)}
     ${fieldInput(prefix + 'companion_autosave_minutes', 'Abstand des Speicherns', minuten,
       { type: 'number', min: 1, max: 180,
-        hint: 'Minuten, 1 bis 180. Standard: 10. Beim Stoppen wird die Welt ohnehin immer gespeichert.' })}`;
+        hint: 'Minuten, 1 bis 180. Standard: 10. Beim Stoppen wird die Welt ohnehin immer gespeichert.' })}
+    ${nameColorField(prefix, s)}`;
+}
+
+/* Farbe/Farbverlauf des Servernamens. Das Begleit-Plugin wendet sie überall an (Serverliste,
+   Tabliste, Spiel). Leer/kein Häkchen = bisherige Darstellung. Nur Paper (Java) hat das Plugin. */
+const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+function nameColorField(prefix, s) {
+  const an = HEX_RE.test(s.name_color || '');
+  const grad = HEX_RE.test(s.name_color2 || '');
+  const c1 = an ? s.name_color : '#3ddc84';
+  const c2 = grad ? s.name_color2 : '#8ff0b4';
+  return `
+  <div class="field">
+    <label>Farbe des Servernamens</label>
+    <div class="namecolor" id="${prefix}nc">
+      <label class="nc-tog"><input type="checkbox" id="${prefix}name_on" ${an ? 'checked' : ''}> eigene Farbe</label>
+      <input type="color" id="${prefix}name_color" value="${esc(c1)}" ${an ? '' : 'disabled'} aria-label="Farbe">
+      <label class="nc-tog"><input type="checkbox" id="${prefix}name_grad" ${grad ? 'checked' : ''} ${an ? '' : 'disabled'}> Verlauf</label>
+      <input type="color" id="${prefix}name_color2" value="${esc(c2)}" ${an && grad ? '' : 'disabled'} aria-label="zweite Farbe">
+      <span class="nc-prev" id="${prefix}name_prev">${esc(s.name || 'Servername')}</span>
+    </div>
+    <div class="hint">Der Name erscheint überall in dieser Farbe – Serverliste, Tabliste und im Spiel.
+      Ohne Häkchen bleibt die bisherige Darstellung.</div>
+  </div>`;
+}
+
+/** Vorschau und Freischalten der Farbfelder verdrahten. */
+function bindNameColor(prefix) {
+  const on = $('#' + prefix + 'name_on');
+  if (!on) return;
+  const c1 = $('#' + prefix + 'name_color');
+  const grad = $('#' + prefix + 'name_grad');
+  const c2 = $('#' + prefix + 'name_color2');
+  const prev = $('#' + prefix + 'name_prev');
+  const name = $('#' + prefix + 'name');
+  const sync = () => {
+    const aktiv = on.checked;
+    if (c1) c1.disabled = !aktiv;
+    if (grad) grad.disabled = !aktiv;
+    if (c2) c2.disabled = !aktiv || !grad.checked;
+    if (prev) {
+      if (name && name.value) prev.textContent = name.value;
+      if (!aktiv) {
+        prev.style.background = 'none';
+        prev.style.webkitBackgroundClip = 'initial';
+        prev.style.backgroundClip = 'initial';
+        prev.style.color = '';
+      } else if (grad.checked) {
+        prev.style.background = `linear-gradient(90deg, ${c1.value}, ${c2.value})`;
+        prev.style.webkitBackgroundClip = 'text';
+        prev.style.backgroundClip = 'text';
+        prev.style.color = 'transparent';
+      } else {
+        prev.style.background = 'none';
+        prev.style.webkitBackgroundClip = 'initial';
+        prev.style.backgroundClip = 'initial';
+        prev.style.color = c1.value;
+      }
+    }
+  };
+  [on, c1, grad, c2].forEach((el) => { if (el) { el.oninput = sync; el.onchange = sync; } });
+  if (name) name.addEventListener('input', sync);
+  sync();
+}
+
+/** Farbwerte aus den Feldern lesen (in ein Objekt schreiben). */
+function readNameColor(prefix, out) {
+  const on = $('#' + prefix + 'name_on');
+  if (!on) return out;
+  if (!on.checked) { out.name_color = ''; out.name_color2 = ''; return out; }
+  const c1 = $('#' + prefix + 'name_color');
+  const grad = $('#' + prefix + 'name_grad');
+  const c2 = $('#' + prefix + 'name_color2');
+  out.name_color = c1 ? c1.value : '';
+  out.name_color2 = (grad && grad.checked && c2) ? c2.value : '';
+  return out;
 }
 
 function readSettingsForm(prefix, base) {
@@ -866,6 +942,7 @@ function readSettingsForm(prefix, base) {
   // Ein leeres Minutenfeld soll den Standard bedeuten, nicht „1 Minute“.
   const min = get('companion_autosave_minutes');
   if (min) out.companion_autosave_minutes = Math.max(1, Math.min(180, Number(min.value) || 10));
+  readNameColor(prefix, out);
   return out;
 }
 
@@ -882,6 +959,7 @@ function bindSettingsForm(prefix) {
     save.onchange = sync;
     sync();
   }
+  bindNameColor(prefix);
   const pb = $('#' + prefix + 'pubip');
   if (pb) pb.onclick = async () => {
     pb.disabled = true;
@@ -3095,12 +3173,17 @@ function hostedSettings(s, r) {
   const bekannt = set.hibernation_known !== false;
   const an = set.hibernation !== false;
   const minuten = Number(set.hibernation_minutes || 15);
+  const istJava = (set.type || _hostedTyp(s, r)) !== 'bedrock';
+  const farbWerte = { name: set.name || r.name || s.name,
+    name_color: set.name_color || s.name_color || '',
+    name_color2: set.name_color2 || s.name_color2 || '' };
   return `
   <h2 style="margin-top:0">Server auf dem Root-Server</h2>
   <div class="grid2" style="margin-top:0">
     <div>
       ${fieldInput('hs_name', 'Name des Servers', set.name || r.name || s.name,
         { hint: 'Nur die Anzeige – die Adresse deiner Freunde bleibt gleich.' })}
+      ${istJava ? nameColorField('hs_', farbWerte) : ''}
       <div class="field"><label for="hs_ram">Arbeitsspeicher: <b id="hs_ramLabel">${gb(ram)}</b></label>
         <input type="range" id="hs_ram" min="1024" max="${Math.max(8192, budget || 8192)}" step="512" value="${ram}"
           ${laeuft ? 'disabled' : ''}>
@@ -3302,6 +3385,7 @@ function bindHostedServer(s) {
     if (schieber && label) schieber.oninput = () => label.textContent = gb(Number(schieber.value));
     const speichern = $('#hsSave');
     if (speichern) speichern.onclick = () => saveHostedSettings(s);
+    bindNameColor('hs_');
     if (!state.hosted.props) loadHostedProps(s);
     else { const box = $('#hostedProps'); if (box) { box.innerHTML = hostedPropsBox(!!r.running); bindHostedProps(s); } }
     bindIcon(s, true, r.running ? 'Der Server auf dem Root-Server läuft – bitte zuerst stoppen.' : '');
@@ -3326,6 +3410,7 @@ async function saveHostedSettings(s) {
   if (ram && !ram.disabled) body.ram_mb = Number(ram.value);
   if (schlaf) body.hibernation = !!schlaf.checked;
   if (minuten) body.hibernation_minutes = Number(minuten.value);
+  readNameColor('hs_', body);
   if (knopf) knopf.disabled = true;
   try {
     const d = await api('cloud/settings', { method: 'POST', body });

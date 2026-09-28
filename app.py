@@ -1029,6 +1029,9 @@ def _hosted_settings(remote: dict) -> dict:
         "sleeping": _hosted_sleeping(remote),
         "minutes_min": HIBERNATION_MINUTES_MIN,
         "minutes_max": HIBERNATION_MINUTES_MAX,
+        # Farbe/Farbverlauf des Servernamens – der Root-Server liefert sie in server_view mit.
+        "name_color": str(remote.get("name_color") or ""),
+        "name_color2": str(remote.get("name_color2") or ""),
     }
 
 

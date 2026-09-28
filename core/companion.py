@@ -21,7 +21,7 @@ from .version import __version__
 JAR_SRC = store.BASE / "assets" / "MCSMCompanion.jar"
 SPONSOR_TEXT = "Sponsored by Novelnia"
 MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore", "tips",
-           "autosave", "autosave_minutes", "motd_line", "motd_eigen")
+           "autosave", "autosave_minutes", "motd_line", "motd_eigen", "name_color", "name_color2")
 # Schlüssel früherer Versionen, die aus vorhandenen config.yml entfernt werden
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
 SUSPICIOUS_HINT = ("Ein installiertes Plugin sieht nach Manipulation aus (gefälschte Spielerzahlen/Ping). "
@@ -80,6 +80,15 @@ def _yaml(value) -> str:
     return f'"{text}"'
 
 
+_HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _hex(value) -> str:
+    """Nur eine gültige Hex-Farbe (#RGB/#RRGGBB) durchlassen, sonst leer (keine eigene Farbe)."""
+    s = str(value or "").strip()
+    return s if _HEX_RE.match(s) else ""
+
+
 def autosave_minutes(cfg: dict) -> int:
     """Abstand des plugin-eigenen Speicherns, auf denselben Bereich begrenzt wie im Plugin."""
     try:
@@ -106,6 +115,10 @@ def managed_values(cfg: dict) -> dict[str, str]:
         # Zeile 2 der Serverlisten-Anzeige – Zeile 1 baut das Plugin selbst.
         "motd_line": _yaml(str(cfg.get("motd") or "")),
         "motd_eigen": _yaml(True),
+        # Farbe/Farbverlauf des Servernamens (im Programm gesetzt). Leer = keine eigene Farbe;
+        # dann bleibt es überall bei der bisherigen Darstellung. Das Plugin prüft die Hex-Werte.
+        "name_color": _yaml(_hex(cfg.get("name_color"))),
+        "name_color2": _yaml(_hex(cfg.get("name_color2"))),
     }
 
 

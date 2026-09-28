@@ -1899,6 +1899,9 @@ def server_view(inst: dict) -> dict:
     # Xbox-Freunde-Modus gleich mit – wie `_server_view` im Programm auf dem PC (app.py), damit
     # die Oberfläche denselben Weg gehen kann.
     out["xbox"] = xbox_status_of(inst)
+    # Farbe/Farbverlauf des Servernamens – die Oberfläche zeigt und ändert sie in den Einstellungen.
+    out["name_color"] = str(inst.get("name_color") or "")
+    out["name_color2"] = str(inst.get("name_color2") or "")
     return out
 
 
@@ -2703,6 +2706,11 @@ def h_server_settings(req: Req, iid: str):
             iid,
             enabled=data.get("hibernation") if "hibernation" in data else None,
             minutes=data.get("hibernation_minutes") if "hibernation_minutes" in data else None)
+    if "name_color" in data or "name_color2" in data:
+        inst = instances.set_name_color(
+            iid,
+            color=data.get("name_color") if "name_color" in data else None,
+            color2=data.get("name_color2") if "name_color2" in data else None)
     if "xbox_enabled" in data or "xbox_autostart" in data:
         inst = instances.set_xbox(
             iid,

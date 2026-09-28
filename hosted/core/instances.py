@@ -523,6 +523,32 @@ def set_version(instance_id: str, version: str, *, now: int | None = None) -> di
     return _patch(instance_id, {"version": clean_version(version)}, now=now)
 
 
+_HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _clean_hex(value) -> str:
+    """Nur eine gültige Hex-Farbe (#RGB/#RRGGBB) durchlassen, sonst leer (keine eigene Farbe)."""
+    s = str(value or "").strip()
+    return s if _HEX_RE.match(s) else ""
+
+
+def set_name_color(instance_id: str, *, color=None, color2=None,
+                   now: int | None = None) -> dict:
+    """Farbe/Farbverlauf des Servernamens setzen. Beide Angaben sind einzeln änderbar;
+    ``None`` lässt den bisherigen Wert stehen. Das Begleit-Plugin wendet sie beim Start an."""
+    changes: dict = {}
+    if color is not None:
+        changes["name_color"] = _clean_hex(color)
+    if color2 is not None:
+        changes["name_color2"] = _clean_hex(color2)
+    if not changes:
+        instance = get_instance(instance_id)
+        if not instance:
+            raise ValueError(_missing(instance_id))
+        return instance
+    return _patch(instance_id, changes, now=now)
+
+
 def set_ports(instance_id: str, ports: dict, *, now: int | None = None) -> dict:
     with store_hosted.lock():
         instance = get_instance(instance_id)

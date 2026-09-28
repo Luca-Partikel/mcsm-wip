@@ -38,6 +38,10 @@ DEFAULTS = {
     "port": 19132,
     "bedrock_port": 19132,      # nur bei type=java (Geyser)
     "motd": "Ein Minecraft Server",
+    # Farbe/Farbverlauf des Servernamens (Hex, z. B. #3ddc84). Leer = keine eigene Farbe.
+    # Das Begleit-Plugin wendet sie überall an, wo der Name steht (Serverliste, Tabliste, Spiel).
+    "name_color": "",
+    "name_color2": "",
     "max_players": 10,
     "ram_mb": 4096,             # nur Java
     "gamemode": "survival",
@@ -253,6 +257,11 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
 
     seed = str(raw.get("level_seed", cfg["level_seed"])).strip()
     cfg["level_seed"] = seed[:40] if re.fullmatch(r"[-0-9A-Za-z ]{0,40}", seed) else ""
+
+    # Servername-Farbe: nur gültige Hex-Werte (#RGB/#RRGGBB), sonst leer (keine eigene Farbe).
+    for schluessel in ("name_color", "name_color2"):
+        wert = str(raw.get(schluessel, cfg.get(schluessel, ""))).strip()
+        cfg[schluessel] = wert if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", wert) else ""
 
     if "public_ip" in raw:
         ip = str(raw.get("public_ip") or "").strip()

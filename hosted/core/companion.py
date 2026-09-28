@@ -34,7 +34,9 @@ PLUGIN_DIR = "MCSMCompanion"
 JAR_ENV = "MCSM_COMPANION_JAR"
 SPONSOR_TEXT = "Sponsored by Novelnia"
 #: Diese Schlüssel setzt der Dienst bei jedem Start neu; alles andere gehört dem Besitzer.
-MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore")
+MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore",
+           "name_color", "name_color2")
+_HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 #: Schlüssel früherer Fassungen, die aus vorhandenen config.yml verschwinden.
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
 
@@ -125,7 +127,15 @@ def managed_values(instance: dict, *, version: str = "") -> dict:
         "mode": _yaml("hosted"),
         "sponsor_text": _yaml(SPONSOR_TEXT),
         "hardcore": _yaml(bool(instance.get("hardcore"))),
+        "name_color": _yaml(_hex(instance.get("name_color"))),
+        "name_color2": _yaml(_hex(instance.get("name_color2"))),
     }
+
+
+def _hex(value) -> str:
+    """Nur eine gültige Hex-Farbe (#RGB/#RRGGBB) durchlassen, sonst leer (keine eigene Farbe)."""
+    s = str(value or "").strip()
+    return s if _HEX_RE.match(s) else ""
 
 
 def _template_lines() -> list:
