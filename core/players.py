@@ -349,6 +349,15 @@ def online(cfg: dict, fresh: bool = True) -> tuple[list[str], bool]:
     names = _from_plugin(cfg)
     if names is not None:
         return names, True
+    # Paper 26.2 lässt „list" von der Konsole abstürzen (getLevel() ist null). Ein Paper-Server hat
+    # aber das Begleit-Plugin, das die Spieler in status.json schreibt – darauf verlassen wir uns
+    # dort ausschließlich und schicken kein „list". Kurz nach dem Start ist die Datei evtl. noch
+    # nicht da; dann gilt „unbekannt", und der nächste Abruf hat die frische Liste.
+    if companion.applies(cfg):
+        cached = _online_cache.get(cfg["id"])
+        if cached and not fresh and time.time() - cached[0] < ONLINE_CACHE:
+            return cached[1], cached[2]
+        return [], False
     cached = _online_cache.get(cfg["id"])
     if cached and not fresh and time.time() - cached[0] < ONLINE_CACHE:
         return cached[1], cached[2]

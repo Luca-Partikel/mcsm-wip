@@ -2192,6 +2192,16 @@ class RuhezustandTest(Basis):
         mcsmd.REGISTRY._runners[self.iid] = fake
         return fake
 
+    def online_melden(self, n: int) -> None:
+        """Die Spielerzahl über status.json des Begleit-Plugins melden – so wie es ein echter
+        Paper-Server tut. (Paper 26.2 lässt „list" von der Konsole abstürzen; ein Paper-Server geht
+        deshalb nur noch über status.json, und das bilden wir hier nach.)"""
+        inst = mcsmd.instances.get_instance(self.iid)
+        ordner = mcsmd.companion.plugin_dir(mcsmd.instance_dir(inst))
+        ordner.mkdir(parents=True, exist_ok=True)
+        (ordner / "status.json").write_text(
+            json.dumps({"online": int(n), "updated": time.time()}), encoding="utf-8")
+
     def warte_bis_aus(self, fake: FalscherRunner, frist: float = 8.0) -> None:
         ende = time.time() + frist
         while fake.running and time.time() < ende:
@@ -2256,6 +2266,7 @@ class RuhezustandTest(Basis):
     def test_leerer_server_geht_nach_der_wartezeit_schlafen(self):
         mcsmd.instances.set_hibernation(self.iid, minutes=1)
         fake = self.laufender(spieler=0)
+        self.online_melden(0)
         jetzt = mcsmd.store_hosted.now()
         mcsmd.ruhezustand_pruefen(jetzt)
         self.assertEqual(mcsmd._runtime["leer_seit"].get(self.iid), jetzt)
@@ -2298,6 +2309,7 @@ class RuhezustandTest(Basis):
         mcsmd.instances.set_running(self.iid, True, now=jetzt)
         fake = FalscherRunner(self.iid, spieler=0)
         mcsmd.REGISTRY._runners[self.iid] = fake
+        self.online_melden(0)
         mcsmd.ruhezustand_pruefen(jetzt + 120)
         self.assertEqual(mcsmd._runtime["leer_seit"], {})
         self.assertTrue(fake.running)
@@ -2335,6 +2347,7 @@ class RuhezustandTest(Basis):
     def test_ein_start_stellt_die_uhr_zurueck(self):
         mcsmd.instances.set_hibernation(self.iid, minutes=5)
         fake = self.laufender(spieler=0)
+        self.online_melden(0)
         jetzt = mcsmd.store_hosted.now()
         mcsmd.ruhezustand_pruefen(jetzt)
         self.assertIn(self.iid, mcsmd._runtime["leer_seit"])

@@ -4635,10 +4635,17 @@ def spielerzahl(inst: dict, run) -> int:
     """Wie viele Spieler auf diesem Server sind (``-1`` = unbekannt).
 
     Zuerst ``status.json`` des Begleit-Plugins (kostet nichts), ersatzweise ``list``.
+
+    Paper 26.2 lässt ``list`` von der Konsole abstürzen (getLevel() ist null). Ein Paper-Server hat
+    aber das Begleit-Plugin und liefert die Zahl über status.json; ist die noch nicht frisch, gilt
+    „unbekannt“ statt eines Konsolen-``list``. Nur Server ohne Plugin (Fabric, NeoForge) gehen den
+    Konsolenweg.
     """
     zahl = companion_spieler(inst)
     if zahl >= 0:
         return zahl
+    if str(inst.get("type")) == "java" and str(inst.get("flavor") or "paper") == "paper":
+        return -1
     return konsolen_spieler(run)
 
 
