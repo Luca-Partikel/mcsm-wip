@@ -39,6 +39,14 @@ MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore",
 _HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 #: Schlüssel früherer Fassungen, die aus vorhandenen config.yml verschwinden.
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
+# Alte Standard-Zeilen auf den neuen Standard heben – nur wenn unverändert (Kennzeichen in [0]).
+MIGRATE = {
+    "tablist_header": (
+        "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>",
+        'tablist_header: "<bold><server_name></bold>\\n'
+        '<gray>Online <white><online></white>/<white><max></white></gray>"',
+    ),
+}
 
 _KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):")
 
@@ -174,6 +182,10 @@ def write_config(folder: pathlib.Path, instance: dict, *, version: str = "") -> 
                 continue
             if key in REMOVED:
                 skipping = True
+                continue
+            mig = MIGRATE.get(key)
+            if mig and mig[0] in line:
+                out.append(mig[1])
                 continue
         elif skipping and (line.startswith((" ", "\t", "-")) or not line.strip()):
             if not line.strip():

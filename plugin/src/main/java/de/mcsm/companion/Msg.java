@@ -14,7 +14,7 @@ public final class Msg {
             "<gray>✦</gray> <green><bold>MCSM</bold></green> <dark_gray>¦</dark_gray> <white>";
     /** Erste Zeile der Serverlisten-Anzeige – gleiche Handschrift wie das Präfix. */
     public static final String MOTD_KOPF =
-            "<gray>✦</gray> <green><bold>MCSM</bold></green> <dark_gray>¦</dark_gray> <white><server_name></white>";
+            "<gray>✦</gray> <green><bold>MCSM</bold></green> <dark_gray>¦</dark_gray> <server_name>";
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
 
@@ -63,28 +63,33 @@ public final class Msg {
         return Placeholder.unparsed(key, Long.toString(value));
     }
 
-    /** Der Servername als fertiger Baustein in der im Programm gewählten Farbe bzw. dem Verlauf. */
+    /** Standard-Verlauf des Servernamens (Markenfarbe), solange im Programm nichts anderes gesetzt ist. */
+    public static final String DEFAULT_NAME_1 = "#3ddc84";
+    public static final String DEFAULT_NAME_2 = "#8ff0b4";
+
+    /**
+     * Der Servername als fertiger, <b>immer gefärbter</b> Baustein: entweder in der im Programm
+     * gewählten Farbe/dem Verlauf oder – solange nichts gesetzt ist – im Marken-Grünverlauf. Weil
+     * der Name seine Farbe selbst mitbringt, sieht er überall gleich aus, ohne dass eine Vorlage
+     * ihn einfärben müsste.
+     */
     public static Component serverNameComponent(Config cfg) {
-        String name = cfg.serverName == null ? "" : cfg.serverName;
-        if (!cfg.nameGefaerbt()) {
-            return Component.text(name);
-        }
-        String safe = MM.escapeTags(name);
-        String snip = (cfg.nameColor2 != null && !cfg.nameColor2.isBlank())
-                ? "<gradient:" + cfg.nameColor + ":" + cfg.nameColor2 + ">" + safe + "</gradient>"
-                : "<color:" + cfg.nameColor + ">" + safe + "</color>";
+        String safe = MM.escapeTags(cfg.serverName == null ? "" : cfg.serverName);
+        boolean eigen = cfg.nameGefaerbt();
+        String c1 = eigen ? cfg.nameColor : DEFAULT_NAME_1;
+        String c2 = eigen ? cfg.nameColor2 : DEFAULT_NAME_2;
+        String snip = (c2 != null && !c2.isBlank())
+                ? "<gradient:" + c1 + ":" + c2 + ">" + safe + "</gradient>"
+                : "<color:" + c1 + ">" + safe + "</color>";
         return mm(snip);
     }
 
     /**
-     * Platzhalter für den Servernamen. Ist im Programm eine Farbe gesetzt, kommt der Name als
-     * fertig gefärbter Baustein – seine Farbe schlägt die der Vorlage, damit er überall gleich
-     * aussieht. Ohne eigene Farbe bleibt es schlichter Text, sodass die jeweilige Vorlage
-     * (etwa der Tablist-Verlauf) weiter greift.
+     * Platzhalter für den Servernamen – immer der fertig gefärbte Baustein. Damit die Farbe
+     * wirklich greift, dürfen die Vorlagen den <code>&lt;server_name&gt;</code> nicht mehr in eine
+     * eigene Farbe wickeln (siehe MOTD-Kopf und Tablist).
      */
     public static TagResolver serverName(String key, Config cfg) {
-        return cfg.nameGefaerbt()
-                ? Placeholder.component(key, serverNameComponent(cfg))
-                : Placeholder.unparsed(key, cfg.serverName == null ? "" : cfg.serverName);
+        return Placeholder.component(key, serverNameComponent(cfg));
     }
 }

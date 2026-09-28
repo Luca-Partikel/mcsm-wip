@@ -24,8 +24,10 @@ public final class Config {
     public static final String DEFAULT_FIRST_JOIN =
             "<gold>★</gold> <white><name></white> <gray>ist zum ersten Mal hier – willkommen!</gray>";
     public static final String DEFAULT_DEATH_PREFIX = "<red>☠</red> ";
+    // Der Name bringt seine Farbe selbst mit (Msg.serverName) – deshalb hier kein eigener Verlauf,
+    // sonst überschriebe die Vorlage die im Programm gewählte Farbe.
     public static final String DEFAULT_HEADER =
-            "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>\n"
+            "<bold><server_name></bold>\n"
             + "<gray>Online <white><online></white>/<white><max></white></gray>";
     public static final String DEFAULT_FOOTER =
             "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MCSM</gray>";

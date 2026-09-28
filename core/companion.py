@@ -24,6 +24,15 @@ MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore",
            "autosave", "autosave_minutes", "motd_line", "motd_eigen", "name_color", "name_color2")
 # Schlüssel früherer Versionen, die aus vorhandenen config.yml entfernt werden
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
+# Alte Standard-Zeilen, die auf den neuen Standard gehoben werden – aber nur, wenn sie unverändert
+# sind (Kennzeichen in [0] enthalten). Wer die Zeile selbst angepasst hat, behält sie.
+MIGRATE = {
+    "tablist_header": (
+        "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>",
+        'tablist_header: "<bold><server_name></bold>\\n'
+        '<gray>Online <white><online></white>/<white><max></white></gray>"',
+    ),
+}
 SUSPICIOUS_HINT = ("Ein installiertes Plugin sieht nach Manipulation aus (gefälschte Spielerzahlen/Ping). "
                    "Auf lokalen Servern ist das erlaubt, auf Root-/Paid-Servern wird es gesperrt.")
 
@@ -156,6 +165,12 @@ def write_config(cfg: dict) -> pathlib.Path:
                 continue
             if key in REMOVED:
                 skipping = True
+                continue
+            mig = MIGRATE.get(key)
+            if mig and mig[0] in line:
+                # Alte, unveränderte Vorlagenzeile auf den neuen Standard heben (z. B. Tablist ohne
+                # eigenen Verlauf, damit die Servername-Farbe greift). Angepasste Zeilen bleiben.
+                out.append(mig[1])
                 continue
         elif skipping and (line.startswith((" ", "\t", "-")) or not line.strip()):
             if not line.strip():
