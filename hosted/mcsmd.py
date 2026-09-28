@@ -58,7 +58,7 @@ _HERE = pathlib.Path(__file__).resolve().parent
 _PKG = "mcsm_core"
 _MODULES = ("store_hosted", "users", "passes", "instances",
             "paths", "transfer", "ports", "isolation", "runner", "sources_linux",
-            "oauth", "routes", "companion", "xbox")
+            "oauth", "routes", "companion", "xbox", "bedrock_wecker")
 
 
 def _load_core() -> dict:
@@ -89,6 +89,9 @@ companion = _core["companion"]
 #: Xbox-Freunde-Modus (MCXboxBroadcast): ein Bot-Konto zeigt den Server seinen Xbox-Live-Freunden
 #: als beitretbare Welt. Für Konsolenspieler oft der einzige Weg auf einen fremden Server.
 xbox = _core["xbox"]
+#: Der Bedrock-Wecker: RakNet auf dem UDP-Port einer schlafenden Instanz – das Gegenstück zum
+#: Java-Verteiler für Konsolenspieler (siehe core/bedrock_wecker.py).
+bedrock = _core["bedrock_wecker"]
 
 # --------------------------------------------------------------------------- Einstellungen
 
@@ -122,6 +125,20 @@ HIBERNATION_GRACE = 300
 HIBERNATION_ANNOUNCE = 10
 #: So lange wird auf die Antwort des Konsolenbefehls „list“ gewartet (Ersatz für status.json).
 LIST_ANTWORT = 4.0
+
+# --------------------------------------------------------------------------- Konsolen (Bedrock)
+#: Takt des Abgleichs für Xbox-Bots und Bedrock-Wecker. Deutlich kürzer als die Pass-Schleife:
+#: Nach dem Stopp eines Servers soll der Wecker den Bedrock-Port in Sekunden übernehmen, nicht
+#: erst in einer Minute – sonst ist der Server für Konsolen so lange gar nicht sichtbar.
+KONSOLEN_TAKT = 15
+#: So viele Xbox-Bots dürfen höchstens gleichzeitig laufen. Ein Bot braucht 96–512 MB; bei 13 GB
+#: Maschine und Kundenservern daneben ist mehr nicht zu verantworten. Übersteuerbar mit
+#: ``MCSM_XBOX_MAX_BOTS`` – die übrigen Instanzen bekommen eine verständliche Meldung im Zustand.
+XBOX_MAX_BOTS = 10
+XBOX_MAX_BOTS_ENV = "MCSM_XBOX_MAX_BOTS"
+#: So oft wird ein laufender Server nach seiner Bedrock-Auskunft gefragt (Protokollfassung und
+#: Spielfassung für den Ruhezustand, siehe `bedrock_merkmale_lernen`).
+BEDROCK_LERNEN_SEKUNDEN = 1800
 #: „There are 0 of a max of 20 players online“ – auch die englische Kurzform „0/20“ passt.
 _LIST_RE = re.compile(r"(\d{1,5})\s*(?:of a max(?:imum)? of|/)\s*(\d{1,5})")
 
@@ -681,12 +698,16 @@ STOP_EVENT = threading.Event()
 
 
 def on_runner_exit(run, code: int) -> None:
-    """Nach dem Ende eines Servers: Bot anhalten, Ports freigeben, Zustand nachtragen."""
+    """Nach dem Ende eines Servers: Ports freigeben, Zustand nachtragen, Konsolen bedienen.
+
+    **Der Xbox-Bot bleibt an.** Früher wurde er hier gestoppt – und genau das machte den
+    Ruhezustand für Konsolenspieler kaputt: Mit dem Serverprozess verschwand der Bot, mit dem
+    Bot verschwand der Server aus der Freundesliste, und niemand konnte ihn mehr anpingen oder
+    durch einen Beitritt starten. Der Bot gehört an die **Instanz**, nicht an den Prozess
+    (siehe `konsolen_abgleichen`). Er hält keine Welt und kostet wenig Speicher; was er
+    ankündigt, beantwortet im Ruhezustand der Bedrock-Wecker.
+    """
     iid = run.spec.instance_id
-    # Der Bot des Xbox-Freunde-Modus stoppt **mit** dem Server: er würde sonst weiter eine Welt
-    # ankündigen, die es nicht mehr gibt, und die Freunde liefen in einen Verbindungsfehler.
-    # Das deckt auch den Ruhezustand ab – dort endet der Serverprozess auf demselben Weg.
-    xbox_stop_for(iid, "Server beendet")
     try:
         instances.set_running(iid, False)
     except ValueError:
@@ -712,6 +733,12 @@ def on_runner_exit(run, code: int) -> None:
     # „gibt es hier nicht“.
     schreibe_routen(f"Server {iid} beendet")
     log_event(f"Server {iid} beendet (Code {code}).")
+    # Jetzt darf der Bedrock-Wecker den UDP-Port wieder übernehmen: der Serverprozess ist
+    # wirklich beendet (dieser Rückruf kommt aus dem Wartefaden des Runners). Klappt der Bind
+    # trotzdem noch nicht, weil der Socket von Geyser einen Moment nachhängt, versucht es der
+    # Abgleich im nächsten Takt erneut.
+    WECKER.entsperren(iid)
+    konsolen_anstossen()
 
 
 def grant_group_access(spec) -> None:
@@ -739,6 +766,39 @@ def _grant_group(folder, run_as: str, iid: str) -> None:
 REGISTRY = runner.RunnerRegistry(on_exit=on_runner_exit)
 #: Die Bots des Xbox-Freunde-Modus – höchstens einer je Instanz (siehe core/xbox.py).
 XBOX = xbox.BroadcasterRegistry()
+
+
+def _bedrock_weckruf(instance_id: str) -> tuple:
+    """Weckruf vom Bedrock-Port: dieselbe Prüfung und dieselbe Sperre wie beim Java-Verteiler.
+
+    Der Java-Verteiler ist ein **eigener** Prozess und geht deshalb über die Rückschleife
+    (``POST /api/router/wake`` mit dem Geheimnis aus ``router_secret``). Der Bedrock-Wecker
+    läuft im Dienst selbst und ruft `wecke_instanz` direkt – dieselbe Funktion, dieselbe
+    `WAKE_LOCKS`-Sperre, derselbe deutsche Satz für den Spieler. Ein HTTP-Aufruf an sich selbst
+    brächte nur ein Geheimnis und eine Wartefrist mehr ins Spiel.
+
+    Genau deshalb wohnt der Wecker hier und nicht im Verteiler: Er muss den UDP-Port **vor** der
+    Portvergabe hergeben. Aus einem anderen Prozess wäre das ein Wettlauf, und der Verlierer
+    wäre Geyser – es könnte den Port nicht binden und für die ganze Laufzeit des Servers käme
+    kein Bedrock-Spieler mehr herein.
+    """
+    iid = str(instance_id)
+    inst = instances.get_instance(iid)
+    if inst is None:
+        return False, "Diesen Server gibt es hier nicht."
+    out = wecke_instanz(inst)
+    return bool(out.get("ok")), str(out.get("meldung") or "")
+
+
+#: Der Bedrock-Wecker: hält den UDP-Port jeder schlafenden Crossplay-Instanz.
+WECKER = bedrock.Wecker(wecken=_bedrock_weckruf, melder=lambda text: log_event(text))
+#: Weckt den Abgleich der Konsolen-Dienste sofort auf (Start, Stopp, Einstellung geändert).
+KONSOLEN_ANSTOSS = threading.Event()
+
+
+def konsolen_anstossen() -> None:
+    """Den Abgleich von Xbox-Bots und Bedrock-Wecker sofort anstoßen (statt bis zum Takt warten)."""
+    KONSOLEN_ANSTOSS.set()
 
 
 # --------------------------------------------------------------------------- Fehler
@@ -1390,7 +1450,8 @@ def xbox_status_of(inst: dict) -> dict:
                 "address": xbox_address(), "port": 0,
                 "host_name": str(inst.get("name") or ""), "token_cached": False,
                 "uptime": 0, "console_next": 0, "restart_needed": False,
-                "possible": False, "reason": str(exc), "state_text": str(exc)}
+                "possible": False, "reason": str(exc), "state_text": str(exc),
+                "limited": False, "wecker_port": 0}
     out = xbox.status_for(spec, XBOX.find(iid),
                           enabled=instances.xbox_enabled(inst),
                           autostart=instances.xbox_autostart(inst))
@@ -1402,34 +1463,415 @@ def xbox_status_of(inst: dict) -> dict:
     out["reason"] = grund
     if grund and not out["running"]:
         out["state_text"] = grund
+    # Der Bot soll laufen, tut es aber nicht, weil die Obergrenze erreicht ist – das gehört in
+    # die Anzeige, sonst steht dort bloß „aus“ und niemand weiß, warum (siehe `xbox_max_bots`).
+    klage = xbox_klage(iid)
+    if klage and not out["running"]:
+        out["state_text"] = klage
+        out["limited"] = True
+    else:
+        out["limited"] = False
+    # Was der Bedrock-Wecker für diese Instanz gerade hält (0 = nichts). Daran sieht der
+    # Betreiber, dass ein schlafender Server für Konsolen wirklich erreichbar ist.
+    out["wecker_port"] = WECKER.port_von(iid)
     return out
 
 
-def xbox_start_if_enabled(inst: dict) -> None:
-    """Den Bot mit dem Server starten – wie `manager.start_broadcaster_if_enabled` auf dem PC.
+def xbox_start_if_enabled(inst: dict) -> str:
+    """Den Bot einer Instanz starten – unabhängig davon, ob der Server läuft.
 
-    Ein Fehlschlag bleibt ohne Folgen für den Server: der Zustand des Bots sagt, was fehlt.
+    Der Bot gehört an die **Instanz**: Solange sie hier liegt und der Xbox-Freunde-Modus
+    eingeschaltet ist, soll der Server in der Freundesliste der Konsolen stehen – auch wenn er
+    schläft. Dann beantwortet der Bedrock-Wecker den Ping, und ein Beitritt weckt ihn.
+
+    Rückgabe: leerer Text, wenn der Bot läuft (oder gar nicht laufen soll) – sonst der Grund in
+    deutschem Klartext. Ein Fehlschlag bleibt ohne Folgen für den Server.
     """
     if not (instances.xbox_enabled(inst) and instances.xbox_autostart(inst)):
-        return
+        return ""
     iid = str(inst.get("id") or "")
+    grenze = xbox_grenze_erreicht(iid)
+    if grenze:
+        _xbox_klage_setzen(iid, grenze)
+        return grenze
+    # Ein Start, der gerade erst versagt hat, wird nicht alle `KONSOLEN_TAKT` Sekunden wiederholt.
+    warten = _xbox_warten(iid)
+    if warten and not (XBOX.find(iid) is not None and XBOX.find(iid).running):
+        return warten
     try:
         bot = XBOX.get(build_xbox_spec(inst))
         bot.start()
         log_event(f"Xbox-Freunde-Modus von {iid} gestartet "
                   f"({bot.spec.address}:{bot.spec.port}).")
     except (ValueError, OSError) as exc:
+        _xbox_fehlversuch_setzen(iid, str(exc))
+        _xbox_klage_setzen(iid, str(exc))
         log_event(f"Der Xbox-Freunde-Modus von {iid} ließ sich nicht starten: {exc}")
+        return str(exc)
+    _xbox_fehlversuch_setzen(iid, "")
+    _xbox_klage_setzen(iid, "")
+    return ""
 
 
 def xbox_stop_for(instance_id: str, grund: str = "") -> None:
-    """Den Bot einer Instanz anhalten (Server aus, Ruhezustand, Instanz weg)."""
+    """Den Bot einer Instanz anhalten.
+
+    Gestoppt wird nur noch aus vier Gründen: Xbox ausgeschaltet, Instanz gelöscht oder
+    freigegeben, kein gültiger Pass mehr (dann ist der Server ohnehin nicht weckbar) und Ende
+    des Dienstes. **Nicht** mehr, wenn der Serverprozess endet – siehe `on_runner_exit`.
+    """
     try:
         if XBOX.stop(str(instance_id)):
             log_event(f"Xbox-Freunde-Modus von {instance_id} beendet"
                       + (f" ({grund})." if grund else "."))
     except Exception as exc:                                        # noqa: BLE001
         log_event(f"Beim Beenden des Xbox-Bots von {instance_id}: {exc}")
+
+
+# --------------------------------------------------------------------------- Konsolen: Abgleich
+#
+# Zwei Dinge müssen für Konsolenspieler unabhängig vom Serverprozess stimmen:
+#
+# 1. Der **Xbox-Bot** läuft, solange die Instanz existiert und Xbox eingeschaltet ist – sonst
+#    verschwindet der Server aus der Freundesliste und niemand kann ihn anpingen.
+# 2. Der **Bedrock-Wecker** hält den UDP-Port, solange der Server nicht läuft – sonst liefe
+#    jeder Versuch ins Leere, obwohl der Eintrag sichtbar ist.
+#
+# Beides hängt an denselben Angaben (Zustand, Pass, Crossplay, Bedrock-Port), deshalb macht es
+# ein Durchlauf: `konsolen_abgleichen`.
+
+#: Warum der Bot einer Instanz gerade nicht läuft, obwohl er sollte (Obergrenze erreicht, nichts
+#: eingerichtet, Port unbekannt) – je Instanz ``(Text, Zeitpunkt)``. Der Text geht unverändert in
+#: den Zustand, den das Programm auf dem PC anzeigt.
+_XBOX_KLAGEN: dict = {}
+#: Gescheiterte Startversuche mit Zeitpunkt – nur für die Wartezeit, nicht für die Anzeige.
+_XBOX_FEHLVERSUCH: dict = {}
+_XBOX_KLAGEN_LOCK = threading.Lock()
+#: So lange wird ein gescheiterter Botstart nicht wiederholt. Ohne das versuchte der Abgleich es
+#: alle `KONSOLEN_TAKT` Sekunden neu, schrieb jedes Mal `config.yml` und zöge die Dateirechte
+#: nach – für einen Bot, dem zum Beispiel die Jar fehlt und der so nie startet.
+XBOX_NEUVERSUCH = 300
+
+
+def xbox_max_bots() -> int:
+    """Wie viele Bots gleichzeitig laufen dürfen (``MCSM_XBOX_MAX_BOTS``, Vorgabe 10)."""
+    roh = (os.environ.get(XBOX_MAX_BOTS_ENV) or "").strip()
+    if not roh:
+        return XBOX_MAX_BOTS
+    try:
+        wert = int(roh)
+    except ValueError:
+        return XBOX_MAX_BOTS
+    return max(1, min(64, wert))
+
+
+def _xbox_klage_setzen(iid: str, text: str) -> None:
+    """Grund merken (oder löschen). Protokolliert wird nur eine **neue** Klage."""
+    with _XBOX_KLAGEN_LOCK:
+        alt = str(_XBOX_KLAGEN.get(str(iid)) or "")
+        if text:
+            _XBOX_KLAGEN[str(iid)] = str(text)
+        else:
+            _XBOX_KLAGEN.pop(str(iid), None)
+    if text and alt != text:
+        log_event(f"Xbox-Freunde-Modus von {iid}: {text}")
+
+
+def xbox_klage(iid: str) -> str:
+    with _XBOX_KLAGEN_LOCK:
+        return str(_XBOX_KLAGEN.get(str(iid)) or "")
+
+
+def _xbox_fehlversuch_setzen(iid: str, text: str) -> None:
+    with _XBOX_KLAGEN_LOCK:
+        if text:
+            _XBOX_FEHLVERSUCH[str(iid)] = (str(text), time.time())
+        else:
+            _XBOX_FEHLVERSUCH.pop(str(iid), None)
+
+
+def _xbox_warten(iid: str) -> str:
+    """Hat ein Start gerade erst versagt? Dann der Grund – sonst leer (neuer Versuch erlaubt)."""
+    with _XBOX_KLAGEN_LOCK:
+        text, wann = _XBOX_FEHLVERSUCH.get(str(iid)) or ("", 0.0)
+    if text and time.time() - float(wann) < XBOX_NEUVERSUCH:
+        return text
+    return ""
+
+
+def xbox_grenze_erreicht(instance_id: str) -> str:
+    """Leerer Text, wenn noch ein Bot dazu darf – sonst die Meldung für den Betreiber.
+
+    Ein Bot braucht 96–512 MB. Die Maschine hat 13 GB, und davon gehört der größte Teil den
+    Kundenservern; zwanzig Bots wären ein Gigabyte für nichts. Hat diese Instanz schon einen
+    laufenden Bot, zählt sie nicht gegen die Grenze (sonst stoppte sich der Abgleich selbst).
+    """
+    grenze = xbox_max_bots()
+    laufende = XBOX.running_ids()
+    if str(instance_id) in laufende or len(laufende) < grenze:
+        return ""
+    return (f"Auf dem Root-Server laufen schon {len(laufende)} von {grenze} möglichen "
+            f"Xbox-Bots. Dieser Server kommt in die Freundesliste, sobald ein anderer Bot frei "
+            f"wird – oder wenn der Betreiber die Obergrenze anhebt.")
+
+
+def xbox_pass_fehlt(inst: dict, *, now: int | None = None) -> str:
+    """Leerer Text, wenn das Konto einen Pass hat, der diesen Server tragen kann – sonst der Grund.
+
+    Ohne Pass lässt sich der Server nicht wecken; ein Bot, der ihn trotzdem in der Freundesliste
+    anbietet, führt die Konsolenspieler in eine Sackgasse. **Nur** der Pass zählt hier, nicht das
+    Kontingent: „es läuft schon ein anderer Server“ ist vorübergehend, und dann soll der Eintrag
+    sichtbar bleiben – der Bedrock-Wecker nennt den Grund in Zeile 2.
+    """
+    stamp = store_hosted.now() if now is None else int(now)
+    uid = str(inst.get("owner") or "")
+    aktiv = passes.active_passes(uid, now=stamp) if uid else []
+    if not aktiv:
+        return "Für dieses Konto gibt es gerade keinen gültigen Pass."
+    herkunft = str(inst.get("origin") or "local")
+    if not any(passes.allows_origin(eintrag, herkunft) for eintrag in aktiv):
+        return "Der Pass dieses Kontos deckt diesen Server nicht."
+    return ""
+
+
+def xbox_soll_laufen(inst: dict, *, now: int | None = None) -> str:
+    """Leerer Text, wenn der Bot dieser Instanz laufen soll – sonst der Grund dagegen."""
+    if str(inst.get("state") or "") != "hosted":
+        return "Der Server liegt gerade nicht auf dem Root-Server."
+    if not instances.xbox_enabled(inst):
+        return "Der Xbox-Freunde-Modus ist ausgeschaltet."
+    if not instances.xbox_autostart(inst):
+        return "Der Bot startet nur auf Zuruf („mit dem Server starten“ ist aus)."
+    return xbox_pass_fehlt(inst, now=now)
+
+
+def xbox_neustart_faellig(bot) -> str:
+    """Muss der laufende Bot neu gemeldet werden? Rückgabe: leer oder der Grund.
+
+    Angefasst wird nur, was den Beitritt wirklich kaputt macht: **Adresse und Port**. Ein neuer
+    Anzeigename oder eine geänderte Spielerzahl warten auf den nächsten Start – jeder Neustart
+    meldet die Xbox-Live-Sitzung neu an, und das soll nicht wegen Kosmetik passieren.
+    """
+    alt, neu = bot.active_spec, bot.spec
+    if alt is None or neu is None:
+        return ""
+    if int(alt.port or 0) != int(neu.port or 0):
+        return f"der Bedrock-Port hat sich geändert ({alt.port} → {neu.port})"
+    if str(alt.address) != str(neu.address):
+        return f"die beworbene Adresse hat sich geändert ({alt.address} → {neu.address})"
+    return ""
+
+
+def bedrock_ziel_fuer(inst: dict, *, frei: int | None = None,
+                      now: int | None = None) -> "bedrock.Ziel | None":
+    """Das Ziel des Bedrock-Weckers für eine schlafende Instanz – oder ``None``.
+
+    ``None`` heißt: Hier gibt es nichts zu halten. Gründe: der Server läuft (dann gehört der
+    Port Geyser), die Instanz liegt nicht hier, es gibt kein Crossplay, der Port steht noch
+    nicht fest – oder es ist ein Bedrock-Dedicated-Server mit NetherNet, der überhaupt nicht
+    auf RakNet lauscht (dort läuft die Verbindung über die Xbox-Sitzung).
+    """
+    iid = str(inst.get("id") or "")
+    if not iid or str(inst.get("state") or "") != "hosted":
+        return None
+    if str(inst.get("type") or "java") != "java":
+        return None
+    lauf = REGISTRY.find(iid)
+    if lauf is not None and lauf.running:
+        return None
+    folder = instance_dir(inst)
+    if not has_geyser(folder):
+        return None
+    port = xbox_bedrock_port(inst, folder)
+    if not port:
+        return None
+    wecken = instances.hibernation_enabled(inst)
+    if not wecken:
+        # Ruhezustand aus: der Server bleibt aus, bis ihn jemand von Hand einschaltet. Der Ping
+        # wird trotzdem beantwortet – ein sichtbarer Eintrag mit Grund ist besser als ein toter.
+        zeile2 = bedrock.ZEILE2_LAEUFT_NICHT
+    else:
+        try:
+            pruef = instances.check_start(iid, now=now, free_bytes=frei)
+        except ValueError:
+            return None                 # Instanz ist zwischenzeitlich verschwunden
+        zeile2 = bedrock.ZEILE2_AUS if pruef.ok else str(pruef.reason or bedrock.ZEILE2_AUS)
+    merk = bedrock_merkmal(iid)
+    return bedrock.Ziel(
+        instanz=iid, port=int(port),
+        zeile1=bedrock.zeile1_fuer(inst.get("name")),
+        zeile2=zeile2,
+        max_spieler=max_players_of(folder, routen.MAX_SPIELER_VORGABE),
+        protokoll=int(merk.get("protokoll") or bedrock.protokoll_vorgabe()),
+        version=str(merk.get("version") or bedrock.version_vorgabe()),
+        spielmodus=str(merk.get("spielmodus") or bedrock.SPIELMODUS_VORGABE),
+        wecken=wecken)
+
+
+def konsolen_abgleichen(now: int | None = None) -> dict:
+    """Xbox-Bots und Bedrock-Wecker auf den wirklichen Zustand bringen.
+
+    Ein Durchlauf über alle Instanzen, zwei Ergebnisse:
+
+    * Bots, die laufen sollen, werden gestartet; Bots, die nicht mehr dürfen, gestoppt. Über die
+      Obergrenze (`xbox_max_bots`) hinaus wird keiner gestartet – die betroffene Instanz bekommt
+      den Grund in ihren Zustand (`xbox_klage`), damit im Programm auf dem PC nicht bloß „aus“
+      steht.
+    * Der Wecker hält genau die Bedrock-Ports der Instanzen, die gerade **nicht** laufen.
+
+    Rückgabe für Protokoll und Selbsttests: ``{"gestartet": [...], "gestoppt": [...],
+    "wecker": {...}, "offen": [...]}`` – „offen“ sind die Bots, die (noch) nicht laufen.
+    """
+    if STOP_EVENT.is_set():
+        # Der Dienst hält gerade an: `shutdown` hat die Bedrock-Ports schon hergegeben, und ein
+        # Abgleich würde sie wieder belegen – der nächste Start des Dienstes fände sie besetzt.
+        return {"gestartet": [], "gestoppt": [], "wecker": {}, "offen": []}
+    stamp = store_hosted.now() if now is None else int(now)
+    frei = instances.free_disk_bytes()
+    ziele: list = []
+    soll: list = []
+    gestoppt: list = []
+    gesehen: set = set()
+    for inst in instances.all_instances():
+        iid = str(inst.get("id") or "")
+        if not iid:
+            continue
+        gesehen.add(iid)
+        ziel = bedrock_ziel_fuer(inst, frei=frei, now=stamp)
+        if ziel is not None:
+            ziele.append(ziel)
+        grund = xbox_soll_laufen(inst, now=stamp)
+        if grund:
+            bot = XBOX.find(iid)
+            if bot is not None and bot.running:
+                xbox_stop_for(iid, grund)
+                gestoppt.append(iid)
+            _xbox_klage_setzen(iid, "")
+            _xbox_fehlversuch_setzen(iid, "")   # frischer Anlauf, sobald er wieder darf
+            continue
+        soll.append(inst)
+    wecker = WECKER.abgleichen(ziele)
+
+    gestartet: list = []
+    offen: list = []
+    for inst in soll:
+        iid = str(inst.get("id") or "")
+        bot = XBOX.find(iid)
+        if bot is not None and bot.running:
+            try:
+                XBOX.get(build_xbox_spec(inst))          # neue Angaben hinterlegen
+            except ValueError:
+                pass
+            fall = xbox_neustart_faellig(bot)
+            if fall:
+                log_event(f"Der Xbox-Bot von {iid} wird neu angemeldet: {fall}.")
+                xbox_stop_for(iid, fall)
+                xbox_start_if_enabled(inst)
+            _xbox_klage_setzen(iid, "")
+            continue
+        klage = xbox_start_if_enabled(inst)
+        frisch = XBOX.find(iid)
+        if frisch is not None and frisch.running:
+            gestartet.append(iid)
+        elif klage:
+            offen.append(iid)
+    # Gründe zu Instanzen, die es nicht mehr gibt, wegräumen (gelöscht, zurückgeholt).
+    with _XBOX_KLAGEN_LOCK:
+        for kennung in [k for k in _XBOX_KLAGEN if k not in gesehen]:
+            _XBOX_KLAGEN.pop(kennung, None)
+            _XBOX_FEHLVERSUCH.pop(kennung, None)
+    if wecker.get("neu") or wecker.get("weg"):
+        teile = []
+        if wecker.get("neu"):
+            teile.append("neu: " + ", ".join(wecker["neu"]))
+        if wecker.get("weg"):
+            teile.append("weg: " + ", ".join(wecker["weg"]))
+        log_event("Bedrock-Wecker: " + "; ".join(teile) + ".")
+    return {"gestartet": gestartet, "gestoppt": gestoppt, "wecker": wecker,
+            "offen": offen}
+
+
+# --------------------------------------------------------------------------- Konsolen: Merkmale
+#
+# Protokollfassung und Spielfassung kann der Wecker nicht wissen – der RakNet-Ping eines Clients
+# bringt sie nicht mit (anders als der Java-Handshake, dessen Protokollzahl der Verteiler
+# einfach spiegelt). Also wird der **laufende** Server danach gefragt und die Antwort gemerkt.
+# Stimmen die Zahlen nicht, ist das nur Kosmetik: Die Konsole zeigt am Eintrag unter Umständen
+# „veralteter Server“ an – der Beitritt weckt trotzdem.
+
+
+def bedrock_merkmal(instance_id: str) -> dict:
+    with _runtime_lock:
+        alle = dict(_runtime.get("bedrock") or {})
+    eintrag = alle.get(str(instance_id))
+    return dict(eintrag) if isinstance(eintrag, dict) else {}
+
+
+def bedrock_merkmal_setzen(instance_id: str, auskunft, *, now: int | None = None) -> None:
+    stamp = store_hosted.now() if now is None else int(now)
+    neu = {"protokoll": int(auskunft.protokoll or 0) or bedrock.protokoll_vorgabe(),
+           "version": str(auskunft.version or "") or bedrock.version_vorgabe(),
+           "spielmodus": str(auskunft.spielmodus or "") or bedrock.SPIELMODUS_VORGABE,
+           "seit": stamp}
+    with _runtime_lock:
+        alle = dict(_runtime.get("bedrock") or {})
+        alt = alle.get(str(instance_id)) or {}
+        alle[str(instance_id)] = neu
+        _runtime["bedrock"] = alle
+    runtime_save()
+    if (str(alt.get("version") or "") != neu["version"]
+            or int(alt.get("protokoll") or 0) != neu["protokoll"]):
+        log_event(f"Bedrock-Auskunft von {instance_id} gelernt: {neu['version']} "
+                  f"(Protokoll {neu['protokoll']}, {neu['spielmodus']}).")
+
+
+def bedrock_merkmale_lernen(now: int | None = None) -> int:
+    """Laufende Crossplay-Server nach ihrer Bedrock-Auskunft fragen. Rückgabe: Anzahl.
+
+    Nur für Server, die wirklich laufen (dann antwortet Geyser auf dem Port) und nur alle
+    `BEDROCK_LERNEN_SEKUNDEN`. Fragt über die Rückschleife, nicht über das offene Netz.
+    """
+    stamp = store_hosted.now() if now is None else int(now)
+    gelernt = 0
+    for inst in instances.all_instances():
+        iid = str(inst.get("id") or "")
+        if str(inst.get("type") or "java") != "java" or not instances.is_running(inst):
+            continue
+        lauf = REGISTRY.find(iid)
+        if lauf is None or not lauf.running:
+            continue
+        port = int((ports_live_of(iid).get("bedrock_port")) or 0)
+        if not port:
+            continue
+        alt = bedrock_merkmal(iid)
+        if alt and stamp - int(alt.get("seit") or 0) < BEDROCK_LERNEN_SEKUNDEN:
+            continue
+        auskunft = bedrock.frage_server(port)
+        if auskunft is None:
+            continue
+        bedrock_merkmal_setzen(iid, auskunft, now=stamp)
+        gelernt += 1
+    return gelernt
+
+
+def konsolen_loop() -> None:
+    """Eigene Schleife für Xbox-Bots und Bedrock-Wecker (Takt `KONSOLEN_TAKT`).
+
+    Nicht in der Pass-Schleife: Nach dem Stopp eines Servers soll der Wecker den Bedrock-Port in
+    Sekunden übernehmen, nicht erst in einer Minute. Der Anstoß (`konsolen_anstossen`) verkürzt
+    das Warten zusätzlich, wenn gerade etwas passiert ist.
+    """
+    while not STOP_EVENT.is_set():
+        try:
+            konsolen_abgleichen()
+        except Exception:                                           # noqa: BLE001
+            log_event("Fehler beim Abgleich der Konsolen-Dienste:\n" + traceback.format_exc())
+        try:
+            bedrock_merkmale_lernen()
+        except Exception:                                           # noqa: BLE001
+            log_event("Fehler beim Lesen der Bedrock-Auskunft:\n" + traceback.format_exc())
+        KONSOLEN_ANSTOSS.wait(KONSOLEN_TAKT)
+        KONSOLEN_ANSTOSS.clear()
 
 
 def server_view(inst: dict) -> dict:
@@ -2267,14 +2709,19 @@ def h_server_settings(req: Req, iid: str):
             enabled=data.get("xbox_enabled") if "xbox_enabled" in data else None,
             autostart=data.get("xbox_autostart") if "xbox_autostart" in data else None)
         # Ausgeschaltet heißt ausgeschaltet: ein laufender Bot würde sonst weiter ankündigen.
+        # Eingeschaltet heißt an: Der Bot hängt an der Instanz, nicht am Serverprozess – er
+        # startet also gleich, auch wenn der Server gerade schläft.
         if not instances.xbox_enabled(instances.get_instance(iid) or inst):
             xbox_stop_for(iid, "über die Einstellungen ausgeschaltet")
+        konsolen_anstossen()
     # Die Unterdomäne bleibt beim Umbenennen **absichtlich** gleich: die Spieler haben die
     # Adresse im Serverbrowser stehen. Nachgetragen wird nur, wenn noch gar keine da ist.
     ensure_marke(instances.get_instance(iid) or inst)
     # In der Tabelle des Verteilers stehen Anzeigename und „darf geweckt werden“ – beides kann
-    # sich hier geändert haben.
+    # sich hier geändert haben. Der Bedrock-Wecker bekommt „darf geweckt werden“ und den Namen
+    # beim nächsten Abgleich.
     schreibe_routen(f"Einstellungen von {iid} geändert")
+    konsolen_anstossen()
     return {"server": server_view(instances.get_instance(iid) or inst)}
 
 
@@ -2293,6 +2740,7 @@ def h_server_delete(req: Req, iid: str):
     folder = instance_dir(inst)
     REGISTRY.drop(iid, timeout=STOP_TIMEOUT)
     XBOX.drop(iid)
+    WECKER.freigeben(iid)               # der Bedrock-Port gehoert jetzt niemandem mehr
     POOL.release(iid)
     save_ports()
     removed = {"deleted": False}
@@ -2345,6 +2793,13 @@ def start_instanz(inst: dict) -> tuple:
             folder = ensure_instance_dir(inst)
             geyser = has_geyser(folder)
             kind = "bedrock" if str(inst.get("type")) == "bedrock" else "java"
+            # **Erst schließen, dann starten.** Der Bedrock-Wecker hält den UDP-Port, solange
+            # der Server schläft. Gäbe er ihn nicht jetzt her, hielte ihn `PortPool.allocate`
+            # für belegt und Geyser bekäme einen anderen Port – oder, wenn die Reihenfolge
+            # kippte, könnte Geyser gar nicht binden und für die ganze Laufzeit käme kein
+            # Bedrock-Spieler herein. Die Sperre im Wecker hält ihn bis zum Ende des Servers
+            # von diesem Port fern (`on_runner_exit` hebt sie auf).
+            WECKER.freigeben(iid)
             POOL.allocate_for(iid, kind, geyser=geyser, max_players=max_players_of(folder))
             assignment = POOL.assignment(iid)
             apply_ports(inst, folder, assignment, geyser)
@@ -2373,19 +2828,23 @@ def start_instanz(inst: dict) -> tuple:
             # UDP-Block wird nur im Betrieb gebraucht und geht zurück.
             POOL.release(iid, ports.BEDROCK_POOL)
             save_ports()
+            # Der Server läuft nicht – dann soll der Wecker den Bedrock-Port sofort wieder
+            # übernehmen und den Grund in Zeile 2 nennen, statt bis zum Ablauf der Sperre zu
+            # schweigen.
+            WECKER.entsperren(iid)
+            konsolen_anstossen()
             raise
         save_ports()
     _woken_vergessen(iid)
     _leerstand_vergessen(iid)
     schreibe_routen(f"Server {iid} gestartet")
     log_event(f"Server {iid} gestartet (Ports {assignment}).")
-    # Der Bot des Xbox-Freunde-Modus startet **mit** dem Server – erst jetzt steht der
-    # Bedrock-Port fest, den er ankündigen muss. In eigenem Faden: das Aufräumen eines
-    # vergessenen Bots darf die Antwort auf „Start“ nicht aufhalten.
-    frisch = instances.get_instance(iid) or inst
-    if instances.xbox_enabled(frisch) and instances.xbox_autostart(frisch):
-        threading.Thread(target=xbox_start_if_enabled, args=(frisch,), daemon=True,
-                         name=f"xbox-start-{iid}").start()
+    # Der Bot des Xbox-Freunde-Modus läuft unabhängig vom Server – er muss hier also nicht
+    # gestartet werden. Zu tun bleibt: Wenn der Server gerade einen **anderen** Bedrock-Port
+    # bekommen hat, kündigt der Bot noch den alten an und muss neu angemeldet werden. Das
+    # erledigt `konsolen_abgleichen` (mit der Obergrenze und im eigenen Faden), damit die
+    # Antwort auf „Start“ nicht darauf wartet.
+    konsolen_anstossen()
     return assignment, run
 
 
@@ -2693,6 +3152,11 @@ def h_xbox_start(req: Req, iid: str):
     grund = xbox_moeglich(inst)
     if grund:
         raise ApiError(grund, 409)
+    # Auch auf Zuruf gilt die Obergrenze: Jeder Bot belegt Arbeitsspeicher, den sonst ein Server
+    # bräuchte. Die Meldung sagt, wie viele laufen und wann es wieder geht.
+    voll = xbox_grenze_erreicht(iid)
+    if voll:
+        raise ApiError(voll, 409)
     try:
         instances.set_xbox(iid, enabled=True)
         bot = XBOX.get(build_xbox_spec(instances.get_instance(iid) or inst))
@@ -3296,6 +3760,7 @@ def h_release(req: Req, iid: str):
                 f"force=1 wiederholen, wenn sie wirklich weg dürfen.", 409)
     REGISTRY.drop(iid, timeout=10)
     XBOX.drop(iid)
+    WECKER.freigeben(iid)
     POOL.release(iid)
     save_ports()
     deleted = {"deleted": False, "files": 0, "bytes": 0}
@@ -3582,6 +4047,7 @@ def h_admin_delete_user(req: Req, uid: str):
     for inst in own:
         REGISTRY.drop(inst["id"], timeout=30)
         XBOX.drop(inst["id"])
+        WECKER.freigeben(inst["id"])
         POOL.release(inst["id"])
         folder = instance_dir(inst)
         if folder.is_dir():
@@ -4850,8 +5316,13 @@ def xbox_wieder_aufnehmen() -> None:
     gestoppt und hier neu gestartet – und ein trotzdem übrig gebliebener Bot (Absturz des
     Dienstes, SIGKILL) zuerst beendet: zwei Bots kündigten Xbox Live dieselbe Sitzung doppelt an,
     und die Freunde landeten wechselweise auf einer tote Verbindung.
+
+    Hochgefahren wird jeder Bot, dessen Instanz Xbox eingeschaltet hat – **nicht** nur die der
+    laufenden Server. Genau daran hing der Befund des Betreibers: Nach einem Neustart standen
+    seine schlafenden Server nicht mehr in der Freundesliste der Konsolen, und ohne Eintrag gibt
+    es auch keinen Beitritt, der sie wecken könnte. Die Anmeldung kommt dabei aus
+    ``xbox/cache/cache.json`` – es wird **kein** neuer Gerätecode fällig.
     """
-    zu_starten: list = []
     for inst in instances.all_instances():
         iid = str(inst.get("id") or "")
         try:
@@ -4865,11 +5336,13 @@ def xbox_wieder_aufnehmen() -> None:
                 xbox.stop_orphan(spec)
         except OSError as exc:
             log_event(f"Der alte Xbox-Bot von {iid} ließ sich nicht prüfen: {exc}")
-        if (str(inst.get("state") or "") == "hosted" and instances.is_running(inst)
-                and instances.xbox_enabled(inst) and instances.xbox_autostart(inst)):
-            zu_starten.append(inst)
-    for inst in zu_starten:
-        xbox_start_if_enabled(inst)
+    # Welche Bots laufen sollen und welche Bedrock-Ports der Wecker übernimmt, entscheidet der
+    # gemeinsame Abgleich – hier wie später im Takt.
+    ergebnis = konsolen_abgleichen()
+    if ergebnis["gestartet"]:
+        log_event(f"{len(ergebnis['gestartet'])} Xbox-Bot(s) hochgefahren "
+                  f"({', '.join(ergebnis['gestartet'])}) – sie bleiben an, solange die Instanz "
+                  f"hier liegt.")
 
 
 def startup() -> None:
@@ -4902,7 +5375,6 @@ def startup() -> None:
     # Gemeinsames Geheimnis für den Weckruf des Verteilers (0600, wird beim ersten Start angelegt).
     ensure_router_secret()
     adopt_running()
-    xbox_wieder_aufnehmen()
     save_ports()
     # Unterdomänen und feste Ports nachtragen: Instanzen aus der Zeit vor dieser Fassung haben
     # weder Marke noch Port, und ohne Port überspringt `routes.tabelle` sie – der Verteiler sagte
@@ -4913,6 +5385,10 @@ def startup() -> None:
         if str(inst.get("state") or "") in PORT_ZUSTAENDE:
             ensure_port(inst, "beim Start des Dienstes nachgetragen")
     schreibe_routen("Start des Dienstes")
+    # Erst jetzt: die Bots und der Bedrock-Wecker brauchen die fertigen Ports. Beides gehört an
+    # die Instanz, nicht an den Serverprozess – ein schlafender Server bleibt für Konsolen
+    # sichtbar und weckbar (siehe `konsolen_abgleichen`).
+    xbox_wieder_aufnehmen()
     ensure_first_admin()
 
 
@@ -4944,11 +5420,21 @@ def shutdown(server: Server | None = None) -> None:
             return
         _shutdown_state["done"] = True
     STOP_EVENT.set()
+    KONSOLEN_ANSTOSS.set()              # die Konsolen-Schleife soll nicht erst den Takt abwarten
     if server is not None:
         try:
             server.shutdown()
         except Exception:                                           # noqa: BLE001
             pass
+    # Die Bedrock-Ports werden zuerst hergegeben: Startet der Dienst gleich neu (Update), soll
+    # der Port frei sein – und ein noch laufender Server braucht ihn ohnehin selbst.
+    try:
+        gehalten = WECKER.schliessen()
+        if gehalten:
+            log_event(f"Der Bedrock-Wecker gibt {len(gehalten)} Port(s) frei "
+                      f"({', '.join(gehalten)}).")
+    except Exception:                                               # noqa: BLE001
+        log_event("Beim Schließen des Bedrock-Weckers:\n" + traceback.format_exc())
     # Die Bots des Xbox-Freunde-Modus werden **immer** angehalten, auch wenn die Server
     # weiterlaufen: Sie halten nichts fest, der nächste Start fährt sie in Sekunden wieder hoch
     # (`xbox_wieder_aufnehmen`), und ein vergessener Bot würde die Sitzung doppelt ankündigen.
@@ -5015,6 +5501,10 @@ def main(argv: list | None = None) -> int:
 
     worker = threading.Thread(target=worker_loop, daemon=True, name="paesse")
     worker.start()
+    # Eigener Takt für Xbox-Bots und Bedrock-Wecker: Nach dem Stopp eines Servers soll der
+    # Bedrock-Port in Sekunden wieder besetzt sein, nicht erst in einer Minute.
+    konsolen = threading.Thread(target=konsolen_loop, daemon=True, name="konsolen")
+    konsolen.start()
 
     def on_signal(signum, _frame):
         # Im Signalhandler wird nur geweckt: serve_forever läuft im Hauptfaden und darf nicht

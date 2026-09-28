@@ -222,11 +222,28 @@ aus `core/manager.py` des PC-Programms).
   den **ersten** Pfadteil, und der ist hier `xbox`. `transfer.xbox_anmeldung_dabei()` hält die
   Zusage fest, ein Selbsttest prüft sie auf beiden Seiten. Ohne sie müsste sich der Betreiber
   nach jedem Umzug neu bei Xbox Live anmelden.
-* Der Bot **startet und stoppt mit dem Server** (`xbox_enabled` und `xbox_autostart` im
-  Instanz-Datensatz) und geht beim Ruhezustand mit – der Serverprozess endet dort auf demselben
-  Weg. Beim Beenden des Dienstes werden die Bots **wirklich gestoppt** (anders als die Server):
+* Der Bot gehört an die **Instanz**, nicht an den Serverprozess. Er läuft, solange die Instanz
+  auf dem Root liegt und `xbox_enabled` (mit `xbox_autostart`) an ist – **auch wenn der Server
+  schläft oder gestoppt ist**. Das war der Befund des Betreibers: `on_runner_exit` stoppte den
+  Bot, mit dem Bot verschwand der Server aus der Freundesliste, und ohne Eintrag gibt es keinen
+  Beitritt, der ihn wecken könnte. Gestoppt wird er nur noch bei: Xbox ausgeschaltet, Instanz
+  gelöscht oder freigegeben, kein gültiger Pass mehr (dann ist der Server ohnehin nicht weckbar)
+  und Ende des Dienstes. Entschieden wird das in **einem** Durchlauf (`mcsmd.konsolen_abgleichen`,
+  Takt 15 s), der zugleich die Ports des Bedrock-Weckers setzt.
+* Beim Beenden des Dienstes werden die Bots **wirklich gestoppt** (anders als die Server):
   Sie halten keine Welt, und zwei Bots kündigten Xbox Live dieselbe Sitzung doppelt an. Der
-  nächste Start fährt sie in `xbox_wieder_aufnehmen()` in Sekunden wieder hoch.
+  nächste Start fährt **alle** Bots wieder hoch, deren Instanz Xbox eingeschaltet hat – nicht nur
+  die laufender Server (`xbox_wieder_aufnehmen()`). Die Anmeldung kommt aus `xbox/cache/cache.json`;
+  ein neuer Gerätecode wird dabei **nicht** fällig.
+* **Höchstens zehn Bots gleichzeitig** (`MCSM_XBOX_MAX_BOTS`, `mcsmd.xbox_max_bots`). Ein Bot
+  braucht 96–512 MB, die Maschine hat 13 GB, und der größte Teil davon gehört den Kundenservern.
+  Wer über der Grenze liegt, bekommt den Grund im Zustand (`xbox.limited`, `state_text`) statt
+  eines wortlosen „aus“; auf Zuruf antwortet `POST …/xbox/start` mit 409 und demselben Satz.
+* Ein **Neustart des Bots** passiert nur, wenn sich Adresse oder Bedrock-Port geändert haben –
+  ein neuer Anzeigename wartet auf die nächste Gelegenheit. Jeder Neustart meldet die
+  Xbox-Live-Sitzung neu an, und das soll nicht wegen Kosmetik geschehen.
+* Ein gescheiterter Start (Jar fehlt, Port unbekannt) wird fünf Minuten lang nicht wiederholt
+  (`XBOX_NEUVERSUCH`) – sonst schriebe der Abgleich alle 15 Sekunden `config.yml` neu.
 * Angemeldet wird per **Gerätecode**: Der Dienst zieht die Zeile mit `microsoft.com/link` und dem
   Code aus der Ausgabe und bietet sie im Status an (`state` = `off` | `starting` | `login` |
   `online`, dazu `state_text` in deutschem Klartext). Einlösen kann den Code nur der Betreiber.
@@ -236,6 +253,61 @@ Routen (gleiche Namen und Felder wie in `app.py` des PC-Programms):
 Konfiguration, Bot), `POST …/xbox/start` | `/stop` | `/reset` | `/disable`,
 `GET …/xbox/console`. Die beworbene Adresse setzt **der Dienst**, nicht das Konto – sonst könnte
 ein Kunde Xbox Live eine fremde Adresse als „seinen“ Server ankündigen.
+
+## Bedrock-Wecker (Konsolen und der Ruhezustand)
+
+Der Verteiler auf TCP 25565 beantwortet den Ping eines schlafenden **Java**-Servers und weckt ihn
+beim Beitritt. Konsolenspieler kommen über **Bedrock** herein: UDP, RakNet, je Instanz ein
+eigener Port (Geyser, z. B. 19132). Dort lauschte bisher nichts, solange der Server schlief –
+der Eintrag in der Freundesliste war da, aber jeder Versuch lief ins Leere.
+
+`core/bedrock_wecker.py` schließt die Lücke. Er hält den UDP-Port jeder gehosteten
+Crossplay-Instanz, **solange sie nicht läuft**:
+
+* **Unconnected Ping** (erstes Byte `0x01`, auch `0x02`) → **Unconnected Pong** (`0x1C`):
+  gespiegelter Zeitstempel, feste Server-GUID je Instanz, MAGIC und die Auskunft als
+  längencodierte Zeichenkette:
+  `MCPE;<Zeile 1>;<Protokoll>;<Version>;0;<max>;<GUID>;<Zeile 2>;<Spielmodus>;1;<Port>;<Port>;`
+  Zeile 1 ist `✦ MCSM ¦ <Name>`, die Spielerplätze kommen aus `server.properties`.
+* **Zeile 2** sagt im Klartext, was los ist: „Server ist ausgeschaltet – tritt bei, um ihn zu
+  starten“; nach einem Weckruf „Server startet gerade – bitte in etwa einer Minute noch einmal
+  verbinden“; darf nicht geweckt werden (kein Pass, Kontingent voll), steht dort der Grund aus
+  `instances.check_start`; ist der Ruhezustand abgeschaltet, „Dieser Server läuft gerade nicht“.
+* **Open Connection Request 1** (erstes Byte `0x05`) → die Instanz wird geweckt, über dieselbe
+  Funktion und dieselbe Sperre wie beim Java-Verteiler (`wecke_instanz`, `WAKE_LOCKS`). Geantwortet
+  wird darauf **nicht**: Eine Absage mit Begründung gibt es auf RakNet-Ebene nicht (`0x19` hieße
+  auf der Konsole „veralteter Server“), und RakNet wiederholt den Versuch ohnehin. Die Auskunft im
+  Ping ist der Weg.
+
+**Warum im Dienst und nicht im Verteiler.** Geyser bindet denselben Port. Der Wecker muss ihn
+**vor** der Portvergabe hergeben – aus einem anderen Prozess wäre das ein Wettlauf, und der
+Verlierer wäre Geyser: Es bindet nicht, und für die ganze Laufzeit käme kein Bedrock-Spieler
+herein. Deshalb läuft der Wecker als Faden im Daemon (`konsolen_loop`, Takt 15 s plus Anstoß)
+und ruft `wecke_instanz` direkt statt über die Rückschleife.
+
+Die Reihenfolge ist deshalb fest:
+
+1. `start_instanz` → `WECKER.freigeben(iid)`: Socket zu, warten bis der Port wirklich bindbar ist,
+   Instanz gegen erneutes Binden **sperren** – erst dann `POOL.allocate_for` und der Start.
+2. `on_runner_exit` → `WECKER.entsperren(iid)`: Der Serverprozess ist beendet (der Rückruf kommt
+   aus dem Wartefaden des Runners), der nächste Abgleich bindet wieder. Ein Bind, der noch
+   scheitert, wird im nächsten Takt wiederholt.
+3. Der Socket bekommt weder `SO_REUSEADDR` noch `SO_REUSEPORT`: Ein fehlgeschlagener Bind ist die
+   gewünschte Schutzwirkung – der Port gehört dann Geyser.
+
+Zwischen Weckruf und dem Moment, in dem Geyser den Port übernimmt, antwortet niemand auf dem
+Bedrock-Port. Das ist die einzige sichere Reihenfolge; die Konsole hat in diesem Augenblick die
+Auskunft „Server startet gerade …“ bekommen, und der Grund einer **gescheiterten** Weckung
+überlebt den Sockelwechsel (der Wecker merkt ihn je Instanz für eine Minute).
+
+Protokoll- und Spielfassung stehen im RakNet-Ping eines Clients nicht drin (anders als beim
+Java-Handshake, dessen Protokollzahl der Verteiler einfach spiegelt). Der Dienst fragt deshalb
+alle 30 Minuten den **laufenden** Server über die Rückschleife (`bedrock.frage_server`) und merkt
+sich die Antwort (`daemon.json`, `bedrock`). Bis dahin gelten Vorgaben
+(`MCSM_BEDROCK_PROTOKOLL`, `MCSM_BEDROCK_VERSION`) – falsche Zahlen sind nur Kosmetik.
+
+**Nur Crossplay.** Ein Bedrock-Dedicated-Server mit `transport: nethernet` lauscht gar nicht auf
+RakNet; dort läuft die Verbindung über die Xbox-Sitzung. Solche Instanzen lässt der Wecker aus.
 
 ## Crossplay: Chat und Serverbild
 

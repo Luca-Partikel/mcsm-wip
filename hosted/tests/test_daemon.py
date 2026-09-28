@@ -63,11 +63,18 @@ class Basis(unittest.TestCase):
         mcsmd.POOL = mcsmd.ports.PortPool(probe=False)
         mcsmd.REGISTRY = mcsmd.runner.RunnerRegistry(on_exit=mcsmd.on_runner_exit)
         mcsmd.XBOX = mcsmd.xbox.BroadcasterRegistry()
+        # Der Bedrock-Wecker belegt echte UDP-Ports – für jeden Test ein frischer, und in
+        # `tearDown` wird er geschlossen. Gelauscht wird nur auf der Rückschleife.
+        mcsmd.WECKER.schliessen()
+        mcsmd.WECKER = mcsmd.bedrock.Wecker(wecken=mcsmd._bedrock_weckruf,
+                                            melder=lambda text: None, host="127.0.0.1")
+        mcsmd._XBOX_KLAGEN.clear()
+        mcsmd._XBOX_FEHLVERSUCH.clear()
         mcsmd.JOBS.clear()
         mcsmd._runtime.update({"ports": [], "warned": {}, "last_expiry_check": 0,
                                "housekeeping_at": 0, "save_all_at": 0, "admin_invite": "",
                                "started_at": 0, "woken": {}, "routen_stand": None,
-                               "widerruf_gewarnt": {}})
+                               "widerruf_gewarnt": {}, "bedrock": {}})
         # Ratenbremse und angefangene Anmeldungen zurücksetzen: alle Tests kommen aus derselben
         # Rückschleife und würden sich sonst gegenseitig aussperren.
         mcsmd.BREMSE.leeren()
@@ -87,6 +94,7 @@ class Basis(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(10)
+        mcsmd.WECKER.schliessen()
         mcsmd.close_log()
         for key, value in self.env_backup.items():
             if value is None:
@@ -2553,6 +2561,417 @@ class CrossplayChatTest(Basis):
         self.assertFalse(mcsmd.ensure_server_icon(self.folder))
         self.assertEqual(ziel.read_bytes(), b"eigenes Bild des Besitzers")
 
+
+
+# ---------------------------------------------------------------- Konsolen: Bot und Bedrock-Wecker
+
+class StubBot:
+    """Ersatz für einen Xbox-Bot: kein Java, kein Prozess, nur Buchführung."""
+
+    def __init__(self, spec) -> None:
+        self.spec = spec
+        self.active_spec = spec
+        self.running = False
+        self.starts = 0
+        self.stops = 0
+
+    def start(self) -> None:
+        self.starts += 1
+        self.running = True
+        self.active_spec = self.spec
+
+    def stop(self, timeout: int = 15) -> None:
+        self.stops += 1
+        self.running = False
+
+    @property
+    def restart_needed(self) -> bool:
+        return self.active_spec.signature != self.spec.signature
+
+    @property
+    def uptime(self) -> int:
+        return 5 if self.running else 0
+
+    def status(self) -> dict:
+        """Dieselben Felder wie `xbox.Broadcaster.status` – `server_view` liest sie."""
+        return {"running": self.running, "state": "online" if self.running else "off",
+                "code": "", "url": "", "gamertag": "TestBot" if self.running else "",
+                "error": "", "uptime": self.uptime, "console_next": 0,
+                "state_text": "läuft" if self.running else "aus"}
+
+    def console(self, since: int = 0) -> dict:
+        return {"next": 0, "lines": []}
+
+
+class StubBots:
+    """Ersatz für `xbox.BroadcasterRegistry` – dieselben Namen, kein Prozess."""
+
+    def __init__(self) -> None:
+        self.bots: dict = {}
+
+    def get(self, spec):
+        bot = self.bots.get(spec.instance_id)
+        if bot is None:
+            bot = StubBot(spec)
+            self.bots[spec.instance_id] = bot
+        else:
+            bot.spec = spec
+            if not bot.running:
+                bot.active_spec = spec
+        return bot
+
+    def find(self, instance_id: str):
+        return self.bots.get(str(instance_id))
+
+    def all(self) -> list:
+        return list(self.bots.values())
+
+    def running_ids(self) -> list:
+        return sorted(k for k, v in self.bots.items() if v.running)
+
+    def stop(self, instance_id: str, timeout: int = 15) -> bool:
+        bot = self.bots.get(str(instance_id))
+        if bot is None or not bot.running:
+            return False
+        bot.stop(timeout=timeout)
+        return True
+
+    def drop(self, instance_id: str, timeout: int = 15) -> None:
+        bot = self.bots.pop(str(instance_id), None)
+        if bot is not None:
+            bot.stop(timeout=timeout)
+
+    def stop_all(self, timeout: int = 15) -> list:
+        lief = [k for k, v in self.bots.items() if v.running]
+        for kennung in lief:
+            self.bots[kennung].stop(timeout=timeout)
+        return sorted(lief)
+
+
+def freier_udp_port() -> int:
+    """Einen gerade freien UDP-Port auf der Rückschleife – feste Nummern kollidieren sonst."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def udp_frei(port: int) -> bool:
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.bind(("127.0.0.1", int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+class KonsolenTest(Basis):
+    """Was Konsolenspieler brauchen: ein Bot, der durchläuft, und ein Wecker auf UDP.
+
+    Der Befund des Betreibers: Seine Leute kommen über den Xbox-Freunde-Modus herein, und der
+    Ruhezustand machte das kaputt – mit dem Serverprozess endete der Bot, der Server verschwand
+    aus der Freundesliste, und auf dem Bedrock-Port lauschte niemand.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.bots = StubBots()
+        mcsmd.XBOX = self.bots
+        self.token, self.uid = self.make_user()
+        self.issue_pass(self.uid)
+        self.server = self.make_server(self.token, name="Eutopia")
+        self.set_state(self.server["id"], "hosted")
+        self.iid = self.server["id"]
+        self.folder = mcsmd.instance_dir(mcsmd.instances.get_instance(self.iid))
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.bedrock_port = 0
+
+    def mit_crossplay(self, port: int = 0) -> int:
+        """Geyser vortäuschen – mit einem gerade freien Port, damit nichts kollidiert."""
+        port = int(port or freier_udp_port())
+        self.bedrock_port = port
+        (self.folder / "plugins").mkdir(parents=True, exist_ok=True)
+        (self.folder / "plugins" / "Geyser-Spigot.jar").write_bytes(b"kein echtes Jar")
+        geyser = self.folder / "plugins" / "Geyser-Spigot"
+        geyser.mkdir(parents=True, exist_ok=True)
+        (geyser / "config.yml").write_text(
+            f"bedrock:\n  address: 0.0.0.0\n  port: {port}\n", encoding="utf-8")
+        (self.folder / "server.properties").write_text("motd=Eutopia\nmax-players=17\n",
+                                                       encoding="utf-8")
+        return port
+
+    def mit_xbox(self) -> None:
+        mcsmd.instances.set_xbox(self.iid, enabled=True, autostart=True)
+
+    def frage(self, port: int, frist: float = 2.0):
+        """Wie eine Konsole: RakNet-Ping schicken und die Auskunft lesen."""
+        return mcsmd.bedrock.frage_server(port, host="127.0.0.1", frist=frist)
+
+    # -- A) Der Bot läuft durch ----------------------------------------
+
+    def test_bot_bleibt_an_wenn_der_server_endet(self):
+        """Der Kern des Befunds: der Ruhezustand darf den Bot nicht mitnehmen."""
+        self.mit_crossplay()
+        self.mit_xbox()
+        bot = self.bots.get(mcsmd.build_xbox_spec(mcsmd.instances.get_instance(self.iid)))
+        bot.start()
+        mcsmd.on_runner_exit(FalscherRunner(self.iid), 0)
+        self.assertTrue(bot.running, "Der Xbox-Bot wurde beim Ende des Servers gestoppt")
+        self.assertEqual(bot.stops, 0)
+
+    def test_abgleich_startet_den_bot_auch_ohne_laufenden_server(self):
+        self.mit_crossplay()
+        self.mit_xbox()
+        ergebnis = mcsmd.konsolen_abgleichen()
+        self.assertIn(self.iid, ergebnis["gestartet"])
+        self.assertTrue(self.bots.find(self.iid).running)
+
+    def test_ausgeschalteter_xbox_modus_stoppt_den_bot(self):
+        self.mit_crossplay()
+        self.mit_xbox()
+        mcsmd.konsolen_abgleichen()
+        mcsmd.instances.set_xbox(self.iid, enabled=False)
+        ergebnis = mcsmd.konsolen_abgleichen()
+        self.assertIn(self.iid, ergebnis["gestoppt"])
+        self.assertFalse(self.bots.find(self.iid).running)
+
+    def test_ohne_gueltigen_pass_laeuft_kein_bot(self):
+        """Ohne Pass ist der Server nicht weckbar – ein Eintrag wäre eine Sackgasse."""
+        self.mit_crossplay()
+        self.mit_xbox()
+        mcsmd.konsolen_abgleichen()
+        for eintrag in mcsmd.passes.passes_of(self.uid):
+            mcsmd.passes.revoke_pass(eintrag["id"])
+        grund = mcsmd.xbox_soll_laufen(mcsmd.instances.get_instance(self.iid))
+        self.assertIn("Pass", grund)
+        ergebnis = mcsmd.konsolen_abgleichen()
+        self.assertIn(self.iid, ergebnis["gestoppt"])
+
+    def test_zurueckgeholte_instanz_laesst_keinen_bot_zurueck(self):
+        self.mit_crossplay()
+        self.mit_xbox()
+        mcsmd.konsolen_abgleichen()
+        self.set_state(self.iid, "awaiting_pull")
+        ergebnis = mcsmd.konsolen_abgleichen()
+        self.assertIn(self.iid, ergebnis["gestoppt"])
+        self.assertFalse(self.bots.find(self.iid).running)
+
+    def test_obergrenze_haelt_weitere_bots_zurueck(self):
+        self.mit_crossplay()
+        self.mit_xbox()
+        os.environ[mcsmd.XBOX_MAX_BOTS_ENV] = "1"
+        try:
+            self.assertEqual(mcsmd.xbox_max_bots(), 1)
+            zweiter = self.make_server(self.token, name="Zweite Welt")
+            self.set_state(zweiter["id"], "hosted")
+            ordner = mcsmd.instance_dir(mcsmd.instances.get_instance(zweiter["id"]))
+            geyser = ordner / "plugins" / "Geyser-Spigot"
+            geyser.mkdir(parents=True, exist_ok=True)
+            (ordner / "plugins" / "Geyser-Spigot.jar").write_bytes(b"x")
+            (geyser / "config.yml").write_text(f"bedrock:\n  port: {freier_udp_port()}\n",
+                                               encoding="utf-8")
+            mcsmd.instances.set_xbox(zweiter["id"], enabled=True, autostart=True)
+            ergebnis = mcsmd.konsolen_abgleichen()
+            self.assertEqual(len(self.bots.running_ids()), 1)
+            self.assertEqual(len(ergebnis["offen"]), 1)
+            zurueck = ergebnis["offen"][0]
+            self.assertIn("von 1 möglichen", mcsmd.xbox_klage(zurueck))
+            # Der Grund steht im Zustand, den das Programm auf dem PC anzeigt.
+            status, data = self.call("GET", f"/api/servers/{zurueck}/xbox", token=self.token)
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["limited"])
+            self.assertIn("Xbox-Bots", data["state_text"])
+        finally:
+            os.environ.pop(mcsmd.XBOX_MAX_BOTS_ENV, None)
+
+    def test_obergrenze_gilt_auch_auf_zuruf(self):
+        self.mit_crossplay()
+        os.environ[mcsmd.XBOX_MAX_BOTS_ENV] = "1"
+        try:
+            fremd = StubBot(mcsmd.build_xbox_spec(mcsmd.instances.get_instance(self.iid)))
+            fremd.start()
+            self.bots.bots["fremdeinstanz"] = fremd
+            status, data = self.call("POST", f"/api/servers/{self.iid}/xbox/start",
+                                     token=self.token)
+            self.assertEqual(status, 409, data)
+            self.assertIn("Xbox-Bots", data["error"])
+        finally:
+            os.environ.pop(mcsmd.XBOX_MAX_BOTS_ENV, None)
+
+    def test_geaenderter_bedrock_port_meldet_den_bot_neu(self):
+        """Ein Bot, der einen alten Port ankündigt, führt die Freunde ins Leere."""
+        self.mit_crossplay()
+        self.mit_xbox()
+        mcsmd.konsolen_abgleichen()
+        bot = self.bots.find(self.iid)
+        self.assertEqual(bot.starts, 1)
+        neuer = freier_udp_port()
+        (self.folder / "plugins" / "Geyser-Spigot" / "config.yml").write_text(
+            f"bedrock:\n  port: {neuer}\n", encoding="utf-8")
+        mcsmd.konsolen_abgleichen()
+        self.assertEqual(bot.starts, 2, "Der Bot wurde nicht neu angemeldet")
+        self.assertEqual(bot.active_spec.port, neuer)
+
+    def test_kosmetik_meldet_den_bot_nicht_neu(self):
+        """Ein neuer Anzeigename ist kein Grund, die Xbox-Live-Sitzung neu anzumelden."""
+        self.mit_crossplay()
+        self.mit_xbox()
+        mcsmd.konsolen_abgleichen()
+        bot = self.bots.find(self.iid)
+        self.call("POST", f"/api/servers/{self.iid}/settings", {"name": "Eutopia Zwei"},
+                  token=self.token)
+        mcsmd.konsolen_abgleichen()
+        self.assertEqual(bot.starts, 1)
+
+    # -- B) Der Bedrock-Wecker -----------------------------------------
+
+    def test_wecker_haelt_den_port_eines_schlafenden_servers(self):
+        port = self.mit_crossplay()
+        mcsmd.konsolen_abgleichen()
+        self.assertEqual(mcsmd.WECKER.port_von(self.iid), port)
+        aus = self.frage(port)
+        self.assertIsNotNone(aus, "Der Wecker hat auf dem Bedrock-Port nicht geantwortet")
+        self.assertEqual(aus.zeile1, "✦ MCSM ¦ Eutopia")
+        self.assertEqual(aus.online, 0)
+        self.assertEqual(aus.max_spieler, 17)               # aus server.properties
+        self.assertEqual(aus.zeile2, mcsmd.bedrock.ZEILE2_AUS)
+
+    def test_laufender_server_bekommt_keinen_wecker(self):
+        """Der Port gehört dann Geyser – zwei Programme können ihn nicht halten."""
+        port = self.mit_crossplay()
+        mcsmd.instances.set_running(self.iid, True)
+        mcsmd.REGISTRY._runners[self.iid] = FalscherRunner(self.iid)
+        try:
+            self.assertIsNone(mcsmd.bedrock_ziel_fuer(mcsmd.instances.get_instance(self.iid)))
+            mcsmd.konsolen_abgleichen()
+            self.assertEqual(mcsmd.WECKER.port_von(self.iid), 0)
+            self.assertTrue(udp_frei(port))
+        finally:
+            mcsmd.REGISTRY._runners.pop(self.iid, None)
+            mcsmd.instances.set_running(self.iid, False)
+
+    def test_ohne_crossplay_gibt_es_nichts_zu_wecken(self):
+        self.assertIsNone(mcsmd.bedrock_ziel_fuer(mcsmd.instances.get_instance(self.iid)))
+        mcsmd.konsolen_abgleichen()
+        self.assertEqual(mcsmd.WECKER.stand(), [])
+
+    def test_ohne_ruhezustand_sagt_zeile_zwei_laeuft_nicht(self):
+        port = self.mit_crossplay()
+        mcsmd.instances.set_hibernation(self.iid, enabled=False)
+        mcsmd.konsolen_abgleichen()
+        aus = self.frage(port)
+        self.assertIsNotNone(aus)
+        self.assertEqual(aus.zeile2, mcsmd.bedrock.ZEILE2_LAEUFT_NICHT)
+
+    def test_kein_pass_steht_im_klartext_in_zeile_zwei(self):
+        port = self.mit_crossplay()
+        for eintrag in mcsmd.passes.passes_of(self.uid):
+            mcsmd.passes.revoke_pass(eintrag["id"])
+        mcsmd.konsolen_abgleichen()
+        aus = self.frage(port)
+        self.assertIsNotNone(aus)
+        self.assertIn("Pass", aus.zeile2)
+
+    def test_kontingent_voll_steht_im_klartext_in_zeile_zwei(self):
+        port = self.mit_crossplay()
+        for eintrag in mcsmd.passes.passes_of(self.uid):
+            mcsmd.passes.set_limits(eintrag["id"], max_concurrent=1)
+        zweiter = self.make_server(self.token, name="Andere Welt")
+        self.set_state(zweiter["id"], "hosted")
+        mcsmd.instances.set_running(zweiter["id"], True)
+        try:
+            mcsmd.konsolen_abgleichen()
+            aus = self.frage(port)
+            self.assertIsNotNone(aus)
+            self.assertIn("Andere Welt", aus.zeile2)
+        finally:
+            mcsmd.instances.set_running(zweiter["id"], False)
+
+    def test_beitritt_ueber_udp_weckt_und_nennt_den_grund(self):
+        """Ganze Kette: RakNet-Verbindungsversuch → Weckruf → Grund in Zeile 2.
+
+        Im Ordner liegt keine ``server.jar``; der Start scheitert also mit genau dem Satz, den
+        der Spieler auch am Java-Verteiler zu hören bekäme.
+        """
+        import socket as _socket
+        port = self.mit_crossplay()
+        mcsmd.konsolen_abgleichen()
+        versuch = b"\x05" + mcsmd.bedrock.MAGIC + b"\x0b" + b"\x00" * 400
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as sock:
+            sock.sendto(versuch, ("127.0.0.1", port))
+        ende = time.time() + 20
+        zeile2 = ""
+        while time.time() < ende:
+            # Nach dem Fehlschlag gibt der Dienst den Port wieder her und bindet neu. Der Port
+            # kann dabei wechseln: beim Start bekommt Geyser den Port aus dem PortPool.
+            mcsmd.konsolen_abgleichen()
+            jetzt = mcsmd.WECKER.port_von(self.iid)
+            if jetzt:
+                aus = self.frage(jetzt, frist=1.0)
+                zeile2 = aus.zeile2 if aus else ""
+                if zeile2 not in ("", mcsmd.bedrock.ZEILE2_AUS,
+                                  mcsmd.bedrock.ZEILE2_STARTET):
+                    break
+            time.sleep(0.2)
+        self.assertTrue(zeile2, "Der Wecker antwortet nach dem Weckruf nicht mehr")
+        # Der Grund steht im Klartext – nicht mehr „Server ist ausgeschaltet“, sondern der Satz,
+        # den der Spieler auch am Java-Verteiler zu hören bekäme (hier: nichts eingerichtet).
+        self.assertNotIn(zeile2, (mcsmd.bedrock.ZEILE2_AUS, mcsmd.bedrock.ZEILE2_STARTET))
+        self.assertGreater(len(zeile2), 20, zeile2)
+        self.assertIn("Server", zeile2)
+        self.assertFalse(mcsmd.instances.is_running(mcsmd.instances.get_instance(self.iid)))
+
+    def test_freigeben_macht_den_port_fuer_geyser_frei(self):
+        """Erst schließen, dann starten – sonst könnte Geyser den Port nicht binden."""
+        port = self.mit_crossplay()
+        mcsmd.konsolen_abgleichen()
+        self.assertFalse(udp_frei(port))
+        self.assertTrue(mcsmd.WECKER.freigeben(self.iid))
+        self.assertTrue(udp_frei(port), "Der Bedrock-Port war nach dem Freigeben noch belegt")
+        self.assertTrue(mcsmd.ports.port_free_on_system(port, mcsmd.ports.UDP,
+                                                        host="127.0.0.1"))
+        # Solange der Server startet, bindet der Abgleich nicht wieder.
+        mcsmd.konsolen_abgleichen()
+        self.assertTrue(udp_frei(port))
+        mcsmd.WECKER.entsperren(self.iid)
+        mcsmd.konsolen_abgleichen()
+        self.assertFalse(udp_frei(port))
+
+    def test_gestoppter_server_gibt_den_port_zurueck_an_den_wecker(self):
+        port = self.mit_crossplay()
+        mcsmd.WECKER.freigeben(self.iid)
+        self.assertTrue(mcsmd.WECKER.gesperrt(self.iid))
+        mcsmd.on_runner_exit(FalscherRunner(self.iid), 0)
+        self.assertFalse(mcsmd.WECKER.gesperrt(self.iid))
+        mcsmd.konsolen_abgleichen()
+        self.assertEqual(mcsmd.WECKER.port_von(self.iid), port)
+
+    def test_geloeschte_instanz_gibt_den_port_her(self):
+        port = self.mit_crossplay()
+        mcsmd.konsolen_abgleichen()
+        self.assertFalse(udp_frei(port))
+        status, data = self.call("DELETE", f"/api/servers/{self.iid}?force=1", token=self.token)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(udp_frei(port))
+
+    def test_merkmale_werden_gemerkt_und_weitergereicht(self):
+        """Protokoll- und Spielfassung kann der Ping eines Clients nicht mitbringen."""
+        auskunft = mcsmd.bedrock.zerlege_auskunft(
+            "MCPE;Eutopia;844;1.21.130;0;17;1;Welt;Creative;1;19132;19132;")
+        mcsmd.bedrock_merkmal_setzen(self.iid, auskunft)
+        merk = mcsmd.bedrock_merkmal(self.iid)
+        self.assertEqual(merk["protokoll"], 844)
+        self.assertEqual(merk["version"], "1.21.130")
+        port = self.mit_crossplay()
+        mcsmd.konsolen_abgleichen()
+        aus = self.frage(port)
+        self.assertIsNotNone(aus)
+        self.assertEqual(aus.protokoll, 844)
+        self.assertEqual(aus.version, "1.21.130")
+        self.assertEqual(aus.spielmodus, "Creative")
 
 if __name__ == "__main__":
     unittest.main()
