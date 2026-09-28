@@ -182,6 +182,14 @@ def main() -> int:
     if not classes:
         fail("Keine .class-Dateien im Jar.")
     print(f"OK: {OUT} ({OUT.stat().st_size // 1024} KB, {len(classes)} Klassen, plugin.yml vorhanden)")
+
+    # Der Root-Server nimmt sein Begleit-Plugin aus hosted/assets/MCSMCompanion.jar (deploy.sh
+    # kopiert den ganzen hosted-Ordner). Damit dort nie eine alte Fassung liegen bleibt, wird die
+    # frische Jar bei jedem Bau automatisch dorthin gespiegelt – der nächste Deploy nimmt sie mit.
+    hosted_jar = ROOT / "hosted" / "assets" / "MCSMCompanion.jar"
+    hosted_jar.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(OUT, hosted_jar)
+    print(f"        gespiegelt nach {hosted_jar.relative_to(ROOT)} (Root-Server)")
     return 0
 
 
