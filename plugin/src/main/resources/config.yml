@@ -20,7 +20,7 @@ death_prefix: "<red>☠</red> "
 
 # Tablist. Platzhalter: <server_name>, <online>, <max>, <sponsor>, <manager_version>, <mode>
 tablist_header: "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>\n<gray>Online <white><online></white>/<white><max></white></gray>"
-tablist_footer: "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MinecraftManager</gray>"
+tablist_footer: "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MCSM</gray>"
 
 # Serverlisten-Anzeige (MOTD). Zeile 1 setzt das Plugin fest: ✦ MCSM ¦ <Servername>.
 # Zeile 2 steht hier und ist frei wählbar (MiniMessage), z. B. ein Hinweis zum Zustand.

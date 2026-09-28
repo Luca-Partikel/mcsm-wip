@@ -300,7 +300,7 @@ public final class CompanionPlugin extends JavaPlugin {
         } else {
             hint = " <gray>/admin vanish</gray> <gray>macht dich unsichtbar.</gray>";
         }
-        return Msg.mm("<green>MinecraftManager</green> <gray>|</gray> "
+        return Msg.mm("<gray>✦</gray> <green><bold>MCSM</bold></green> <dark_gray>¦</dark_gray> "
                         + "<gray>Dieser Server wird von deiner Software gesteuert! Läuft auf "
                         + "<white>Paper <mc></white> (<paper>), Manager <white><manager></white>, Modus <white><mode></white>, "
                         + "Spieler <white><online>/<max></white>, Plugins: <white><plugins></white>.</gray>" + hint,

@@ -28,9 +28,9 @@ public final class Config {
             "<gradient:#3ddc84:#8ff0b4><bold><server_name></bold></gradient>\n"
             + "<gray>Online <white><online></white>/<white><max></white></gray>";
     public static final String DEFAULT_FOOTER =
-            "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MinecraftManager</gray>";
+            "<gray>Sponsored by <gold>Novelnia</gold></gray> <dark_gray>•</dark_gray> <gray>MCSM</gray>";
     public static final String SPONSOR_FOOTER =
-            "<gray><sponsor></gray> <dark_gray>•</dark_gray> <gray>MinecraftManager</gray>";
+            "<gray><sponsor></gray> <dark_gray>•</dark_gray> <gray>MCSM</gray>";
 
     private final CompanionPlugin plugin;
 
