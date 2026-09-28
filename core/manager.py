@@ -139,6 +139,23 @@ def _finish(job: dict, error: str = "") -> None:
             s["state"] = "done"
 
 
+def job_step(job: dict, index: int, detail: str = "") -> None:
+    """Schritt eines Vorgangs als erledigt/aktiv markieren – auch für Module neben diesem
+    (core/backups.py meldet so den Stand einer Sicherung an dieselbe Oberfläche)."""
+    _step(job, index, detail)
+
+
+def job_detail(job: dict, detail: str, pct: int | None = None) -> None:
+    """Zeile unter dem Balken fortschreiben, wahlweise mit eigenem Prozentwert."""
+    job["detail"] = str(detail)
+    if pct is not None:
+        job["pct"] = max(0, min(100, int(pct)))
+
+
+def job_finish(job: dict, error: str = "") -> None:
+    _finish(job, error)
+
+
 def _progress_cb(job: dict, label: str):
     state = {"last": 0.0}
 
@@ -862,37 +879,8 @@ def worlds(cfg: dict) -> list[dict]:
     return out
 
 
-def backup_worlds(cfg: dict) -> dict:
-    if is_running(cfg["id"]):
-        raise ValueError("Bitte den Server zuerst stoppen, damit die Welt vollständig gespeichert ist.")
-    root = store.server_dir(cfg["id"])
-    ws = worlds(cfg)
-    if not ws:
-        raise ValueError("Es gibt noch keine Welt – der Server muss mindestens einmal gestartet worden sein.")
-    bdir = root / "backups"
-    bdir.mkdir(exist_ok=True)
-    target = bdir / f"welten-{time.strftime('%Y-%m-%d_%H-%M-%S')}.zip"
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
-        for w in ws:
-            wpath = root / w["path"]
-            for p in wpath.rglob("*"):
-                if p.is_file():
-                    zf.write(p, p.relative_to(root).as_posix())
-    return {"file": target.name, "size": target.stat().st_size}
-
-
-def backups(cfg: dict) -> list[dict]:
-    bdir = store.server_dir(cfg["id"]) / "backups"
-    if not bdir.is_dir():
-        return []
-    out = []
-    for p in sorted(bdir.glob("*.zip"), reverse=True):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        out.append({"name": p.name, "size": st.st_size, "mtime": int(st.st_mtime)})
-    return out
+#: Sicherungen der Welten liegen nicht mehr im Serverordner, sondern im Programmordner unter
+#: ``backups/<Servername>/`` – packen, herunterladen und aufspielen steht in core/backups.py.
 
 
 def open_in_explorer(cfg: dict, rel: str) -> None:

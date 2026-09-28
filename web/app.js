@@ -23,6 +23,8 @@ const state = {
   xbox: null,               // Assistent für den Xbox-Freunde-Modus
   files: { path: '', showAll: false, open: null, mode: 'form', props: null, content: '', dirty: false },
   players: { data: null, running: null, instance: '' },   // Spielerverwaltung: zuletzt geladenes Bild + Serverzustand dazu
+  // Weltensicherungen: Liste aus dem Programmordner + laufender Vorgang (Sichern/Aufspielen)
+  backups: { data: null, job: null },
   // Gehosteter Server: derselbe Seitenaufbau, nur gegen den Root-Server (siehe „Gehostete Server“)
   hosted: {
     instance: '',             // Kennung der Instanz auf dem Root-Server
@@ -58,7 +60,7 @@ const state = {
   },
   timers: { status: null, console: null, job: null, xbox: null, xboxJob: null,
             cloud: null, cloudJob: null, cloudLog: null, cloudLogin: null, cloudTick: null,
-            hosted: null, hostedLog: null },
+            hosted: null, hostedLog: null, backupJob: null },
   xboxSig: '',
 };
 
@@ -1078,13 +1080,15 @@ function renderServer() {
   if (state.tab === 'players' && !playersApply(s)) state.tab = 'overview';   // Modpack-Server haben den Tab nicht
   const tabs = [['overview', 'Übersicht'], ['connect', 'Verbinden'],
     ...(playersApply(s) ? [['players', 'Spieler']] : []),
-    ['console', 'Konsole'], ['files', 'Dateien'], ['settings', 'Einstellungen']];
+    ['console', 'Konsole'], ['files', 'Dateien'], ['backups', 'Sicherungen'],
+    ['settings', 'Einstellungen']];
   let body = '';
   if (state.tab === 'overview') body = tabOverview(s);
   else if (state.tab === 'connect') body = tabConnect(s);
   else if (state.tab === 'players') body = tabPlayers(s);
   else if (state.tab === 'console') body = tabConsole(s);
   else if (state.tab === 'files') body = tabFiles(s);
+  else if (state.tab === 'backups') body = tabBackups(s);
   else body = tabSettings(s);
   return `
   <div class="head">
@@ -1766,17 +1770,205 @@ function bindFiles(s) {
   $('#fShowAll').onchange = (e) => { f.showAll = e.target.checked; loadDir(s, f.path); };
   $('#fExplorer').onclick = () => api(`servers/${s.id}/folder`, { method: 'POST', body: { path: f.path } }).catch((e) => toast(e.message, true));
   $('#fReload').onclick = () => loadDir(s, f.path);
-  $('#fBackup').onclick = () => doBackup(s).then(() => loadDir(s, f.path));
+  $('#fBackup').onclick = () => { state.tab = 'backups'; render(); };
   f.open = null; f.dirty = false;
   loadDir(s, f.path || '');
 }
 
-async function doBackup(s) {
-  const b = $('#fBackup') || $('#btnBackup');
-  if (b) { b.disabled = true; b.textContent = 'Backup läuft …'; }
-  try { const d = await api(`servers/${s.id}/backup`, { method: 'POST' }); toast(`Backup erstellt: ${d.file} (${fmtBytes(d.size)})`); }
-  catch (e) { toast(e.message, true); }
-  finally { if (b) { b.disabled = false; b.textContent = b.id === 'fBackup' ? '🗜️ Welten sichern' : '🗜️ Backup erstellen'; } }
+/* ---------- Sicherungen (Welten)
+   Dieselbe Seite für einen Server auf diesem PC und für einen gehosteten: die Sicherung liegt
+   immer hier auf dem PC, im Programmordner unter backups\<Servername>. Bei einem gehosteten
+   Server holt das Programm die Welten dafür erst vom Root-Server. */
+
+const BK_ICON = { manuell: '🗜️', taeglich: '🕒', vorher: '🛟' };
+
+function tabBackups(s) {
+  const hosted = isHostedServer(s);
+  return `
+  <section class="card">
+    <div class="card-head"><h3>🗜️ Weltensicherungen</h3>
+      <span class="muted small" id="bkWhere"></span></div>
+    <p class="mb0">Gesichert werden nur die <b>Welten</b> – nicht die Server-Software, nicht die
+      Plugins. Jede Sicherung landet als ZIP-Datei <b>auf diesem PC</b> im Programmordner unter
+      <code>backups\\&lt;Servername&gt;</code>.${hosted ? ' Die Welten holt das Programm dafür vom '
+      + 'Root-Server herunter – so liegt deine Sicherung auch dann hier, wenn der Server dort läuft.' : ''}</p>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="bkNow">🗜️ Jetzt sichern</button>
+      <button class="btn" id="bkOpen">📁 Ordner öffnen</button>
+      <button class="btn btn-sm" id="bkReload" title="Liste neu laden">⟳</button>
+    </div>
+    <label class="switch" style="margin-top:12px"><input type="checkbox" id="bkDaily">
+      Einmal am Tag von selbst sichern, solange das Programm läuft</label>
+    <p class="muted small mb0" id="bkDailyHint"></p>
+    <div id="bkJob"></div>
+  </section>
+  <section class="card">
+    <div class="card-head"><h3>Vorhandene Sicherungen</h3>
+      <span class="muted small" id="bkCount"></span></div>
+    <div id="bkList"><div class="muted small">Wird geladen …</div></div>
+  </section>`;
+}
+
+function backupRows(s, d) {
+  if (!d.entries.length) {
+    return `<div class="empty-inline">
+      <div class="ei-ico" aria-hidden="true">🗜️</div>
+      <div><b>Noch keine Sicherung.</b>
+        <p class="mb0">Mit <b>„Jetzt sichern“</b> packt das Programm die Welten in eine ZIP-Datei
+          auf diesem PC. Ist die tägliche Sicherung an, geschieht das ab jetzt auch einmal am Tag
+          von selbst – solange das Programm offen ist.</p></div></div>`;
+  }
+  return `<div class="bk-list">${d.entries.map((e) => `
+    <div class="wrow bk-row">
+      <div><div class="w-name">${BK_ICON[e.kind] || '🗜️'} ${esc(e.name)}</div>
+        <div class="w-meta">${esc(fmtDate(e.mtime))} · ${fmtBytes(e.size)} ·
+          <span class="bk-kind bk-${esc(e.kind)}">${esc(e.kind_text)}</span>${
+          e.source === 'server' ? ' · aus dem früheren Ordner im Server' : ''}</div></div>
+      <div class="btn-row">
+        <button class="btn btn-sm btn-primary" data-bk-restore="${esc(e.name)}">↺ Aufspielen</button>
+        <button class="btn btn-sm btn-danger" data-bk-del="${esc(e.name)}">Löschen</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+
+function paintBackups(s) {
+  const d = state.backups.data;
+  const list = $('#bkList');
+  if (!d || !list) return;
+  const laeuft = !!(state.backups.job && state.backups.job.job
+    && state.backups.job.job.status === 'running') || d.busy;
+  list.innerHTML = backupRows(s, d);
+  const zahl = $('#bkCount');
+  if (zahl) {
+    const gesamt = d.entries.reduce((n, e) => n + e.size, 0);
+    zahl.textContent = d.entries.length
+      ? `${d.entries.length} ${d.entries.length === 1 ? 'Sicherung' : 'Sicherungen'} · ${fmtBytes(gesamt)}`
+      : '';
+  }
+  const wo = $('#bkWhere'); if (wo) wo.textContent = d.folder;
+  const daily = $('#bkDaily'); if (daily) daily.checked = !!d.daily;
+  const hint = $('#bkDailyHint');
+  if (hint) {
+    hint.textContent = d.daily
+      ? `Von den täglichen Sicherungen bleiben die letzten ${d.keep_daily}; ältere räumt das `
+        + 'Programm weg. Von Hand angelegte werden nie gelöscht.'
+      : 'Aus – gesichert wird dann nur, wenn du auf „Jetzt sichern“ drückst.';
+  }
+  const jetzt = $('#bkNow'); if (jetzt) jetzt.disabled = laeuft;
+  $$('[data-bk-restore]', list).forEach((el) => el.onclick = () => backupRestore(s, el.dataset.bkRestore));
+  $$('[data-bk-del]', list).forEach((el) => el.onclick = () => backupDelete(s, el.dataset.bkDel));
+  if (laeuft) $$('.bk-row .btn', list).forEach((el) => el.disabled = true);
+}
+
+async function loadBackups(s) {
+  try {
+    state.backups.data = await api(`servers/${s.id}/backups`);
+    paintBackups(s);
+  } catch (e) {
+    const list = $('#bkList');
+    if (list) list.innerHTML = `<div class="note note-err mb0">${esc(e.message)}</div>`;
+  }
+}
+
+function paintBackupJob(s) {
+  const box = $('#bkJob');
+  if (!box) return;
+  const t = state.backups.job;
+  if (!t) { box.innerHTML = ''; return; }
+  const job = t.job;
+  const done = job && job.status === 'done', failed = job && job.status === 'error';
+  const steps = job ? job.steps.map((st) => `<div class="steprow ${st.state}"><span class="mark">${
+    st.state === 'done' ? '✓' : st.state === 'failed' ? '!' : ''}</span>${esc(st.text)}</div>`).join('') : '';
+  box.innerHTML = `<div class="bk-job">
+    <div class="tr-line"><b>${done ? '✓ ' : failed ? '⚠ ' : ''}${esc(t.label)}</b>
+      ${done || failed ? '<button class="btn btn-sm" id="bkJobClose">Schließen</button>'
+        : `<span class="pill pill-blue">${job ? job.pct : 0} %</span>`}</div>
+    <div class="bar ${failed ? 'warn' : ''}"><i style="width:${job ? job.pct : 0}%"></i></div>
+    <div class="muted small">${esc(job ? job.detail : 'Wird vorbereitet …')}</div>
+    <div class="steplist">${steps}</div>
+    ${failed ? `<div class="note note-err mb0"><b>Fehlgeschlagen.</b><p class="mb0">${esc(job.error)}</p></div>` : ''}
+    ${done ? '<div class="note note-ok mb0"><b>Fertig.</b></div>' : ''}
+  </div>`;
+  const zu = $('#bkJobClose');
+  if (zu) zu.onclick = () => { state.backups.job = null; paintBackupJob(s); paintBackups(s); };
+}
+
+function startBackupJob(s, jobId, label) {
+  state.backups.job = { id: jobId, label, job: null };
+  paintBackupJob(s);
+  paintBackups(s);
+  clearInterval(state.timers.backupJob);
+  state.timers.backupJob = setInterval(async () => {
+    const t = state.backups.job;
+    if (!t || state.activeId !== s.id) { clearInterval(state.timers.backupJob); return; }
+    try {
+      t.job = await api('job/' + t.id);
+      paintBackupJob(s);
+      if (t.job.status !== 'running') {
+        clearInterval(state.timers.backupJob);
+        const ok = t.job.status === 'done';
+        toast(ok ? label + ': fertig.' : label + ' fehlgeschlagen: ' + t.job.error, !ok);
+        await loadBackups(s);
+        await refresh().catch(() => {});
+      }
+    } catch (e) { clearInterval(state.timers.backupJob); toast(e.message, true); }
+  }, 900);
+}
+
+async function backupNow(s) {
+  const b = $('#bkNow'); if (b) b.disabled = true;
+  try {
+    const d = await api(`servers/${s.id}/backup`, { method: 'POST' });
+    startBackupJob(s, d.job_id, 'Welten werden gesichert');
+  } catch (e) { toast(e.message, true); if (b) b.disabled = false; }
+}
+
+async function backupRestore(s, name) {
+  const hosted = isHostedServer(s);
+  const laeuft = hosted ? hostedState(s, hostedRemote(s)).key === 'on' : s.running;
+  if (!(await askConfirm({
+    tone: 'danger', icon: '↺', title: `Welt aus „${name}“ wiederherstellen?`,
+    confirmText: 'Jetzt aufspielen',
+    text: 'Die jetzigen Welten werden durch den Stand aus dieser Sicherung ersetzt.'
+      + '\n\nVorher legt das Programm zwingend eine eigene Sicherung des jetzigen Standes an '
+      + '(„vor-wiederherstellung_…“) – ein Fehlgriff kostet dich also nichts.'
+      + (laeuft ? '\n\nDer Server wird dafür mit Ansage im Spiel gestoppt und danach wieder '
+        + 'gestartet. Wer gerade spielt, fliegt dabei heraus.'
+        : '\n\nDer Server ist gestoppt und bleibt es.'),
+  }))) return;
+  try {
+    const d = await api(`servers/${s.id}/backup/restore`, { method: 'POST', body: { name } });
+    startBackupJob(s, d.job_id, `„${name}“ wird aufgespielt`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function backupDelete(s, name) {
+  if (!(await askConfirm({
+    tone: 'danger', title: `Sicherung „${name}“ löschen?`, confirmText: 'Löschen',
+    text: 'Die ZIP-Datei wird von diesem PC entfernt. Das lässt sich nicht zurücknehmen.',
+  }))) return;
+  try {
+    await api(`servers/${s.id}/backup/delete`, { method: 'POST', body: { name } });
+    toast('Sicherung gelöscht.');
+    await loadBackups(s);
+  } catch (e) { toast(e.message, true); }
+}
+
+function bindBackups(s) {
+  $('#bkNow').onclick = () => backupNow(s);
+  $('#bkOpen').onclick = () => api(`servers/${s.id}/backup/folder`, { method: 'POST' }).catch((e) => toast(e.message, true));
+  $('#bkReload').onclick = () => loadBackups(s);
+  $('#bkDaily').onchange = async (ev) => {
+    const an = ev.target.checked;
+    try {
+      await api(`servers/${s.id}/backup/daily`, { method: 'POST', body: { daily: an } });
+      toast(an ? 'Tägliche Sicherung ist an.' : 'Tägliche Sicherung ist aus.');
+      await refresh().catch(() => {});
+      await loadBackups(s);
+    } catch (e) { toast(e.message, true); ev.target.checked = !an; }
+  };
+  paintBackupJob(s);
+  loadBackups(s);
 }
 
 /* ---------- Einstellungen */
@@ -2181,6 +2373,7 @@ function bindServer() {
   }
 
   if (state.tab === 'files') bindFiles(s);
+  if (state.tab === 'backups') bindBackups(s);
 
   if (state.tab === 'settings') {
     bindSettingsForm('st_');
@@ -2481,13 +2674,15 @@ function renderHostedServer(s) {
   if (state.tab === 'players' && !playersApply(s)) state.tab = 'overview';
   const tabs = [['overview', 'Übersicht'], ['connect', 'Verbinden'],
     ...(playersApply(s) ? [['players', 'Spieler']] : []),
-    ['console', 'Konsole'], ['files', 'Dateien'], ['settings', 'Einstellungen']];
+    ['console', 'Konsole'], ['files', 'Dateien'], ['backups', 'Sicherungen'],
+    ['settings', 'Einstellungen']];
   let body = '';
   if (state.tab === 'overview') body = hostedOverview(s, r, st, werte);
   else if (state.tab === 'connect') body = hostedConnect(s, r);
   else if (state.tab === 'players') body = tabPlayers(s, true);
   else if (state.tab === 'console') body = hostedConsoleTab(s, r);
   else if (state.tab === 'files') body = hostedFilesTab(s, r);
+  else if (state.tab === 'backups') body = tabBackups(s);
   else body = hostedSettings(s, r);
   return `
   <div class="head">

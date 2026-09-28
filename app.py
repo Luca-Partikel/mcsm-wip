@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, quote, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import cloud, companion, manager, players, sources, store, tray, updater  # noqa: E402
+from core import backups, cloud, companion, manager, players, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -109,9 +109,15 @@ def _q(query: dict, key: str, default: str = "") -> str:
 
 
 def _no_job(server_id: str) -> None:
-    """Während einer laufenden Installation nichts ändern, starten oder löschen."""
+    """Während einer laufenden Installation nichts ändern, starten oder löschen.
+
+    Dasselbe gilt für eine laufende Sicherung oder Wiederherstellung: dabei werden Weltordner
+    verschoben – da darf der Server nicht nebenher anspringen."""
     if manager.job_running(server_id):
         raise ApiError("Die Einrichtung läuft noch – bitte warten, bis sie abgeschlossen ist.", 409)
+    if backups.busy(server_id):
+        raise ApiError("Für diesen Server läuft gerade eine Sicherung oder eine "
+                       "Wiederherstellung – bitte warten, bis sie durch ist.", 409)
 
 
 def _not_hosted(cfg: dict) -> None:
@@ -654,15 +660,61 @@ def api_props_put(body, _query, server_id: str = "") -> dict:
 
 def api_worlds(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
-    return {"worlds": manager.worlds(cfg), "backups": manager.backups(cfg)}
+    return {"worlds": manager.worlds(cfg), "backups": backups.list_backups(cfg)}
+
+
+# ------------------------------------------------------------------ Weltensicherungen
+# Die Sicherungen liegen auf diesem PC im Programmordner (backups/<Servername>/) – auch die
+# eines gehosteten Servers, dessen Welten das Programm dafür vom Root-Server holt.
+
+def api_backups(_body, _query, server_id: str = "") -> dict:
+    cfg = _require(store.get(server_id))
+    return backups.overview(cfg)
 
 
 def api_backup(_body, _query, server_id: str = "") -> dict:
+    """Sicherung anlegen – läuft im Hintergrund, der Stand steht unter job/<id>."""
+    cfg = _require(store.get(server_id))
+    _no_job(server_id)
+    try:
+        job = backups.start_backup(cfg, "manuell")
+    except backups.BackupError as exc:
+        raise ApiError(str(exc), 409) from exc
+    log.info("Sicherung gestartet: %s", cfg["name"])
+    return {"job_id": job["id"]}
+
+
+def api_backup_restore(body, _query, server_id: str = "") -> dict:
+    """Eine Sicherung aufspielen. Vorher sichert das Programm zwingend den jetzigen Stand."""
+    cfg = _require(store.get(server_id))
+    _no_job(server_id)
+    try:
+        job = backups.start_restore(cfg, str((body or {}).get("name") or ""))
+    except backups.BackupError as exc:
+        raise ApiError(str(exc), 409) from exc
+    log.info("Wiederherstellung gestartet: %s <- %s", cfg["name"], (body or {}).get("name"))
+    return {"job_id": job["id"]}
+
+
+def api_backup_delete(body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
     try:
-        return manager.backup_worlds(cfg)
-    except ValueError as exc:
+        return backups.delete_backup(cfg, str((body or {}).get("name") or ""))
+    except backups.BackupError as exc:
         raise ApiError(str(exc)) from exc
+
+
+def api_backup_folder(_body, _query, server_id: str = "") -> dict:
+    cfg = _require(store.get(server_id))
+    return backups.open_folder(cfg)
+
+
+def api_backup_daily(body, _query, server_id: str = "") -> dict:
+    """Die tägliche Sicherung je Server an- oder abschalten."""
+    cfg = _require(store.get(server_id))
+    cfg["backup_daily"] = bool((body or {}).get("daily"))
+    store.save(cfg)
+    return {"ok": True, "daily": cfg["backup_daily"]}
 
 
 def api_open_folder(body, _query, server_id: str = "") -> dict:
@@ -1749,7 +1801,12 @@ SERVER_ROUTES = {
     ("GET", "props"): api_props_get,
     ("POST", "props"): api_props_put,
     ("GET", "worlds"): api_worlds,
+    ("GET", "backups"): api_backups,
     ("POST", "backup"): api_backup,
+    ("POST", "backup/restore"): api_backup_restore,
+    ("POST", "backup/delete"): api_backup_delete,
+    ("POST", "backup/folder"): api_backup_folder,
+    ("POST", "backup/daily"): api_backup_daily,
     ("GET", "players"): api_players,
     ("POST", "players"): api_players_action,
     ("GET", "xbox"): api_xbox_status,
@@ -2003,6 +2060,8 @@ def main() -> int:
             time.sleep(6 * 3600)
 
     threading.Thread(target=update_checks, daemon=True).start()
+    # Solange das Programm offen ist: einmal am Tag je Server eine Weltensicherung.
+    backups.start_daily_watch()
     if not os.environ.get("MCSM_NO_BROWSER"):
         threading.Timer(0.6, open_ui, args=(url,)).start()
         hint = store.DATA_DIR / ".tray-hint-shown"

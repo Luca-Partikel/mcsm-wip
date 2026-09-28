@@ -58,6 +58,9 @@ DEFAULTS = {
     "hardcore": False,          # nur Paper: MCSM-Hardcore des Companion-Plugins (1 Leben, Grab, Totem)
     "geyser": True,             # nur Java: Bedrock-Crossplay aktivieren
     "autostart": False,
+    # Weltensicherungen: Ist das Programm offen, legt es einmal am Tag von selbst eine an
+    # (core/backups.py). Abschaltbar je Server; von Hand sichern geht immer.
+    "backup_daily": True,
     "installed": False,
     "eula_accepted": False,
     # Cloud (Root-Server): Verknüpfung dieser lokalen Kopie mit einer Instanz auf dem Root-Server.
@@ -271,7 +274,7 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
 
     for flag in ("online_mode", "allow_cheats", "pvp", "geyser", "autostart", "eula_accepted",
                  "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore",
-                 "companion_tips", "companion_autosave"):
+                 "companion_tips", "companion_autosave", "backup_daily"):
         if flag in raw:
             cfg[flag] = bool(raw[flag])
     if modpack:
