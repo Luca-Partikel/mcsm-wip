@@ -191,8 +191,10 @@ public final class TimberListener implements Listener {
         }
         int neu = dmg.getDamage() + 1;
         if (neu >= axt.getType().getMaxDurability()) {
-            player.getInventory().setItemInMainHand(null);
-            player.getWorld().playSound(player.getLocation(), org.bukkit.Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
+            // Die Axt NICHT durch den Holzfäller zerstören – kurz vor dem Bruch anhalten und ihr den
+            // letzten Haltbarkeitspunkt lassen. So bleibt eine wertvolle Axt erhalten; Mending (oder
+            // ein Amboss) repariert sie wie gewohnt weiter, sobald Erfahrung hereinkommt. Der Rest
+            // des Baums bleibt dann eben stehen.
             return false;
         }
         dmg.setDamage(neu);
