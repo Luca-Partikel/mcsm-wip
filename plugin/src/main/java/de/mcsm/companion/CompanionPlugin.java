@@ -129,6 +129,7 @@ public final class CompanionPlugin extends JavaPlugin {
         pm.registerEvents(new BanLoginListener(bans), this);
         pm.registerEvents(new MuteChatListener(bans), this);
         pm.registerEvents(new WhitelistListener(this, whitelist), this);
+        pm.registerEvents(new TimberListener(this), this);
 
         register(tpa, "tpa", "tpaccept", "tpdeny");
         register(new TeleportCommand(this), "tp");

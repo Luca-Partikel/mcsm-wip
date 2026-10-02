@@ -388,3 +388,15 @@ features:
   whitelist: true
   # Herunterfahren mit Ansage (/mcsmstop) und freundlicher Abschied beim Plugin-Ende
   shutdown: true
+  # Holzfäller: mit der Goldaxt fällt ein Schlag den ganzen Baum. Streng geprüft (nur echte Bäume
+  # mit nicht-persistenten Blättern derselben Holzart), damit nie ein Holzhaus zerlegt wird. Mit
+  # Schleichen bricht nur der eine Block. Das Recht dazu ist mcsm.timber (Standard: alle).
+  timber: true
+
+# Grenzen des Holzfällers.
+timber:
+  # Höchstzahl an Stämmen, die ein Schlag fällt (schützt vor riesigen Bauten). 8–2048.
+  max_logs: 256
+  # So viele nicht-persistente Blätter der passenden Art müssen am Stamm hängen, damit es als Baum
+  # gilt. Höher = strenger. 1–64.
+  min_leaves: 4
