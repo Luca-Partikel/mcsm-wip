@@ -281,6 +281,30 @@ async function askStop(name, spieler = 0) {
   return { seconds: Math.min(900, sek), reason: String(r.stopReason || '').trim().slice(0, 120) };
 }
 
+/** Wie askStop, nur für einen Neustart (Server stoppt mit Ansage und startet danach wieder). */
+async function askRestart(name, spieler = 0) {
+  const vorschlag = spieler > 0 ? 30 : 10;
+  const r = await dialog({
+    icon: '🔄', title: 'Server neu starten?', sub: name,
+    html: spieler > 0
+      ? `<b>${spieler === 1 ? 'Ein Spieler ist' : spieler + ' Spieler sind'} gerade drauf.</b>
+         ${spieler === 1 ? 'Er bekommt' : 'Sie bekommen'} einen Countdown im Spiel und danach deinen Grund
+         im Trennbildschirm. Die Welt wird gespeichert, dann startet der Server wieder.`
+      : `Gerade spielt niemand. Der Server speichert, fährt herunter und startet wieder.`,
+    fields: [
+      { id: 'rsReason', label: 'Grund (erscheint den Spielern)', value: 'Neustart',
+        placeholder: 'z. B. Wartung, Neustart', maxlength: 120 },
+      { id: 'rsSec', label: 'Vorwarnzeit in Sekunden', value: String(vorschlag),
+        placeholder: '10', maxlength: 3, hint: '0 = sofort und ohne Ansage.' },
+    ],
+    confirmText: 'Neu starten',
+  });
+  if (!r) return null;
+  let sek = parseInt(String(r.rsSec || '').trim(), 10);
+  if (!Number.isFinite(sek) || sek < 0) sek = 0;
+  return { seconds: Math.min(900, sek), reason: String(r.rsReason || '').trim().slice(0, 120) };
+}
+
 /** Ja/Nein-Dialog. Gefährliches („danger“) bekommt einen roten Knopf. */
 async function askConfirm(opts) {
   return (await dialog({ icon: opts.tone === 'danger' ? '⚠' : '❓', confirmText: 'Bestätigen', ...opts })) === true;
@@ -1192,6 +1216,7 @@ function renderServer() {
     <div class="btn-row">
       <button class="btn btn-primary" id="btnStart" ${s.running || !s.installed || s.installing || s.cloud_locked ? 'disabled' : ''}
         ${s.cloud_locked ? 'title="Dieser Server liegt gerade auf dem Root-Server – zuerst zurückholen."' : ''}>▶ Starten</button>
+      <button class="btn" id="btnRestart" ${!s.running ? 'disabled' : ''}>🔄 Neu starten</button>
       <button class="btn btn-danger" id="btnStop" ${!s.running ? 'disabled' : ''}>■ Stoppen</button>
     </div>
   </div>
@@ -2474,6 +2499,18 @@ function bindServer() {
       toast(wahl.seconds > 0 ? `Server wird in ${wahl.seconds} Sekunden gestoppt …` : 'Server wird gestoppt …');
       await refresh();
     } catch (e) { toast(e.message, true); $('#btnStop').disabled = false; }
+  };
+  const btnRs = $('#btnRestart');
+  if (btnRs) btnRs.onclick = async () => {
+    const wahl = await askRestart(s.name, playersOnline(s));
+    if (!wahl) return;
+    try {
+      btnRs.disabled = true;
+      await api(`servers/${s.id}/restart`, { method: 'POST',
+        body: { announce_seconds: wahl.seconds, reason: wahl.reason } });
+      toast(wahl.seconds > 0 ? `Server wird in ${wahl.seconds} Sekunden neu gestartet …` : 'Server wird neu gestartet …');
+      await refresh();
+    } catch (e) { toast(e.message, true); btnRs.disabled = false; }
   };
 
   if (state.tab === 'overview') {

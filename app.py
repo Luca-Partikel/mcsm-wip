@@ -300,6 +300,20 @@ def api_stop(body, _query, server_id: str = "") -> dict:
     return {"ok": True}
 
 
+def api_restart(body, _query, server_id: str = "") -> dict:
+    """Knopf „Neu starten": stoppt mit Ansage und startet danach wieder (manager.restart_server)."""
+    cfg = _require(store.get(server_id))
+    reason = " ".join(str((body or {}).get("reason") or "Neustart").split())[:120]
+    try:
+        seconds = max(0, min(900, int((body or {}).get("announce_seconds") or 0)))
+    except (TypeError, ValueError):
+        seconds = 0
+    threading.Thread(target=manager.restart_server, args=(cfg,),
+                     kwargs={"reason": reason, "seconds": seconds}, daemon=True).start()
+    log.info("Server wird neu gestartet: %s", cfg["name"])
+    return {"ok": True}
+
+
 def api_hardcore(body, _query, server_id: str = "") -> dict:
     """MCSM-Hardcore des Begleit-Plugins schalten – läuft der Server, sofort per Konsolenbefehl."""
     cfg = _require(store.get(server_id))
@@ -1801,6 +1815,7 @@ SERVER_ROUTES = {
     ("POST", "reinstall"): api_reinstall,
     ("POST", "start"): api_start,
     ("POST", "stop"): api_stop,
+    ("POST", "restart"): api_restart,
     ("POST", "command"): api_command,
     ("GET", "console"): api_console,
     ("POST", "firewall"): api_firewall,
