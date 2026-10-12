@@ -3251,6 +3251,9 @@ function hostedConsoleTab(s, r) {
   const laeuft = !!r.running;
   const schlaeft = hostedSleeping(r);
   return `
+  <div class="console-tools">
+    <label class="switch"><input type="checkbox" id="conErrOnly"> nur Warnungen &amp; Fehler</label>
+  </div>
   <div class="console" id="console"></div>
   ${laeuft ? consoleQuick(s) : ''}
   <div class="cmd-row">
@@ -3559,6 +3562,8 @@ function bindHostedServer(s) {
     $$('.cmd-quick [data-cmd]').forEach((b) => b.onclick = () => {
       const befehl = b.dataset.cmd; hist = cmdHistPush(s.id, befehl); hidx = hist.length; run(befehl);
     });
+    const errOnly = $('#conErrOnly');
+    if (errOnly) errOnly.onchange = () => { const c = $('#console'); if (c) c.classList.toggle('console--errors', errOnly.checked); };
     startHostedConsole();
   }
 
