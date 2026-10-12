@@ -894,6 +894,8 @@ function companionFields(s, prefix) {
         hint: 'Minuten, 1 bis 180. Standard: 10. Beim Stoppen wird die Welt ohnehin immer gespeichert.' })}
     ${fieldInput(prefix + 'discord_url', 'Discord-Einladungslink (für /discord)', s.discord_url || '',
       { placeholder: 'https://discord.gg/…', hint: 'Spieler sehen ihn mit <code>/discord</code> als anklickbaren Link. Leer = /discord sagt, dass keiner hinterlegt ist.' })}
+    ${fieldInput(prefix + 'discord_webhook', 'Discord-Webhook für Server-Ereignisse', s.discord_webhook || '',
+      { placeholder: 'https://discord.com/api/webhooks/…', hint: 'Meldet Beitritt, Verlassen, Tod sowie online/offline in einen Discord-Kanal. In Discord: Kanal → Bearbeiten → Integrationen → Webhooks. Leer = aus.' })}
     ${nameColorField(prefix, s)}`;
 }
 
@@ -975,7 +977,7 @@ function readNameColor(prefix, out) {
 function readSettingsForm(prefix, base) {
   const get = (k) => $('#' + prefix + k);
   const out = { ...base };
-  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time', 'discord_url', 'resource_pack']) if (get(k)) out[k] = get(k).value;
+  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time', 'discord_url', 'discord_webhook', 'resource_pack']) if (get(k)) out[k] = get(k).value;
   for (const k of ['port', 'bedrock_port', 'max_players', 'ram_mb', 'view_distance']) if (get(k)) out[k] = Number(get(k).value);
   for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave', 'auto_restart', 'resource_pack_require']) if (get(k)) out[k] = get(k).checked;
   // Ein leeres Minutenfeld soll den Standard bedeuten, nicht „1 Minute“.
@@ -3343,6 +3345,12 @@ function hostedSettings(s, r) {
       ${fieldInput('hs_name', 'Name des Servers', set.name || r.name || s.name,
         { hint: 'Nur die Anzeige – die Adresse deiner Freunde bleibt gleich.' })}
       ${istJava ? nameColorField('hs_', farbWerte) : ''}
+      ${istJava ? fieldInput('hs_discord_url', 'Discord-Einladungslink (für /discord)',
+        set.discord_url || s.discord_url || '', { placeholder: 'https://discord.gg/…',
+          hint: 'Spieler sehen ihn mit <code>/discord</code>. Leer = aus.' }) : ''}
+      ${istJava ? fieldInput('hs_discord_webhook', 'Discord-Webhook für Server-Ereignisse',
+        set.discord_webhook || s.discord_webhook || '', { placeholder: 'https://discord.com/api/webhooks/…',
+          hint: 'Meldet Beitritt/Verlassen/Tod sowie online/offline in einen Discord-Kanal. Leer = aus.' }) : ''}
       <div class="field"><label for="hs_ram">Arbeitsspeicher: <b id="hs_ramLabel">${gb(ram)}</b></label>
         <input type="range" id="hs_ram" min="1024" max="${Math.max(8192, budget || 8192)}" step="512" value="${ram}"
           ${laeuft ? 'disabled' : ''}>
@@ -3605,6 +3613,8 @@ async function saveHostedSettings(s) {
   if (schlaf) body.hibernation = !!schlaf.checked;
   if (minuten) body.hibernation_minutes = Number(minuten.value);
   readNameColor('hs_', body);
+  const du = $('#hs_discord_url'); if (du) body.discord_url = du.value;
+  const dw = $('#hs_discord_webhook'); if (dw) body.discord_webhook = dw.value;
   if (knopf) knopf.disabled = true;
   try {
     const d = await api('cloud/settings', { method: 'POST', body });

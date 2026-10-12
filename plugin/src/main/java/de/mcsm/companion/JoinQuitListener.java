@@ -54,6 +54,10 @@ public final class JoinQuitListener implements Listener {
         if (plugin.adminTools() != null) {
             plugin.adminTools().restore(p);
         }
+        // Discord-Webhook: nur sichtbare Spieler melden (unsichtbare Betreiber nicht).
+        if (plugin.webhook() != null && !plugin.vanish().isVanished(p)) {
+            plugin.webhook().beitritt(p.getName());
+        }
         plugin.tablist().refreshLater();
     }
 
@@ -61,11 +65,17 @@ public final class JoinQuitListener implements Listener {
     public void onQuit(PlayerQuitEvent event) {
         Config cfg = plugin.settings();
         Player p = event.getPlayer();
+        boolean sichtbar = !plugin.vanish().isVanished(p);
         if (plugin.vanish().isVanished(p)) {
             event.quitMessage(null);
             plugin.vanish().forget(p);
         } else if (cfg.featJoinLeave) {
             event.quitMessage(Msg.mm(cfg.leaveFormat, Msg.name("name", p)));
+        }
+        // Beim Herunterfahren fliegen alle gleichzeitig raus – das meldet der Webhook als „offline",
+        // nicht als viele einzelne „verlassen".
+        if (sichtbar && plugin.webhook() != null && !Bukkit.isStopping()) {
+            plugin.webhook().verlassen(p.getName());
         }
         plugin.tpa().clear(p);
         plugin.clock().forget(p);

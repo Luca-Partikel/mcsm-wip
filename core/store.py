@@ -44,6 +44,8 @@ DEFAULTS = {
     "name_color2": "",
     # Discord-Einladungslink für den /discord-Befehl des Begleit-Plugins. "" = aus.
     "discord_url": "",
+    # Discord-Webhook-URL für Server-Ereignisse (Beitritt/Verlassen/Tod/online/offline). "" = aus.
+    "discord_webhook": "",
     # Ressourcenpaket (nur Java): URL und ob es Pflicht ist. "" = kein Paket.
     "resource_pack": "",
     "resource_pack_require": False,
@@ -276,6 +278,11 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     # Discord-Link: nur ein sauberer http/https-Link ohne Leerzeichen/Klammern, sonst leer.
     durl = str(raw.get("discord_url", cfg.get("discord_url", ""))).strip()
     cfg["discord_url"] = durl[:300] if re.fullmatch(r"https?://[^\s'\"<>]+", durl) else ""
+
+    # Discord-Webhook: nur eine plausible Discord-Webhook-URL, sonst leer.
+    whook = str(raw.get("discord_webhook", cfg.get("discord_webhook", ""))).strip()
+    cfg["discord_webhook"] = whook[:300] if re.fullmatch(
+        r"https://[^\s'\"<>]*discord(app)?\.com/api/webhooks/[^\s'\"<>]+", whook) else ""
 
     # Ressourcenpaket-URL: sauberer http/https-Link (server.properties verträgt keine Leerzeichen).
     rp = str(raw.get("resource_pack", cfg.get("resource_pack", ""))).strip()

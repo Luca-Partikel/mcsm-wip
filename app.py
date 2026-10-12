@@ -1073,6 +1073,8 @@ def _hosted_settings(remote: dict) -> dict:
         # Farbe/Farbverlauf des Servernamens – der Root-Server liefert sie in server_view mit.
         "name_color": str(remote.get("name_color") or ""),
         "name_color2": str(remote.get("name_color2") or ""),
+        "discord_url": str(remote.get("discord_url") or ""),
+        "discord_webhook": str(remote.get("discord_webhook") or ""),
     }
 
 

@@ -1902,6 +1902,8 @@ def server_view(inst: dict) -> dict:
     # Farbe/Farbverlauf des Servernamens – die Oberfläche zeigt und ändert sie in den Einstellungen.
     out["name_color"] = str(inst.get("name_color") or "")
     out["name_color2"] = str(inst.get("name_color2") or "")
+    out["discord_url"] = str(inst.get("discord_url") or "")
+    out["discord_webhook"] = str(inst.get("discord_webhook") or "")
     return out
 
 
@@ -2711,6 +2713,11 @@ def h_server_settings(req: Req, iid: str):
             iid,
             color=data.get("name_color") if "name_color" in data else None,
             color2=data.get("name_color2") if "name_color2" in data else None)
+    if "discord_url" in data or "discord_webhook" in data:
+        inst = instances.set_discord(
+            iid,
+            url=data.get("discord_url") if "discord_url" in data else None,
+            webhook=data.get("discord_webhook") if "discord_webhook" in data else None)
     if "xbox_enabled" in data or "xbox_autostart" in data:
         inst = instances.set_xbox(
             iid,

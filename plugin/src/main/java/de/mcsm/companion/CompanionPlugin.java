@@ -61,6 +61,7 @@ public final class CompanionPlugin extends JavaPlugin {
     // Freigabeliste und geordnetes Herunterfahren
     private WhitelistService whitelist;
     private ShutdownService shutdown;
+    private WebhookService webhook;
 
     @Override
     public void onEnable() {
@@ -109,6 +110,8 @@ public final class CompanionPlugin extends JavaPlugin {
         // Freigabeliste und Herunterfahren mit Ansage
         whitelist = new WhitelistService(this);
         shutdown = new ShutdownService(this);
+        webhook = new WebhookService(this);
+        webhook.start();
 
         PluginManager pm = Bukkit.getPluginManager();
         pm.registerEvents(new ChatListener(this), this);
@@ -200,10 +203,19 @@ public final class CompanionPlugin extends JavaPlugin {
         }
         getLogger().info("MCSMCompanion " + getPluginMeta().getVersion() + " aktiv – Server \"" + settings.serverName
                 + "\", Modus " + settings.mode + ", Manager " + settings.managerVersion);
+        // Wenn der Server (fast) fertig ist, einmal „online" an den Discord-Webhook melden.
+        Bukkit.getScheduler().runTaskLater(this, () -> webhook.online(), 40L);
     }
 
     @Override
     public void onDisable() {
+        // Zuerst „offline" an den Discord-Webhook (synchron, der Sender-Thread endet gleich). Die
+        // gleich folgenden Spieler-Kicks lösen bewusst keine „verlassen"-Meldungen aus (onQuit prüft
+        // Bukkit.isStopping()).
+        if (webhook != null) {
+            webhook.offlineJetzt();
+            webhook.stop();
+        }
         // Noch verbundene Spieler freundlich verabschieden, bevor irgendetwas abgebaut wird.
         // Bewusst ganz vorn: die Verbindungen stehen hier noch (Bukkit.isStopping() ist bereits
         // true, PlayerList.removeAll() kommt erst nach disablePlugins()), und das dadurch
@@ -466,6 +478,10 @@ public final class CompanionPlugin extends JavaPlugin {
     }
 
     /** Herunterfahren mit Ansage und freundlicher Abschied beim Plugin-Ende. */
+    public WebhookService webhook() {
+        return webhook;
+    }
+
     public ShutdownService shutdown() {
         return shutdown;
     }

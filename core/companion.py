@@ -22,7 +22,7 @@ JAR_SRC = store.BASE / "assets" / "MCSMCompanion.jar"
 SPONSOR_TEXT = "Sponsored by Novelnia"
 MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore", "tips",
            "autosave", "autosave_minutes", "motd_line", "motd_eigen", "name_color", "name_color2",
-           "discord_url")
+           "discord_url", "discord_webhook")
 # Schlüssel früherer Versionen, die aus vorhandenen config.yml entfernt werden
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
 # Alte Standard-Zeilen, die auf den neuen Standard gehoben werden – aber nur, wenn sie unverändert
@@ -131,7 +131,17 @@ def managed_values(cfg: dict) -> dict[str, str]:
         "name_color2": _yaml(_hex(cfg.get("name_color2"))),
         # Discord-Link für /discord – nur ein sauberer http/https-Link, sonst leer.
         "discord_url": _yaml(_discord(cfg.get("discord_url"))),
+        # Discord-Webhook für Server-Ereignisse – nur eine plausible Webhook-URL, sonst leer.
+        "discord_webhook": _yaml(_webhook(cfg.get("discord_webhook"))),
     }
+
+
+_WEBHOOK_RE = re.compile(r"^https://[^\s'\"<>]*discord(app)?\.com/api/webhooks/[^\s'\"<>]+$")
+
+
+def _webhook(value) -> str:
+    s = str(value or "").strip()
+    return s if _WEBHOOK_RE.match(s) else ""
 
 
 _DISCORD_RE = re.compile(r"^https?://[^\s'\"<>]+$")

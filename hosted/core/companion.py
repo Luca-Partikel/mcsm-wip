@@ -137,6 +137,8 @@ def managed_values(instance: dict, *, version: str = "") -> dict:
         "hardcore": _yaml(bool(instance.get("hardcore"))),
         "name_color": _yaml(_hex(instance.get("name_color"))),
         "name_color2": _yaml(_hex(instance.get("name_color2"))),
+        "discord_url": _yaml(_link(instance.get("discord_url"))),
+        "discord_webhook": _yaml(_webhook(instance.get("discord_webhook"))),
     }
 
 
@@ -144,6 +146,20 @@ def _hex(value) -> str:
     """Nur eine gültige Hex-Farbe (#RGB/#RRGGBB) durchlassen, sonst leer (keine eigene Farbe)."""
     s = str(value or "").strip()
     return s if _HEX_RE.match(s) else ""
+
+
+_LINK_RE = re.compile(r"^https?://[^\s'\"<>]+$")
+_WEBHOOK_RE = re.compile(r"^https://[^\s'\"<>]*discord(app)?\.com/api/webhooks/[^\s'\"<>]+$")
+
+
+def _link(value) -> str:
+    s = str(value or "").strip()
+    return s if _LINK_RE.match(s) else ""
+
+
+def _webhook(value) -> str:
+    s = str(value or "").strip()
+    return s if _WEBHOOK_RE.match(s) else ""
 
 
 def _template_lines() -> list:

@@ -42,6 +42,10 @@ public final class DeathListener implements Listener {
         Player victim = event.getPlayer();
         Component styled = restyle(original, victim.getName());
         event.deathMessage(Msg.mm(cfg.deathPrefix).append(styled));
+        // Discord-Webhook: die (unformatierte) Todesmeldung weiterreichen.
+        if (plugin.webhook() != null) {
+            plugin.webhook().tod(PLAIN.serialize(original));
+        }
     }
 
     static Component restyle(Component original, String victimName) {

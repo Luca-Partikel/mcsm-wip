@@ -532,6 +532,27 @@ def _clean_hex(value) -> str:
     return s if _HEX_RE.match(s) else ""
 
 
+_LINK_RE = re.compile(r"^https?://[^\s'\"<>]+$")
+_WEBHOOK_RE = re.compile(r"^https://[^\s'\"<>]*discord(app)?\.com/api/webhooks/[^\s'\"<>]+$")
+
+
+def set_discord(instance_id: str, *, url=None, webhook=None, now: int | None = None) -> dict:
+    """Discord-Einladungslink (/discord) und Webhook-URL setzen. ``None`` lässt den Wert stehen."""
+    changes: dict = {}
+    if url is not None:
+        s = str(url or "").strip()
+        changes["discord_url"] = s[:300] if _LINK_RE.match(s) else ""
+    if webhook is not None:
+        s = str(webhook or "").strip()
+        changes["discord_webhook"] = s[:300] if _WEBHOOK_RE.match(s) else ""
+    if not changes:
+        instance = get_instance(instance_id)
+        if not instance:
+            raise ValueError(_missing(instance_id))
+        return instance
+    return _patch(instance_id, changes, now=now)
+
+
 def set_name_color(instance_id: str, *, color=None, color2=None,
                    now: int | None = None) -> dict:
     """Farbe/Farbverlauf des Servernamens setzen. Beide Angaben sind einzeln änderbar;
