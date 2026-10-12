@@ -249,9 +249,21 @@ def api_reinstall(body, _query, server_id: str = "") -> dict:
     if manager.is_running(server_id):
         raise ApiError("Bitte den Server zuerst stoppen.")
     updated = _sanitize(body, existing=cfg)
+    # Sicherheitsnetz: Ändert sich die Version (z. B. ein Downgrade, das die Welt beschädigen kann),
+    # vorher einmal die Welt sichern. Nur bei Versionswechsel, damit ein gewöhnlicher Neuinstall
+    # nicht jedes Mal wartet. Scheitert die Sicherung, wird trotzdem neu installiert (nur geloggt).
+    gesichert = None
+    if cfg.get("installed") and str(updated.get("version")) != str(cfg.get("version")):
+        try:
+            ziel = backups.pack_now(cfg, "vor-update")
+            if ziel is not None:
+                gesichert = ziel.name
+                log.info("Sicherheitssicherung vor Versionswechsel: %s -> %s", cfg["name"], ziel.name)
+        except Exception:                             # noqa: BLE001 – Sicherung darf den Neuinstall nie blockieren
+            log.exception("Sicherheitssicherung vor Neuinstallation fehlgeschlagen")
     store.save(updated)
     job = manager.install_async(updated)
-    return {"job_id": job["id"]}
+    return {"job_id": job["id"], "safety_backup": gesichert}
 
 
 def api_start(_body, _query, server_id: str = "") -> dict:

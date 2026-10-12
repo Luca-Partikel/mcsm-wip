@@ -1957,7 +1957,7 @@ function bindFiles(s) {
    immer hier auf dem PC, im Programmordner unter backups\<Servername>. Bei einem gehosteten
    Server holt das Programm die Welten dafür erst vom Root-Server. */
 
-const BK_ICON = { manuell: '🗜️', taeglich: '🕒', vorher: '🛟' };
+const BK_ICON = { manuell: '🗜️', taeglich: '🕒', vorher: '🛟', 'vor-update': '⬆️' };
 
 function tabBackups(s) {
   const hosted = isHostedServer(s);
@@ -2443,6 +2443,7 @@ function bindSettingsModpack(s) {
       loader: v.loaders[0], loader_version: '', icon_url: mp.icon_url || '', url: mp.url || '' } };
     try {
       const d = await api(`servers/${s.id}/reinstall`, { method: 'POST', body });
+      if (d.safety_backup) toast('Sicherheitssicherung der Welt angelegt: ' + d.safety_backup);
       state.install = { serverId: s.id, jobId: d.job_id, job: null, after: 'overview' }; state.view = 'install'; render(); pollJob();
     } catch (e) { toast(e.message, true); }
   };
@@ -2609,6 +2610,7 @@ function bindServer() {
       }))) return;
       try {
         const d = await api(`servers/${s.id}/reinstall`, { method: 'POST', body: { version } });
+        if (d.safety_backup) toast('Sicherheitssicherung der Welt angelegt: ' + d.safety_backup);
         state.install = { serverId: s.id, jobId: d.job_id, job: null, after: 'overview' }; state.view = 'install'; render(); pollJob();
       } catch (e) { toast(e.message, true); }
     };

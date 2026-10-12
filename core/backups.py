@@ -43,8 +43,10 @@ MARKER_NAME = ".mcsm-server.json"
 #: So viele tägliche Sicherungen bleiben liegen; ältere räumt das Programm weg.
 KEEP_DAILY = 7
 #: Dateianfang je Art.
-PREFIX = {"manuell": "welten", "taeglich": "taeglich", "vorher": "vor-wiederherstellung"}
-LABEL = {"manuell": "von Hand", "taeglich": "täglich", "vorher": "vor einer Wiederherstellung"}
+PREFIX = {"manuell": "welten", "taeglich": "taeglich", "vorher": "vor-wiederherstellung",
+          "vor-update": "vor-neuinstallation"}
+LABEL = {"manuell": "von Hand", "taeglich": "täglich", "vorher": "vor einer Wiederherstellung",
+         "vor-update": "vor einer Neuinstallation"}
 _STAMP = r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
 #: Der Wächter schaut in diesem Takt nach, ob heute schon gesichert wurde.
 DAILY_CHECK_SECONDS = 15 * 60
@@ -415,6 +417,23 @@ def _hold_saves(cfg: dict):
 
 
 # --------------------------------------------------------------------- Sichern
+
+def pack_now(cfg: dict, art: str = "vor-update") -> pathlib.Path | None:
+    """Die Welten dieses PCs sofort (blockierend) sichern und den Pfad zurückgeben.
+
+    Für das Sicherheitsnetz vor einer Neuinstallation gedacht: ein einzelner, synchroner Schritt
+    ohne eigenen Job. Nur für lokale Server; gibt es keine Welt, passiert nichts (None)."""
+    if _instance(cfg):
+        return None                                   # gehostet: hier gibt es keine lokale Welt
+    if art not in PREFIX:
+        art = "vor-update"
+    try:
+        if not manager.worlds(cfg):
+            return None
+        return _pack_local(cfg, art)
+    except BackupError:
+        return None
+
 
 def start_backup(cfg: dict, art: str = "manuell") -> dict:
     """Sicherung anlegen – auf diesem PC oder vom Root-Server geholt."""
