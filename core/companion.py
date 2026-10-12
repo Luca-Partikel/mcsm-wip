@@ -21,7 +21,8 @@ from .version import __version__
 JAR_SRC = store.BASE / "assets" / "MCSMCompanion.jar"
 SPONSOR_TEXT = "Sponsored by Novelnia"
 MANAGED = ("server_name", "manager_version", "mode", "sponsor_text", "hardcore", "tips",
-           "autosave", "autosave_minutes", "motd_line", "motd_eigen", "name_color", "name_color2")
+           "autosave", "autosave_minutes", "motd_line", "motd_eigen", "name_color", "name_color2",
+           "discord_url")
 # Schlüssel früherer Versionen, die aus vorhandenen config.yml entfernt werden
 REMOVED = ("admin_users", "admin_op", "admin_silent_join", "admin_vanish_gamemode")
 # Alte Standard-Zeilen, die auf den neuen Standard gehoben werden – aber nur, wenn sie unverändert
@@ -128,7 +129,17 @@ def managed_values(cfg: dict) -> dict[str, str]:
         # dann bleibt es überall bei der bisherigen Darstellung. Das Plugin prüft die Hex-Werte.
         "name_color": _yaml(_hex(cfg.get("name_color"))),
         "name_color2": _yaml(_hex(cfg.get("name_color2"))),
+        # Discord-Link für /discord – nur ein sauberer http/https-Link, sonst leer.
+        "discord_url": _yaml(_discord(cfg.get("discord_url"))),
     }
+
+
+_DISCORD_RE = re.compile(r"^https?://[^\s'\"<>]+$")
+
+
+def _discord(value) -> str:
+    s = str(value or "").strip()
+    return s if _DISCORD_RE.match(s) else ""
 
 
 def _template_lines() -> list[str]:

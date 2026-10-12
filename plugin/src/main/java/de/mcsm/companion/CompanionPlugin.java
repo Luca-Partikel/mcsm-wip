@@ -149,6 +149,8 @@ public final class CompanionPlugin extends JavaPlugin {
         register(new SeenCommand(this, stats, afk), "seen");
         register(new StatsCommand(this, stats, afk), "stats");
         register(new NearCommand(this, afk), "near");
+        register(new PingCommand(this), "ping");
+        register(new DiscordCommand(this), "discord");
         register(new RulesCommand(this), "rules");
         register(new McsmCommand(this, metrics), "mcsm");
         register(new SidebarCommand(this, sidebar), "sb");

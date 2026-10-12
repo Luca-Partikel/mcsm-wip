@@ -267,6 +267,28 @@ public final class PlayerStatsStore implements Listener, Runnable {
         return Math.max(0L, data.getLong(base(id) + ".play_ms", 0L));
     }
 
+    /** Die Spieler mit der meisten Gesamtspielzeit (laufende Sitzung eingerechnet), absteigend. */
+    public List<Map.Entry<UUID, Long>> topPlaytime(int limit) {
+        Map<UUID, Long> gesamt = new HashMap<>();
+        ConfigurationSection sec = data.getConfigurationSection("players");
+        if (sec != null) {
+            for (String key : sec.getKeys(false)) {
+                try {
+                    UUID id = UUID.fromString(key);
+                    gesamt.put(id, playMillis(id));
+                } catch (IllegalArgumentException ignored) {
+                    // kein gültiger UUID-Schlüssel – überspringen
+                }
+            }
+        }
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            gesamt.putIfAbsent(p.getUniqueId(), playMillis(p.getUniqueId()));
+        }
+        List<Map.Entry<UUID, Long>> liste = new ArrayList<>(gesamt.entrySet());
+        liste.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+        return new ArrayList<>(liste.subList(0, Math.min(Math.max(0, limit), liste.size())));
+    }
+
     public long firstJoin(UUID id) {
         long stored = data.getLong(base(id) + ".first_join", 0L);
         if (stored > 0L) {

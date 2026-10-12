@@ -863,6 +863,8 @@ function companionFields(s, prefix) {
     ${fieldInput(prefix + 'companion_autosave_minutes', 'Abstand des Speicherns', minuten,
       { type: 'number', min: 1, max: 180,
         hint: 'Minuten, 1 bis 180. Standard: 10. Beim Stoppen wird die Welt ohnehin immer gespeichert.' })}
+    ${fieldInput(prefix + 'discord_url', 'Discord-Einladungslink (für /discord)', s.discord_url || '',
+      { placeholder: 'https://discord.gg/…', hint: 'Spieler sehen ihn mit <code>/discord</code> als anklickbaren Link. Leer = /discord sagt, dass keiner hinterlegt ist.' })}
     ${nameColorField(prefix, s)}`;
 }
 
@@ -944,7 +946,7 @@ function readNameColor(prefix, out) {
 function readSettingsForm(prefix, base) {
   const get = (k) => $('#' + prefix + k);
   const out = { ...base };
-  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time']) if (get(k)) out[k] = get(k).value;
+  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time', 'discord_url']) if (get(k)) out[k] = get(k).value;
   for (const k of ['port', 'bedrock_port', 'max_players', 'ram_mb', 'view_distance']) if (get(k)) out[k] = Number(get(k).value);
   for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave', 'auto_restart']) if (get(k)) out[k] = get(k).checked;
   // Ein leeres Minutenfeld soll den Standard bedeuten, nicht „1 Minute“.

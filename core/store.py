@@ -42,6 +42,8 @@ DEFAULTS = {
     # Das Begleit-Plugin wendet sie überall an, wo der Name steht (Serverliste, Tabliste, Spiel).
     "name_color": "",
     "name_color2": "",
+    # Discord-Einladungslink für den /discord-Befehl des Begleit-Plugins. "" = aus.
+    "discord_url": "",
     "max_players": 10,
     "ram_mb": 4096,             # nur Java
     "gamemode": "survival",
@@ -267,6 +269,10 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     for schluessel in ("name_color", "name_color2"):
         wert = str(raw.get(schluessel, cfg.get(schluessel, ""))).strip()
         cfg[schluessel] = wert if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", wert) else ""
+
+    # Discord-Link: nur ein sauberer http/https-Link ohne Leerzeichen/Klammern, sonst leer.
+    durl = str(raw.get("discord_url", cfg.get("discord_url", ""))).strip()
+    cfg["discord_url"] = durl[:300] if re.fullmatch(r"https?://[^\s'\"<>]+", durl) else ""
 
     if "public_ip" in raw:
         ip = str(raw.get("public_ip") or "").strip()

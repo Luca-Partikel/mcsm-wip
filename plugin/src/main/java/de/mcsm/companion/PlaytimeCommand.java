@@ -28,6 +28,27 @@ public final class PlaytimeCommand implements TabExecutor {
             Msg.error(sender, "Diese Funktion ist auf diesem Server deaktiviert.");
             return true;
         }
+        if (args.length >= 1 && args[0].equalsIgnoreCase("top")) {
+            java.util.List<java.util.Map.Entry<UUID, Long>> top = stats.topPlaytime(10);
+            Msg.send(sender, "<gray>Spielzeit-Bestenliste</gray>");
+            int rang = 1;
+            for (java.util.Map.Entry<UUID, Long> e : top) {
+                String platz = switch (rang) {
+                    case 1 -> "<gold>①</gold>";
+                    case 2 -> "<#c0c0c0>②</#c0c0c0>";
+                    case 3 -> "<#cd7f32>③</#cd7f32>";
+                    default -> "<dark_gray>" + rang + ".</dark_gray>";
+                };
+                Msg.line(sender, platz + " <white><name></white> <dark_gray>–</dark_gray> <green><time></green>",
+                        Msg.text("name", stats.nameOf(e.getKey())),
+                        Msg.text("time", PlayerStatsStore.duration(e.getValue())));
+                rang++;
+            }
+            if (top.isEmpty()) {
+                Msg.line(sender, "<gray>Noch keine Spielzeit erfasst.</gray>");
+            }
+            return true;
+        }
         UUID id;
         if (args.length == 0) {
             if (!(sender instanceof Player self)) {

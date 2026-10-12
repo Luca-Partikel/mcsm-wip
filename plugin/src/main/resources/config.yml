@@ -10,6 +10,9 @@ manager_version: "unbekannt"
 mode: "local"
 # Sponsor-Zeile (MiniMessage erlaubt)
 sponsor_text: "Sponsored by Novelnia"
+# Discord-Einladungslink für den Befehl /discord (im Programm setzbar). Leer = /discord sagt, dass
+# keiner hinterlegt ist. Nur ein sauberer http/https-Link wird angezeigt.
+discord_url: ""
 
 # Formate (MiniMessage). Platzhalter: <name>, <message>
 chat_format: "<gray>[</gray><green>Spieler</green><gray>]</gray> <white><name></white> <dark_gray>»</dark_gray> <gray><message></gray>"
