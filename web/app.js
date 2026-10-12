@@ -2904,6 +2904,7 @@ function renderHostedServer(s) {
     <div class="btn-row">
       <button class="btn btn-primary" id="btnStart" ${startbar ? '' : 'disabled'}
         ${startbar ? '' : (laeuft ? 'title="Der Server läuft schon."' : 'title="In diesem Zustand lässt sich der Server auf dem Root-Server nicht starten."')}>▶ Starten</button>
+      <button class="btn" id="btnRestart" ${laeuft ? '' : 'disabled'}>🔄 Neu starten</button>
       <button class="btn btn-danger" id="btnStop" ${laeuft ? '' : 'disabled'}>■ Stoppen</button>
     </div>
   </div>
@@ -3486,6 +3487,21 @@ function bindHostedServer(s) {
       await loadHosted(s);
       patchHostedStatus();
     } catch (e) { toast(e.message, true); stop.disabled = false; }
+  };
+  const rs = $('#btnRestart');
+  if (rs) rs.onclick = async () => {
+    if (!(await askConfirm({
+      icon: '🔄', title: `„${s.name}“ neu starten?`, confirmText: 'Neu starten',
+      text: 'Die Spieler bekommen zehn Sekunden Vorwarnung, der Server speichert und fährt herunter – '
+        + 'danach startet er von selbst wieder.',
+    }))) return;
+    rs.disabled = true;
+    try {
+      const d = await api('cloud/restart', { method: 'POST', body: { instance: id, announce_seconds: 10 } });
+      toast(d.message || 'Der Server wird neu gestartet …');
+      await loadHosted(s);
+      patchHostedStatus();
+    } catch (e) { toast(e.message, true); rs.disabled = false; }
   };
 
   if (state.tab === 'overview') {

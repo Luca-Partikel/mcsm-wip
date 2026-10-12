@@ -1056,6 +1056,14 @@ def remote_stop(remote_id: str, announce_seconds: int = 0, reason: str = "") -> 
     return {"ok": True, "message": str(data.get("message") or "Der Server wird gestoppt.")}
 
 
+def remote_restart(remote_id: str, announce_seconds: int = 0) -> dict:
+    """Server auf dem Root-Server mit Ansage neu starten (der Dienst macht es im Hintergrund)."""
+    data = _api("POST", f"/api/servers/{urllib.parse.quote(remote_id)}/restart",
+                body={"announce_seconds": int(announce_seconds or 0)})
+    _drop_cache()
+    return {"ok": True, "message": str(data.get("message") or "Der Server wird neu gestartet.")}
+
+
 def remote_command(remote_id: str, command: str) -> dict:
     text = str(command or "").strip()
     if not text:

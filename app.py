@@ -856,6 +856,14 @@ def api_cloud_stop(body, query) -> dict:
     return cloud.remote_stop(_cloud_instance(body, query), announce, grund)
 
 
+def api_cloud_restart(body, query) -> dict:
+    try:
+        announce = max(0, min(900, int(body.get("announce_seconds") or 0)))
+    except (TypeError, ValueError):
+        announce = 0
+    return cloud.remote_restart(_cloud_instance(body, query), announce)
+
+
 def api_cloud_command(body, query) -> dict:
     return cloud.remote_command(_cloud_instance(body, query), str(body.get("command", "")))
 
@@ -1786,6 +1794,7 @@ ROUTES = {
     ("POST", "cloud/link/discord"): api_cloud_link_discord,
     ("POST", "cloud/start"): api_cloud_start,
     ("POST", "cloud/stop"): api_cloud_stop,
+    ("POST", "cloud/restart"): api_cloud_restart,
     ("POST", "cloud/command"): api_cloud_command,
     ("POST", "cloud/settings"): api_cloud_settings_put,
     ("POST", "cloud/props"): api_cloud_props_put,
