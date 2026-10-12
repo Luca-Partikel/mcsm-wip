@@ -1733,12 +1733,26 @@ async function playerAction(s, action, body, hosted = false) {
 function tabConsole(s) {
   return `
   <div class="console" id="console"></div>
+  ${s.running ? consoleQuick(s) : ''}
   <div class="cmd-row">
-    <input type="text" id="cmdInput" placeholder="${s.running ? 'Befehl eingeben, z. B. list  oder  say Hallo' : 'Server starten, um Befehle zu senden'}" ${s.running ? '' : 'disabled'}>
+    <input type="text" id="cmdInput" placeholder="${s.running ? 'Befehl eingeben, z. B. list  oder  say Hallo  ·  ↑/↓ = Verlauf' : 'Server starten, um Befehle zu senden'}" ${s.running ? '' : 'disabled'} autocomplete="off" spellcheck="false">
     <button class="btn" id="cmdSend" ${s.running ? '' : 'disabled'}>Senden</button>
   </div>
   <p class="muted small">Nützlich: <code>list</code> (wer ist online) · <code>op Spielername</code> (Rechte geben) ·
      <code>say Text</code> · ${s.type === 'bedrock' ? '<code>allowlist add Name</code> (die Welt speichert automatisch)' : '<code>save-all</code> · <code>whitelist add Name</code>'}</p>`;
+}
+
+/* Befehlsverlauf je Server (localStorage, pro Fenster nur ein paar Konveniezen – kein wichtiger Zustand). */
+function cmdHistLoad(id) {
+  try { return JSON.parse(localStorage.getItem('mcsm.cmdhist.' + id) || '[]').filter((x) => typeof x === 'string'); }
+  catch { return []; }
+}
+function cmdHistPush(id, cmd) {
+  const list = cmdHistLoad(id);
+  if (list[list.length - 1] !== cmd) list.push(cmd);
+  while (list.length > 50) list.shift();
+  try { localStorage.setItem('mcsm.cmdhist.' + id, JSON.stringify(list)); } catch { /* egal */ }
+  return list;
 }
 
 /* ---------- Dateien */
@@ -2493,13 +2507,33 @@ function bindServer() {
   if (state.tab === 'players') { state.players.running = s.running; loadPlayers(s); }
 
   if (state.tab === 'console') {
-    const send = async () => {
-      const inp = $('#cmdInput'); const cmd = inp.value.trim(); if (!cmd) return;
-      try { await api(`servers/${s.id}/command`, { method: 'POST', body: { command: cmd } }); inp.value = ''; }
+    let hist = cmdHistLoad(s.id);
+    let hidx = hist.length;                           // zeigt hinter das letzte Element (= leere Eingabe)
+    const run = async (cmd) => {
+      if (!cmd) return;
+      try { await api(`servers/${s.id}/command`, { method: 'POST', body: { command: cmd } }); }
       catch (e) { toast(e.message, true); }
     };
+    const send = async () => {
+      const inp = $('#cmdInput'); const cmd = inp.value.trim(); if (!cmd) return;
+      hist = cmdHistPush(s.id, cmd); hidx = hist.length;
+      inp.value = '';
+      await run(cmd);
+    };
     $('#cmdSend').onclick = send;
-    $('#cmdInput').onkeydown = (e) => { if (e.key === 'Enter') send(); };
+    $('#cmdInput').onkeydown = (e) => {
+      const inp = e.target;
+      if (e.key === 'Enter') { send(); return; }
+      if (e.key === 'ArrowUp') {
+        if (hidx > 0) { hidx--; inp.value = hist[hidx] || ''; e.preventDefault();
+          requestAnimationFrame(() => { try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch { /* egal */ } }); }
+      } else if (e.key === 'ArrowDown') {
+        if (hidx < hist.length) { hidx++; inp.value = hist[hidx] || ''; e.preventDefault(); }
+      }
+    };
+    $$('.cmd-quick [data-cmd]').forEach((b) => b.onclick = () => {
+      const cmd = b.dataset.cmd; hist = cmdHistPush(s.id, cmd); hidx = hist.length; run(cmd);
+    });
     state.consoleNext = 0;
     $('#console').innerHTML = '';
     startConsolePolling();
@@ -3147,14 +3181,26 @@ function hostedConnect(s, r) {
 
 /* ---------- Konsole des Root-Servers */
 
+function consoleQuick(s) {
+  const paper = s.type !== 'bedrock';
+  const companion = s.type === 'java' && !isModpack(s);
+  const quick = [['list', '👥 Online']]
+    .concat(paper ? [['save-all', '💾 Speichern']] : [['save hold', '💾 Speichern']])
+    .concat(companion ? [['tps', '📊 TPS'], ['status', '🖥 Status']] : [])
+    .concat([['time set day', '☀ Tag'], ['weather clear', '🌤 Klar']]);
+  return `<div class="cmd-quick">${quick.map(([c, l]) =>
+    `<button class="btn btn-sm" data-cmd="${esc(c)}" title="${esc(c)}">${esc(l)}</button>`).join('')}</div>`;
+}
+
 function hostedConsoleTab(s, r) {
   const laeuft = !!r.running;
   const schlaeft = hostedSleeping(r);
   return `
   <div class="console" id="console"></div>
+  ${laeuft ? consoleQuick(s) : ''}
   <div class="cmd-row">
-    <input type="text" id="cmdInput" ${laeuft ? '' : 'disabled'}
-      placeholder="${laeuft ? 'Befehl eingeben, z. B. list  oder  say Hallo'
+    <input type="text" id="cmdInput" ${laeuft ? '' : 'disabled'} autocomplete="off" spellcheck="false"
+      placeholder="${laeuft ? 'Befehl eingeben, z. B. list  oder  say Hallo  ·  ↑/↓ = Verlauf'
         : schlaeft ? 'Der Server schläft – zum Senden zuerst starten' : 'Server starten, um Befehle zu senden'}">
     <button class="btn" id="cmdSend" ${laeuft ? '' : 'disabled'}>Senden</button>
   </div>
@@ -3412,19 +3458,37 @@ function bindHostedServer(s) {
   }
 
   if (state.tab === 'console') {
-    const senden = async () => {
-      const feld = $('#cmdInput');
-      const befehl = (feld.value || '').trim();
+    let hist = cmdHistLoad(s.id);
+    let hidx = hist.length;
+    const run = async (befehl) => {
       if (!befehl) return;
-      feld.value = '';
       try { await api('cloud/command', { method: 'POST', body: { instance: id, command: befehl } }); }
       catch (e) { toast(e.message, true); }
       hostedConsoleTick();
     };
+    const senden = async () => {
+      const feld = $('#cmdInput');
+      const befehl = (feld.value || '').trim();
+      if (!befehl) return;
+      hist = cmdHistPush(s.id, befehl); hidx = hist.length;
+      feld.value = '';
+      await run(befehl);
+    };
     const knopf = $('#cmdSend');
     if (knopf) knopf.onclick = senden;
     const feld = $('#cmdInput');
-    if (feld) feld.onkeydown = (e) => { if (e.key === 'Enter') senden(); };
+    if (feld) feld.onkeydown = (e) => {
+      const inp = e.target;
+      if (e.key === 'Enter') { senden(); return; }
+      if (e.key === 'ArrowUp') {
+        if (hidx > 0) { hidx--; inp.value = hist[hidx] || ''; e.preventDefault(); }
+      } else if (e.key === 'ArrowDown') {
+        if (hidx < hist.length) { hidx++; inp.value = hist[hidx] || ''; e.preventDefault(); }
+      }
+    };
+    $$('.cmd-quick [data-cmd]').forEach((b) => b.onclick = () => {
+      const befehl = b.dataset.cmd; hist = cmdHistPush(s.id, befehl); hidx = hist.length; run(befehl);
+    });
     startHostedConsole();
   }
 
