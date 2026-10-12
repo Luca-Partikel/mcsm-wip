@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, quote, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import backups, cloud, companion, history, manager, players, sources, store, tray, updater  # noqa: E402
+from core import backups, cloud, companion, history, manager, notify, players, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -2055,6 +2055,7 @@ def main() -> int:
         print("Zum Beenden: Knopf „Manager beenden“ in der Oberfläche oder Strg+C.", flush=True)
 
     tray_icon = TRAY = start_tray(url)
+    notify.set_tray(tray_icon)                        # Desktop-Hinweise (z. B. Serverabsturz)
 
     def update_checks() -> None:                      # kurz nach dem Start, danach alle 6 Stunden
         time.sleep(6)

@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from . import companion, modpacks, sources, store
+from . import companion, modpacks, notify, sources, store
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 MAX_LOG_LINES = 4000
@@ -1821,7 +1821,9 @@ def _handle_crash(server_id: str, code: int) -> None:
     """Nach einem unerwarteten Ende den Server wieder hochfahren, wenn auto_restart an ist – mit
     Schutz gegen Absturz-Schleifen (höchstens WATCHDOG_MAX Neustarts in WATCHDOG_WINDOW Sekunden)."""
     cfg = store.get(server_id)
+    name = (cfg or {}).get("name", server_id)
     if not cfg or not cfg.get("auto_restart"):
+        notify.send("Server beendet", f"„{name}“ hat sich unerwartet beendet (Code {code}).")
         return
     now = time.time()
     with _crash_lock:
@@ -1835,10 +1837,15 @@ def _handle_crash(server_id: str, code: int) -> None:
         if inst is not None:
             inst.log(f"[Manager] {WATCHDOG_MAX} Abstürze in kurzer Zeit – kein automatischer "
                      "Neustart mehr. Bitte den Server prüfen.")
+        notify.send("Server abgestürzt",
+                    f"„{name}“ ist mehrfach kurz hintereinander abgestürzt – kein automatischer "
+                    "Neustart mehr. Bitte prüfen.")
         return
     if inst is not None:
         inst.log(f"[Manager] Unerwartetes Ende (Code {code}) – automatischer Neustart in "
                  f"{int(WATCHDOG_DELAY)} s …")
+    notify.send("Server abgestürzt",
+                f"„{name}“ wird in {int(WATCHDOG_DELAY)} s automatisch neu gestartet.")
     time.sleep(WATCHDOG_DELAY)
     cfg = store.get(server_id)
     if not cfg or not cfg.get("auto_restart") or is_running(server_id):
