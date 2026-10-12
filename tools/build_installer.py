@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import struct
 import subprocess
@@ -26,7 +27,7 @@ SETUP_NAME = "MinecraftServerManager-Setup.exe"
 # Dateien, die zum Programm gehören (keine Downloads, keine Welten, keine Logs).
 INCLUDE = [
     "app.py", "Start.bat", "Start-Debug.bat", "Start.vbs", "Install.bat", "README.md", "app.ico",
-    "core/__init__.py", "core/store.py", "core/sources.py", "core/manager.py", "core/tray.py", "core/version.py", "core/updater.py", "core/companion.py", "core/modpacks.py", "core/players.py", "core/cloud.py", "core/backups.py", "assets/MCSMCompanion.jar", "assets/server-icon.png",
+    "core/__init__.py", "core/store.py", "core/sources.py", "core/manager.py", "core/tray.py", "core/version.py", "core/updater.py", "core/companion.py", "core/modpacks.py", "core/players.py", "core/cloud.py", "core/backups.py", "core/history.py", "assets/MCSMCompanion.jar", "assets/server-icon.png",
     "web/index.html", "web/style.css", "web/app.js", "web/logo.svg", "web/favicon.png",
     "web/icon-192.png", "web/icon-512.png", "web/manifest.webmanifest", "tools/make_icons.py",
     "tools/shortcuts.ps1", "tools/stop-instance.ps1", "tools/build_installer.py", "tools/Build-Installer.bat",
@@ -143,7 +144,24 @@ def build_setup(zip_path: pathlib.Path) -> pathlib.Path | None:
     return setup
 
 
+def check_core_modules() -> None:
+    """Jedes von app.py importierte core-Modul muss in INCLUDE stehen – sonst stürzt das
+    installierte/aktualisierte Programm beim Start mit ModuleNotFoundError ab (schon zweimal
+    passiert: backups, history). Lieber hier laut scheitern als beim Nutzer."""
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    m = re.search(r"from core import ([^\n#]+)", app)
+    if not m:
+        return
+    mods = [t.strip() for t in m.group(1).split(",") if t.strip()]
+    fehlen = [f"core/{mod}.py" for mod in mods
+              if (ROOT / "core" / f"{mod}.py").is_file() and f"core/{mod}.py" not in INCLUDE]
+    if fehlen:
+        raise SystemExit("FEHLER: diese von app.py importierten core-Module fehlen in INCLUDE "
+                         "(build_installer.py) und wuerden das Update zerlegen: " + ", ".join(fehlen))
+
+
 def main() -> int:
+    check_core_modules()
     print("Logo und Icons werden erzeugt …")
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import make_icons                                  # noqa: E402 – liegt im selben Ordner
