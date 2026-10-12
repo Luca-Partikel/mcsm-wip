@@ -1241,6 +1241,11 @@ function tabOverview(s) {
 
     ${s.companion && s.companion.applies ? `<div class="card" id="companionCard">${companionCard(s)}</div>` : ''}
 
+    ${s.type === 'java' && s.companion && s.companion.applies ? `<div class="card" id="perfCard">
+      <div class="card-head"><h3>📈 Leistung (letzte 30 min)</h3><span class="muted small" id="perfNow"></span></div>
+      <div id="perfBody" class="muted small">${s.running ? 'Wird geladen …' : 'Server ist gestoppt – es gibt noch keinen Verlauf.'}</div>
+    </div>` : ''}
+
     <div class="grid2" style="margin:0">
       <div class="card">
         <h3 style="margin-top:0">So geht es weiter</h3>
@@ -1424,6 +1429,46 @@ async function loadOverviewExtras(s) {
     $$('[data-open-path]', box).forEach((el) => el.onclick = () => api(`servers/${s.id}/folder`, { method: 'POST', body: { path: el.dataset.openPath } }).catch((e) => toast(e.message, true)));
   } catch (e) { const box = $('#worldsBox'); if (box) box.textContent = e.message; }
   loadMiniLog(s);
+  loadPerf(s);
+}
+
+/* Leistungs-Verlauf (TPS + Spieler) als Sparkline. Der Verlauf kommt aus core/history.py. */
+async function loadPerf(s) {
+  const body = $('#perfBody');
+  if (!body) return;
+  const now = $('#perfNow');
+  if (!s.running) {
+    body.textContent = 'Server ist gestoppt – es gibt noch keinen Verlauf.';
+    if (now) now.textContent = '';
+    return;
+  }
+  try {
+    const d = await api(`servers/${s.id}/history`);
+    const sm = d.samples || [];
+    if (sm.length < 2) { body.innerHTML = '<div class="muted small">Sammle Messwerte … (ein paar Sekunden)</div>'; if (now) now.textContent = ''; return; }
+    const last = sm[sm.length - 1];
+    const tpsCol = last.tps >= 19 ? 'var(--green)' : last.tps >= 15 ? 'var(--amber)' : 'var(--red)';
+    const maxP = Math.max(1, d.max_players || 20);
+    if (now) now.innerHTML = `TPS <b style="color:${tpsCol}">${Number(last.tps).toFixed(2)}</b> <span class="muted">·</span> ${last.online} ${last.online === 1 ? 'Spieler' : 'Spieler'}`;
+    body.innerHTML = `
+      <div class="perf-row"><div class="perf-lbl">TPS <span class="muted">0–20</span></div>${sparkline(sm, 'tps', 20, tpsCol)}</div>
+      <div class="perf-row"><div class="perf-lbl">Spieler <span class="muted">0–${maxP}</span></div>${sparkline(sm, 'online', maxP, 'var(--blue)')}</div>`;
+  } catch (e) { body.textContent = e.message; }
+}
+
+/* Eine Sparkline als SVG-Polyline (auf volle Breite gestreckt, Linienstärke bleibt konstant). */
+function sparkline(samples, key, max, color) {
+  const n = samples.length;
+  const W = 100, H = 30;
+  const pts = samples.map((p, i) => {
+    const x = n > 1 ? (i / (n - 1)) * W : 0;
+    const v = Math.max(0, Math.min(max, Number(p[key]) || 0));
+    const y = H - (v / max) * (H - 3) - 1.5;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <polyline fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" points="${pts}"></polyline>
+  </svg>`;
 }
 
 async function loadMiniLog(s) {
@@ -2539,7 +2584,7 @@ function patchStatus() {
     const csig = JSON.stringify([s.running, s.hardcore, s.companion || {}]);
     if (csig !== state.companionSig) { state.companionSig = csig; const card = $('#companionCard'); if (card) { card.innerHTML = companionCard(s); bindCompanionCard(s); } }
     const bk = $('#btnBackup'); if (bk && bk.textContent.indexOf('läuft') < 0) bk.disabled = s.running;
-    if (s.running) loadMiniLog(s);
+    if (s.running) { loadMiniLog(s); loadPerf(s); }
   }
   if (state.tab === 'players' && state.players.running !== s.running) {
     // Server gestartet oder gestoppt: Knöpfe und Hinweise der Spielerverwaltung stimmen sonst nicht mehr.

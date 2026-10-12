@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, quote, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import backups, cloud, companion, manager, players, sources, store, tray, updater  # noqa: E402
+from core import backups, cloud, companion, history, manager, players, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -661,6 +661,13 @@ def api_props_put(body, _query, server_id: str = "") -> dict:
 def api_worlds(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
     return {"worlds": manager.worlds(cfg), "backups": backups.list_backups(cfg)}
+
+
+def api_history(_body, _query, server_id: str = "") -> dict:
+    """Leistungs-Verlauf (TPS/Rechenzeit/Spieler) der letzten Minuten für die Sparkline."""
+    cfg = _require(store.get(server_id))
+    return {"samples": history.samples(server_id), "max_players": cfg.get("max_players", 20),
+            "interval": history.INTERVAL}
 
 
 # ------------------------------------------------------------------ Weltensicherungen
@@ -1804,6 +1811,7 @@ SERVER_ROUTES = {
     ("GET", "props"): api_props_get,
     ("POST", "props"): api_props_put,
     ("GET", "worlds"): api_worlds,
+    ("GET", "history"): api_history,
     ("GET", "backups"): api_backups,
     ("POST", "backup"): api_backup,
     ("POST", "backup/restore"): api_backup_restore,
@@ -2074,6 +2082,7 @@ def main() -> int:
                 pass
             time.sleep(20)
     threading.Thread(target=scheduled_restarts, daemon=True).start()
+    history.start()                                   # Leistungs-Verlauf für die Sparkline
     if not os.environ.get("MCSM_NO_BROWSER"):
         threading.Timer(0.6, open_ui, args=(url,)).start()
         hint = store.DATA_DIR / ".tray-hint-shown"
