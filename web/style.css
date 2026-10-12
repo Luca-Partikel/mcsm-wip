@@ -826,3 +826,7 @@ body.modal-on { overflow: hidden; }
 .cmd-quick { display: flex; gap: 8px; flex-wrap: wrap; margin: 11px 0 0; }
 .cmd-quick .btn { font-size: 12.5px; }
 .bk-kind.bk-vor-update { background: rgba(140,120,220,.16); color: #b9a6ff; }
+
+/* ---------- Konsole: Werkzeugleiste und Fehlerfilter */
+.console-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.console--errors > div:not(.l-err):not(.l-warn) { display: none; }

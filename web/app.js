@@ -1764,6 +1764,10 @@ async function playerAction(s, action, body, hosted = false) {
 
 function tabConsole(s) {
   return `
+  <div class="console-tools">
+    <label class="switch"><input type="checkbox" id="conErrOnly"> nur Warnungen &amp; Fehler</label>
+    <button class="btn btn-sm" id="conLogFolder" title="Ordner mit latest.log öffnen">📁 Protokoll-Ordner</button>
+  </div>
   <div class="console" id="console"></div>
   ${s.running ? consoleQuick(s) : ''}
   <div class="cmd-row">
@@ -2579,6 +2583,10 @@ function bindServer() {
     $$('.cmd-quick [data-cmd]').forEach((b) => b.onclick = () => {
       const cmd = b.dataset.cmd; hist = cmdHistPush(s.id, cmd); hidx = hist.length; run(cmd);
     });
+    const errOnly = $('#conErrOnly');
+    if (errOnly) errOnly.onchange = () => { const c = $('#console'); if (c) c.classList.toggle('console--errors', errOnly.checked); };
+    const logFolder = $('#conLogFolder');
+    if (logFolder) logFolder.onclick = () => api(`servers/${s.id}/folder`, { method: 'POST', body: { path: 'logs' } }).catch((e) => toast(e.message, true));
     state.consoleNext = 0;
     $('#console').innerHTML = '';
     startConsolePolling();
