@@ -2065,6 +2065,15 @@ def main() -> int:
     threading.Thread(target=update_checks, daemon=True).start()
     # Solange das Programm offen ist: einmal am Tag je Server eine Weltensicherung.
     backups.start_daily_watch()
+
+    def scheduled_restarts() -> None:                 # geplante tägliche Neustarts (restart_time)
+        while True:
+            try:
+                manager.run_scheduled_restarts(time.strftime("%H:%M"))
+            except Exception:                         # noqa: BLE001
+                pass
+            time.sleep(20)
+    threading.Thread(target=scheduled_restarts, daemon=True).start()
     if not os.environ.get("MCSM_NO_BROWSER"):
         threading.Timer(0.6, open_ui, args=(url,)).start()
         hint = store.DATA_DIR / ".tray-hint-shown"

@@ -32,6 +32,14 @@ ANNOUNCE_ANSWER = 2.0     # so lange auf die Bestätigung des Plugins warten
 # false) schreibt ebenfalls kein „Unknown command“ und wäre sonst 15 Sekunden Leerlauf.
 _ANNOUNCE_OK_RE = re.compile(r"Herunterfahren angefordert")
 
+# Absturz-Watchdog: nach einem unerwarteten Ende so lange warten, dann neu starten. Gegen
+# Absturz-Schleifen: höchstens WATCHDOG_MAX Neustarts in WATCHDOG_WINDOW Sekunden.
+WATCHDOG_DELAY = 6.0
+WATCHDOG_WINDOW = 600
+WATCHDOG_MAX = 3
+_crash_times: dict[str, list[float]] = {}
+_crash_lock = threading.Lock()
+
 # ---------------------------------------------------------------- Job-Objekt (Windows)
 # Alle Server-Prozesse hängen an einem Job-Objekt mit KILL_ON_JOB_CLOSE: Endet der Manager –
 # egal wie (Fenster zu, Task-Manager, Abmelden) – beendet Windows die Server mit. Ohne das
@@ -1537,6 +1545,10 @@ class Instance:
         threading.Thread(target=companion.sync_after_stop, args=(self.cfg,), daemon=True).start()
         # Ohne Server gibt es nichts mehr zu bewerben – Bot mit beenden.
         threading.Thread(target=stop_broadcaster, args=(self.cfg,), daemon=True).start()
+        # Absturz-Watchdog: unerwartetes Ende (nicht über den Manager gestoppt) mit Fehlercode –
+        # ein sauberes /stop oder der Stopp-Knopf (Code 0 bzw. self.stopping) löst nichts aus.
+        if not self.stopping and code != 0:
+            threading.Thread(target=_handle_crash, args=(self.cfg["id"], code), daemon=True).start()
 
     def send(self, command: str) -> None:
         if not self.running or not self.proc or not self.proc.stdin:
@@ -1582,8 +1594,11 @@ class Instance:
             return
         self.stopping = True
         if announce and self._announce_stop(reason, seconds):
-            # Dem Plugin Zeit für Countdown und Stopp lassen; danach wie bisher „stop“ hinterherschicken.
-            waiting = time.time() + ANNOUNCE_WAIT
+            # Dem Plugin den vollen angekündigten Countdown lassen – es stoppt danach selbst; etwas
+            # Puffer obendrauf, dann greift unten das Sicherheitsnetz („stop“). stop() läuft im
+            # Hintergrund-Thread (api_stop), ein längeres Warten blockiert also keine Anfrage.
+            sek = int(seconds) if seconds and seconds > 0 else STOP_COUNTDOWN
+            waiting = time.time() + max(ANNOUNCE_WAIT, sek + 5)
             while time.time() < waiting and self.running:
                 time.sleep(0.4)
         if not self.running:
@@ -1794,6 +1809,77 @@ def emergency_stop_all(budget: float = 4.0) -> None:
     deadline = time.time() + budget
     while time.time() < deadline and any(i.running for i in instances):
         time.sleep(0.1)
+
+
+# ---------------------------------------------------------------- Watchdog & geplanter Neustart
+
+def _handle_crash(server_id: str, code: int) -> None:
+    """Nach einem unerwarteten Ende den Server wieder hochfahren, wenn auto_restart an ist – mit
+    Schutz gegen Absturz-Schleifen (höchstens WATCHDOG_MAX Neustarts in WATCHDOG_WINDOW Sekunden)."""
+    cfg = store.get(server_id)
+    if not cfg or not cfg.get("auto_restart"):
+        return
+    now = time.time()
+    with _crash_lock:
+        times = [t for t in _crash_times.get(server_id, []) if now - t < WATCHDOG_WINDOW]
+        times.append(now)
+        _crash_times[server_id] = times
+        zu_oft = len(times) >= WATCHDOG_MAX
+    with _inst_lock:
+        inst = _instances.get(server_id)
+    if zu_oft:
+        if inst is not None:
+            inst.log(f"[Manager] {WATCHDOG_MAX} Abstürze in kurzer Zeit – kein automatischer "
+                     "Neustart mehr. Bitte den Server prüfen.")
+        return
+    if inst is not None:
+        inst.log(f"[Manager] Unerwartetes Ende (Code {code}) – automatischer Neustart in "
+                 f"{int(WATCHDOG_DELAY)} s …")
+    time.sleep(WATCHDOG_DELAY)
+    cfg = store.get(server_id)
+    if not cfg or not cfg.get("auto_restart") or is_running(server_id):
+        return
+    try:
+        instance(cfg).start()
+    except Exception as exc:                          # noqa: BLE001
+        with _inst_lock:
+            inst = _instances.get(server_id)
+        if inst is not None:
+            inst.log(f"[Manager] Automatischer Neustart fehlgeschlagen: {exc}")
+
+
+def restart_server(cfg: dict, reason: str = "", seconds: int = 0) -> None:
+    """Server mit Ansage stoppen und danach wieder starten (geplanter Neustart / Neustart-Knopf)."""
+    inst = instance(cfg)
+    if inst.running:
+        inst.stop(announce=True, reason=reason or "Neustart", seconds=seconds)
+    for _ in range(120):                              # auf das Prozessende warten (max ~60 s)
+        if not inst.running:
+            break
+        time.sleep(0.5)
+    if not inst.running:
+        instance(cfg).start()
+
+
+# Minute des letzten geplanten Neustarts je Server – verhindert Mehrfachauslösung in derselben Minute.
+_last_scheduled: dict[str, str] = {}
+
+
+def run_scheduled_restarts(now_hm: str) -> None:
+    """Einmal je Minute aufrufen (app.py): laufende Server neu starten, deren restart_time jetzt ist."""
+    for cfg in store.all_servers():
+        ziel = str(cfg.get("restart_time") or "")
+        sid = cfg["id"]
+        if not ziel or ziel != now_hm:
+            continue
+        if _last_scheduled.get(sid) == now_hm or not is_running(sid):
+            continue
+        _last_scheduled[sid] = now_hm
+        inst = _instances.get(sid)
+        if inst is not None:
+            inst.log("[Manager] Geplanter Neustart …")
+        threading.Thread(target=restart_server, args=(cfg, "Geplanter Neustart", 60),
+                         daemon=True).start()
 
 
 # ---------------------------------------------------------------- Netzwerk

@@ -62,6 +62,11 @@ DEFAULTS = {
     "hardcore": False,          # nur Paper: MCSM-Hardcore des Companion-Plugins (1 Leben, Grab, Totem)
     "geyser": True,             # nur Java: Bedrock-Crossplay aktivieren
     "autostart": False,
+    # Absturz-Watchdog: Beendet sich der Server unerwartet (nicht über den Manager gestoppt) mit
+    # Fehlercode, startet das Programm ihn von selbst neu – mit Schutz gegen Absturz-Schleifen.
+    "auto_restart": False,
+    # Geplanter täglicher Neustart, solange das Programm läuft. "" = aus, sonst "HH:MM" (24h).
+    "restart_time": "",
     # Weltensicherungen: Ist das Programm offen, legt es einmal am Tag von selbst eine an
     # (core/backups.py). Abschaltbar je Server; von Hand sichern geht immer.
     "backup_daily": True,
@@ -283,9 +288,17 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
 
     for flag in ("online_mode", "allow_cheats", "pvp", "geyser", "autostart", "eula_accepted",
                  "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore",
-                 "companion_tips", "companion_autosave", "backup_daily"):
+                 "companion_tips", "companion_autosave", "backup_daily", "auto_restart"):
         if flag in raw:
             cfg[flag] = bool(raw[flag])
+
+    # Geplanter Neustart: nur eine gültige Uhrzeit "HH:MM" (24h) durchlassen, sonst aus.
+    rt = str(raw.get("restart_time", cfg["restart_time"])).strip()
+    if re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", rt):
+        h, m = rt.split(":")
+        cfg["restart_time"] = f"{int(h):02d}:{m}"
+    else:
+        cfg["restart_time"] = ""
     if modpack:
         cfg["geyser"] = False                          # kein Crossplay auf Mod-Loadern (s. o.)
 

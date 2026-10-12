@@ -835,7 +835,15 @@ function settingsForm(s, prefix) {
         'Kein Vanilla-Hardcore: Wer stirbt, wird sofort Zuschauer an seinem Grab. Ein Mitspieler belebt ihn wieder, indem er ein Totem der Unsterblichkeit am Grab rechtsklickt oder darauf fallen lässt. Im Spiel schalten OPs mit <code>/hardcore on</code> / <code>off</code>.', !!s.hardcore) : ''}
       ${java && !modpack ? companionFields(s, prefix) : ''}
     </div>
-  </div>`;
+  </div>
+  <div class="sub-head">Automatik</div>
+  ${fieldCheck(prefix + 'auto_restart', 'Automatischer Neustart bei Absturz',
+    'Beendet sich der Server unerwartet (nicht über den Manager gestoppt), startet das Programm ihn '
+    + 'von selbst neu – mit Schutz gegen Absturz-Schleifen (nach mehreren Abstürzen kurz hintereinander '
+    + 'bleibt er aus). Gilt nur, solange das Programm läuft.', !!s.auto_restart)}
+  ${fieldInput(prefix + 'restart_time', 'Täglicher Neustart um (optional)', s.restart_time || '',
+    { placeholder: 'z. B. 05:00', hint: 'Uhrzeit im Format HH:MM (24h). Leer = aus. Der Server wird '
+      + 'dann mit Ansage im Spiel neu gestartet – nur, solange das Programm läuft.' })}`;
 }
 
 /* Schalter des Begleit-Plugins. Nur Java mit Paper hat die Bukkit-API – Modpacks und Bedrock
@@ -936,9 +944,9 @@ function readNameColor(prefix, out) {
 function readSettingsForm(prefix, base) {
   const get = (k) => $('#' + prefix + k);
   const out = { ...base };
-  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address']) if (get(k)) out[k] = get(k).value;
+  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time']) if (get(k)) out[k] = get(k).value;
   for (const k of ['port', 'bedrock_port', 'max_players', 'ram_mb', 'view_distance']) if (get(k)) out[k] = Number(get(k).value);
-  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave']) if (get(k)) out[k] = get(k).checked;
+  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave', 'auto_restart']) if (get(k)) out[k] = get(k).checked;
   // Ein leeres Minutenfeld soll den Standard bedeuten, nicht „1 Minute“.
   const min = get('companion_autosave_minutes');
   if (min) out.companion_autosave_minutes = Math.max(1, Math.min(180, Number(min.value) || 10));
