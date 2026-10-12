@@ -44,6 +44,9 @@ DEFAULTS = {
     "name_color2": "",
     # Discord-Einladungslink für den /discord-Befehl des Begleit-Plugins. "" = aus.
     "discord_url": "",
+    # Ressourcenpaket (nur Java): URL und ob es Pflicht ist. "" = kein Paket.
+    "resource_pack": "",
+    "resource_pack_require": False,
     "max_players": 10,
     "ram_mb": 4096,             # nur Java
     "gamemode": "survival",
@@ -274,6 +277,10 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
     durl = str(raw.get("discord_url", cfg.get("discord_url", ""))).strip()
     cfg["discord_url"] = durl[:300] if re.fullmatch(r"https?://[^\s'\"<>]+", durl) else ""
 
+    # Ressourcenpaket-URL: sauberer http/https-Link (server.properties verträgt keine Leerzeichen).
+    rp = str(raw.get("resource_pack", cfg.get("resource_pack", ""))).strip()
+    cfg["resource_pack"] = rp[:400] if re.fullmatch(r"https?://[^\s'\"<>]+", rp) else ""
+
     if "public_ip" in raw:
         ip = str(raw.get("public_ip") or "").strip()
         cfg["public_ip"] = ip if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) else ""
@@ -294,9 +301,13 @@ def sanitize(raw: dict, existing: dict | None = None) -> dict:
 
     for flag in ("online_mode", "allow_cheats", "pvp", "geyser", "autostart", "eula_accepted",
                  "xbox_enabled", "xbox_autostart", "auto_portmap", "hardcore",
-                 "companion_tips", "companion_autosave", "backup_daily", "auto_restart"):
+                 "companion_tips", "companion_autosave", "backup_daily", "auto_restart",
+                 "resource_pack_require"):
         if flag in raw:
             cfg[flag] = bool(raw[flag])
+    # Ohne Paket-URL gibt es keine Paket-Pflicht (nach der Schleife, damit sie nicht überschreibt).
+    if not cfg.get("resource_pack"):
+        cfg["resource_pack_require"] = False
 
     # Geplanter Neustart: nur eine gültige Uhrzeit "HH:MM" (24h) durchlassen, sonst aus.
     rt = str(raw.get("restart_time", cfg["restart_time"])).strip()

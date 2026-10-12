@@ -836,6 +836,11 @@ function settingsForm(s, prefix) {
       ${java && !modpack ? companionFields(s, prefix) : ''}
     </div>
   </div>
+  ${java ? `<div class="sub-head">Ressourcenpaket</div>
+  ${fieldInput(prefix + 'resource_pack', 'Ressourcenpaket-URL (optional)', s.resource_pack || '',
+    { placeholder: 'https://… (direkter Link zur .zip)', hint: 'Spieler laden das Paket beim Beitritt. Direkter Download-Link zur ZIP-Datei; leer = kein Paket.' })}
+  ${fieldCheck(prefix + 'resource_pack_require', 'Paket ist Pflicht',
+    'Spieler müssen das Paket annehmen, sonst kommen sie nicht auf den Server. Nur wirksam, wenn oben eine URL steht.', !!s.resource_pack_require)}` : ''}
   <div class="sub-head">Automatik</div>
   ${fieldCheck(prefix + 'auto_restart', 'Automatischer Neustart bei Absturz',
     'Beendet sich der Server unerwartet (nicht über den Manager gestoppt), startet das Programm ihn '
@@ -946,9 +951,9 @@ function readNameColor(prefix, out) {
 function readSettingsForm(prefix, base) {
   const get = (k) => $('#' + prefix + k);
   const out = { ...base };
-  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time', 'discord_url']) if (get(k)) out[k] = get(k).value;
+  for (const k of ['name', 'motd', 'level_seed', 'gamemode', 'difficulty', 'public_ip', 'public_address', 'restart_time', 'discord_url', 'resource_pack']) if (get(k)) out[k] = get(k).value;
   for (const k of ['port', 'bedrock_port', 'max_players', 'ram_mb', 'view_distance']) if (get(k)) out[k] = Number(get(k).value);
-  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave', 'auto_restart']) if (get(k)) out[k] = get(k).checked;
+  for (const k of ['online_mode', 'allow_cheats', 'pvp', 'geyser', 'hardcore', 'companion_tips', 'companion_autosave', 'auto_restart', 'resource_pack_require']) if (get(k)) out[k] = get(k).checked;
   // Ein leeres Minutenfeld soll den Standard bedeuten, nicht „1 Minute“.
   const min = get('companion_autosave_minutes');
   if (min) out.companion_autosave_minutes = Math.max(1, Math.min(180, Number(min.value) || 10));

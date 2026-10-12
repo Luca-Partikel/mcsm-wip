@@ -451,6 +451,10 @@ def apply_config(cfg: dict, initial: bool = False) -> None:
             # Steht „enforce-secure-profile" auf true, verwirft der Server ihre Chatnachrichten –
             # sie können dann zwar spielen, aber nichts schreiben. Deshalb bei Crossplay aus.
             updates["enforce-secure-profile"] = "false"
+        # Ressourcenpaket: leere URL löscht den Eintrag; Pflicht nur, wenn ein Paket gesetzt ist.
+        rp = str(cfg.get("resource_pack") or "")
+        updates["resource-pack"] = rp
+        updates["require-resource-pack"] = _bool(bool(rp) and cfg.get("resource_pack_require"))
     if initial:
         updates.update(_INITIAL_PROPS[cfg["type"]])
     patch_properties(props, updates)
