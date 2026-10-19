@@ -4689,6 +4689,7 @@ function cloudFilesPanel(s) {
       <span class="muted small" id="cloudFileName">keine gewählt</span>
       <button class="btn btn-sm btn-primary" id="cloudFileAddGo">Hochladen</button>
     </div>
+    <div class="bar" id="cloudUpBar" style="display:none;margin-top:8px"><i id="cloudUpFill" style="width:0%"></i></div>
   </div>
   ${f.error ? `<div class="note note-err">${esc(f.error)}</div>` : ''}
   <div class="cl-files">${rows}</div>
@@ -5358,21 +5359,47 @@ function bindRemoteFiles() {
       return;
     }
     add.disabled = true;
+    const nameEl = $('#cloudFileName');
+    const bar = $('#cloudUpBar'); const fill = $('#cloudUpFill');
+    const setProg = (pct, txt) => {
+      if (bar) bar.style.display = '';
+      if (fill) fill.style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
+      if (nameEl) nameEl.textContent = txt || '';
+    };
     try {
       // Der Browser gibt keinen Dateipfad heraus – also den Inhalt als Base64 an das eigene
       // Programm, das ihn stückweise an den Root-Server weitergibt.
+      add.textContent = 'Vorbereiten …';
       const puffer = new Uint8Array(await datei.arrayBuffer());
       let roh = '';
       for (let i = 0; i < puffer.length; i += 0x8000) {
         roh += String.fromCharCode.apply(null, puffer.subarray(i, i + 0x8000));
       }
       const ordner = f.path ? f.path + '/' : '';
-      await api('cloud/file/upload', { method: 'POST',
+      const d = await api('cloud/file/upload', { method: 'POST',
         body: { instance: instanz(), name: datei.name, path: ordner + datei.name, inhalt: btoa(roh) } });
+      if (d && d.job_id) {
+        add.textContent = 'Hochladen …'; setProg(0, '0 %');
+        // Fortschritt des Uploads zum Root-Server verfolgen, bis fertig oder Fehler.
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 500));
+          const job = await api('job/' + d.job_id);
+          add.textContent = 'Hochladen ' + (job.pct || 0) + ' %';
+          setProg(job.pct || 0, job.detail || '');
+          if (job.status !== 'running') {
+            if (job.status === 'error') throw new Error(job.error || 'Der Upload ist fehlgeschlagen.');
+            break;
+          }
+        }
+      }
       toast('Hochgeladen.');
       await cloudLoadFiles(f.path);
-    } catch (e) { toast(e.message, true); }
-    add.disabled = false;
+    } catch (e) {
+      toast(e.message, true);
+      if (bar) bar.style.display = 'none';
+      if (nameEl) nameEl.textContent = 'keine gewählt';
+    }
+    add.disabled = false; add.textContent = 'Hochladen';
   };
   const back = $('#cloudFileBack');
   if (back) back.onclick = async () => {

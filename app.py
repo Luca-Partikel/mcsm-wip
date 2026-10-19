@@ -992,17 +992,31 @@ def api_cloud_file_upload(body, query) -> dict:
         if len(roh) > UPLOAD_FILE_MAX:
             raise ApiError(f"Die Datei ist zu groß (höchstens "
                            f"{UPLOAD_FILE_MAX // (1024 * 1024)} MB auf diesem Weg).")
+        rid = _cloud_instance(body, query)
+        rel = ziel or name
         ablage = store.DATA_DIR / "cloud-stage"
         ablage.mkdir(parents=True, exist_ok=True)
         tmp = ablage / f"{secrets.token_hex(8)}-{name}"
-        try:
-            tmp.write_bytes(roh)
-            return cloud.remote_file_upload(_cloud_instance(body, query), tmp, ziel or name)
-        finally:
+        tmp.write_bytes(roh)
+        # Große Mods dauern zum Root hin – als Job mit Fortschritt laufen lassen, damit die
+        # Oberfläche einen Balken zeigen kann, statt den Aufruf blockieren zu lassen.
+        job = manager.new_job(rid, ["Hochladen"])
+        manager.job_step(job, 0, f"„{name}“ wird hochgeladen …")
+
+        def _work() -> None:
             try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+                def cb(done: int, total: int) -> None:
+                    manager.job_detail(job, f"Hochladen: {done / 1048576:.1f} / "
+                                       f"{total / 1048576:.1f} MB", int(done * 100 / max(1, total)))
+                cloud.remote_file_upload(rid, tmp, rel, progress=cb)
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        manager._run_job(job, _work)
+        return {"job_id": job["id"], "name": name}
     if not quelle:
         raise ApiError("Es fehlt die Datei, die hochgeladen werden soll.")
     return cloud.remote_file_upload(_cloud_instance(body, query), quelle, ziel)
