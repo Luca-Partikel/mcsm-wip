@@ -454,8 +454,9 @@ def inspect_server_zip(path: str) -> dict:
             "als ZIP (nicht die .mrpack für den Launcher)?")
     if not mods:
         raise sources.SourceError("In dem ZIP ist kein mods-Ordner mit Mods zu finden.")
+    wants_ai = any("psychohorror" in m.lower() for m in mods)
     return {"loader": loader, "launcher": launcher, "mc_version": mc, "base": base,
-            "mods": mods, "mod_count": len(mods)}
+            "mods": mods, "mod_count": len(mods), "wants_ai": wants_ai}
 
 
 def _safe_extract(zip_path: pathlib.Path, sdir: pathlib.Path, base: str, job=None) -> None:
@@ -514,3 +515,67 @@ def normalize_launcher(sdir: pathlib.Path, flavor: str) -> None:
                     f.rename(sdir / QUILT_LAUNCHER)
                     break
     # NeoForge/Forge: run-Skripte/Arg-Dateien bleiben, start_command findet sie.
+
+
+# ---------------------------------------------------------------- KI-Mod: Anthropic-API-Key
+# Manche Mods (z. B. „psychohorror") fragen Claude und brauchen dafür einen Anthropic-API-Key in
+# config/<mod>.toml unter [ai] apiKey. Der Key wird einmal im Import-Dialog eingegeben und hier in
+# die Config geschrieben – lokal und, weil config/ beim Verschieben mitgeht, auch auf dem Root.
+#: Zeichen, die in einem Anthropic-Key vorkommen (sk-ant-…). Alles andere wird abgelehnt, damit der
+#: Wert sicher in einen TOML-String passt (kein ", kein Zeilenumbruch).
+_AI_KEY_RE = re.compile(r"[A-Za-z0-9._-]{1,200}")
+
+
+def ai_config_path(sdir: pathlib.Path) -> pathlib.Path:
+    """Pfad zur TOML-Config der KI-Mod. Eine vorhandene Datei mit [ai] apiKey wird bevorzugt,
+    sonst der Standardname psychohorror-common.toml (die Mod legt den Rest beim Start selbst an)."""
+    cfgdir = pathlib.Path(sdir) / "config"
+    if cfgdir.is_dir():
+        for p in sorted(cfgdir.glob("*.toml")):
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if re.search(r"(?m)^\s*\[ai\]", text) and re.search(r"(?m)^\s*apiKey\s*=", text):
+                return p
+    return cfgdir / "psychohorror-common.toml"
+
+
+def wants_ai_key(sdir: pathlib.Path) -> bool:
+    """True, wenn in den Mods eine KI-Mod steckt, die einen Anthropic-Key braucht."""
+    moddir = pathlib.Path(sdir) / "mods"
+    if not moddir.is_dir():
+        return False
+    return any("psychohorror" in f.name.lower() for f in moddir.glob("*.jar"))
+
+
+def apply_ai_key(sdir: pathlib.Path, key: str) -> bool:
+    """Den Anthropic-API-Key in die KI-Mod-Config schreiben. True, wenn etwas geschrieben wurde.
+
+    Gibt es die Config schon, wird nur die apiKey-Zeile ersetzt (der Rest bleibt unangetastet).
+    Sonst wird eine **minimale** Datei [ai]/apiKey angelegt; die Mod ergänzt sie beim ersten Start
+    zur vollen Config und behält den Key (getestet, Fabric 1.21.11). Leerer Key = nichts tun.
+    """
+    key = str(key or "").strip()
+    if not key:
+        return False
+    if not _AI_KEY_RE.fullmatch(key):
+        raise sources.SourceError("Der API-Key enthält unerlaubte Zeichen.")
+    path = ai_config_path(sdir)
+    if path.is_file():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        new = re.sub(r'(?m)^(\s*apiKey\s*=\s*).*$', lambda m: m.group(1) + '"' + key + '"',
+                     text, count=1)
+        if new == text:                       # kein apiKey-Feld: in [ai] ergänzen oder anhängen
+            if re.search(r"(?m)^\s*\[ai\]\s*$", text):
+                new = re.sub(r'(?m)^(\s*\[ai\]\s*)$', lambda m: m.group(1) + '\n    apiKey = "' + key + '"',
+                             text, count=1)
+            else:
+                new = text.rstrip("\n") + '\n\n[ai]\n    apiKey = "' + key + '"\n'
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            return True
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[ai]\n    apiKey = "' + key + '"\n', encoding="utf-8")
+    return True

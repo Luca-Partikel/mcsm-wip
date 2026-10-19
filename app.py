@@ -269,8 +269,10 @@ def api_modpack_import(body, _query) -> dict:
         raise ApiError("Der Loader oder die Minecraft-Version wurden nicht erkannt – bitte im Dialog ergänzen.")
     cfg["port"] = manager.free_java_port()
     store.save(cfg)
-    job = manager.import_zip_async(cfg, path, info.get("base") or "")
-    log.info("Modpack importiert: %s (%s %s) aus %s", cfg["name"], loader, mc, path)
+    ai_key = str(b.get("ai_key") or "").strip()
+    job = manager.import_zip_async(cfg, path, info.get("base") or "", ai_key)
+    log.info("Modpack importiert: %s (%s %s) aus %s%s", cfg["name"], loader, mc, path,
+             " [KI-Key gesetzt]" if ai_key else "")
     return {"server": _server_view(cfg), "job_id": job["id"]}
 
 

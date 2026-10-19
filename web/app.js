@@ -681,7 +681,7 @@ function wizardStepType(w) {
 /* Dialog: eigenes Modpack aus einem Server-ZIP importieren. Prüft erst die Datei (Loader, MC-Version,
    Mods), legt dann einen neuen Server an und entpackt das ZIP – es wird nichts nachgeladen. */
 async function importModpackDialog() {
-  const st = { path: '', info: null, checking: false, error: '', name: '', ram: 6 };
+  const st = { path: '', info: null, checking: false, error: '', name: '', ram: 6, aiKey: '' };
   await dialog({
     icon: '📦', title: 'Eigenes Modpack importieren', wide: true, confirmText: 'Importieren',
     body: () => `
@@ -701,6 +701,12 @@ async function importModpackDialog() {
         <div class="field"><label for="imRam">Arbeitsspeicher: <b id="imRamLbl">${st.ram} GB</b></label>
           <input type="range" id="imRam" min="4" max="24" value="${st.ram}">
           <div class="hint">Modpacks brauchen viel RAM – 6 GB sind ein guter Start. Nicht mehr als die Hälfte deines PC-RAMs.</div></div>
+        ${st.info.wants_ai ? `
+        <div class="field"><label for="imAiKey">Anthropic API-Key <span class="muted">(für die KI-Mod, optional)</span></label>
+          <input type="password" id="imAiKey" value="${esc(st.aiKey)}" class="mono-in" spellcheck="false" autocomplete="off"
+            placeholder="sk-ant-…">
+          <div class="hint">Wird automatisch in die Mod-Config geschrieben (lokal und auf dem Root). Du kannst ihn auch später in den Einstellungen setzen. Dein Key bleibt geheim – er wird nie angezeigt oder protokolliert.</div></div>
+        ` : ''}
         <label class="check"><input type="checkbox" id="imEula"><span>
           <div class="t">Ich akzeptiere die Minecraft-EULA</div>
           <div class="d">Pflicht, damit der Server starten darf (<a href="https://aka.ms/MinecraftEULA" target="_blank" rel="noopener noreferrer">aka.ms/MinecraftEULA</a>).</div></span></label>
@@ -720,6 +726,7 @@ async function importModpackDialog() {
       };
       const name = $('#imName'); if (name) name.oninput = () => { st.name = name.value; };
       const ram = $('#imRam'); if (ram) ram.oninput = () => { st.ram = Number(ram.value); const l = $('#imRamLbl'); if (l) l.textContent = st.ram + ' GB'; };
+      const ai = $('#imAiKey'); if (ai) ai.oninput = () => { st.aiKey = ai.value; };
     },
     validate: () => {
       if (!st.info) return 'Bitte zuerst eine ZIP prüfen.';
@@ -730,6 +737,7 @@ async function importModpackDialog() {
     onSubmit: async () => {
       const body = { path: st.path, name: (($('#imName') || {}).value || st.name || '').trim(),
         ram_mb: st.ram * 1024, eula_accepted: true, loader: st.info.loader, mc_version: st.info.mc_version };
+      const aiEl = $('#imAiKey'); if (aiEl && aiEl.value.trim()) body.ai_key = aiEl.value.trim();
       const d = await api('modpacks/import', { method: 'POST', body });
       state.install = { serverId: d.server.id, jobId: d.job_id, job: null, after: 'overview' };
       state.view = 'install';

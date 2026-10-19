@@ -1399,14 +1399,14 @@ def free_java_port() -> int:
     return 25565
 
 
-def import_zip_async(cfg: dict, zip_path: str, base: str = "") -> dict:
+def import_zip_async(cfg: dict, zip_path: str, base: str = "", ai_key: str = "") -> dict:
     """Einen fertigen Modpack-Server aus einem ZIP einrichten (nichts wird nachgeladen)."""
     steps = ["ZIP prüfen", "Dateien entpacken", "Server einrichten"]
     job = new_job(cfg["id"], steps)
-    return _run_job(job, lambda: _do_import(cfg, zip_path, base, job))
+    return _run_job(job, lambda: _do_import(cfg, zip_path, base, job, ai_key))
 
 
-def _do_import(cfg: dict, zip_path: str, base: str, job: dict) -> None:
+def _do_import(cfg: dict, zip_path: str, base: str, job: dict, ai_key: str = "") -> None:
     modpacks.set_import_progress(
         lambda j, done, total: job_detail(j, f"{done}/{total} Dateien entpackt",
                                           int(done * 100 / max(1, total))))
@@ -1424,6 +1424,12 @@ def _do_import(cfg: dict, zip_path: str, base: str, job: dict) -> None:
     job_step(job, 2, "Der Server wird eingerichtet …")
     if cfg.get("eula_accepted"):
         (sdir / "eula.txt").write_text("eula=true\n", encoding="utf-8")
+    if ai_key:
+        try:
+            if modpacks.apply_ai_key(sdir, ai_key):
+                job_detail(job, "API-Key für die KI-Mod eingetragen", 100)
+        except sources.SourceError as exc:
+            log.warning("API-Key nicht eingetragen: %s", exc)
     cfg["installed"] = True
     store.save(cfg)
     apply_config(cfg, initial=True)
