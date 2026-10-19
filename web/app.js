@@ -5352,6 +5352,11 @@ function bindRemoteFiles() {
   if (add) add.onclick = async () => {
     const datei = wahl && wahl.files && wahl.files[0];
     if (!datei) { toast('Bitte zuerst eine Datei auswählen.', true); return; }
+    const MAX_UPLOAD = 96 * 1024 * 1024;
+    if (datei.size > MAX_UPLOAD) {
+      toast(`Die Datei ist zu groß (${(datei.size / 1048576).toFixed(0)} MB – höchstens ${MAX_UPLOAD / 1048576} MB auf diesem Weg).`, true);
+      return;
+    }
     add.disabled = true;
     try {
       // Der Browser gibt keinen Dateipfad heraus – also den Inhalt als Base64 an das eigene

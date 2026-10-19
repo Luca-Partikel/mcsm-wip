@@ -965,8 +965,11 @@ def api_cloud_file_rename(body, query) -> dict:
 
 
 #: So groß darf der Körper beim Hochladen einer einzelnen Datei werden (Base64 wiegt +33 %).
-UPLOAD_BODY_MAX = 48 * 1024 * 1024
-UPLOAD_FILE_MAX = 32 * 1024 * 1024
+# Einzeldatei-Upload (Mods, Plugins) kommt als Base64 im Körper – Base64 bläht um ~⅓ auf, deshalb
+# ist das Körperlimit entsprechend größer als die erlaubte Dateigröße. Mods wie psychohorror sind
+# leicht 40–60 MB groß, darum großzügig bemessen (der Root bekommt die Datei ohnehin stückweise).
+UPLOAD_FILE_MAX = 96 * 1024 * 1024
+UPLOAD_BODY_MAX = 134 * 1024 * 1024
 
 
 def api_cloud_file_upload(body, query) -> dict:
