@@ -126,6 +126,23 @@ class PortPoolTest(unittest.TestCase):
         self.assertIsNone(self.pool.lease("inst-a", ports.BEDROCK_POOL))
         self.assertEqual(self.pool.assignment("inst-a"), {"port": 25565})
 
+    def test_modpack_mit_voicechat_bekommt_udp_port(self) -> None:
+        self.assertEqual(ports.requirements("java", voice=True),
+                         [(ports.JAVA_POOL, 1), (ports.VOICE_POOL, 1)])
+        leases = self.pool.allocate_for("inst-a", "java", voice=True)
+        self.assertEqual(leases[ports.VOICE_POOL].first, 24454)
+        self.assertEqual(self.pool.assignment("inst-a"), {"port": 25565, "voice_port": 24454})
+        # zweiter Server bekommt den nächsten Voice-Port, und die Firewall kennt den Bereich
+        self.pool.allocate_for("inst-b", "java", voice=True)
+        self.assertEqual(self.pool.assignment("inst-b")["voice_port"], 24455)
+        self.assertIn((ports.UDP, 24454, 24553), ports.firewall_ranges())
+
+    def test_voicechat_abgeschaltet_gibt_voice_port_frei(self) -> None:
+        self.pool.allocate_for("inst-a", "java", voice=True)
+        self.pool.allocate_for("inst-a", "java", voice=False)
+        self.assertIsNone(self.pool.lease("inst-a", ports.VOICE_POOL))
+        self.assertEqual(self.pool.assignment("inst-a"), {"port": 25565})
+
     def test_voller_bereich_meldet_sich_verstaendlich(self) -> None:
         # Bei 200 Spielerplätzen braucht jeder Bedrock-Server 64 UDP-Ports: in 19132-19300
         # passen zwei, der dritte darf nicht mehr durchkommen.

@@ -302,9 +302,11 @@ if [ -f "$DATA/data/routes.json" ]; then
     say "Zuordnungstabelle des Verteilers: $(wc -c <"$DATA/data/routes.json") Bytes."
 fi
 
-say "Firewall: TCP 25565 (Verteiler) und UDP 19132-19300 (Bedrock) muessen offen sein."
+say "Firewall: TCP 25565 (Verteiler), UDP 19132-19300 (Bedrock) und UDP 24454-24553"
+say "          (Simple Voice Chat fuer eigene Modpacks) muessen offen sein:"
+say "            ufw allow 24454:24553/udp comment 'Simple Voice Chat'"
 say "          Die Java-Ports 25566-25700 braucht von aussen niemand mehr - der Verteiler"
-say "          reicht die Verbindungen auf 127.0.0.1 weiter."
+say "          reicht die Verbindungen auf 127.0.0.1 weiter; der Voice-UDP-Port geht direkt."
 say "Die API bleibt auf 127.0.0.1; nginx liefert admin.<domain> (Oberflaeche) und"
 say "api.<domain> (nur API) aus. Damit die Ratenbremse einzelne Aufrufer unterscheiden kann,"
 say "muessen im Server-Block diese zwei Zeilen stehen:"

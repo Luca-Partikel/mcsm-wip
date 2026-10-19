@@ -31,6 +31,9 @@ VALID_KINDS = (KIND_JAVA, KIND_BEDROCK)
 
 JAVA_POOL = "java"
 BEDROCK_POOL = "bedrock"
+#: Simple Voice Chat (eigene Modpacks): ein eigener UDP-Port je Server. Der Mod bindet ihn direkt,
+#: die Firewall öffnet den Bereich; der Verteiler ist dafür nicht nötig (reiner UDP-Durchgang).
+VOICE_POOL = "voice"
 
 # BDS bindet pro Spieler-Sitzung einen eigenen UDP-Port aus `server-udp-ports` – deshalb wächst
 # der Block mit max-players (wie im lokalen Programm, mindestens 16 Ports).
@@ -86,6 +89,7 @@ class PortRange:
 POOLS: dict[str, PortRange] = {
     JAVA_POOL: PortRange(JAVA_POOL, TCP, 25565, 25700),
     BEDROCK_POOL: PortRange(BEDROCK_POOL, UDP, 19132, 19300),
+    VOICE_POOL: PortRange(VOICE_POOL, UDP, 24454, 24553),
 }
 
 
@@ -105,11 +109,13 @@ def udp_block_size(max_players: int | None = 10) -> int:
     return max(MIN_UDP_BLOCK, min(MAX_UDP_BLOCK, players + UDP_BLOCK_EXTRA))
 
 
-def requirements(kind: str, *, geyser: bool = False, max_players: int = 10) -> list[tuple[str, int]]:
+def requirements(kind: str, *, geyser: bool = False, max_players: int = 10,
+                 voice: bool = False) -> list[tuple[str, int]]:
     """Welche Pools eine Instanz mit wie vielen Ports braucht: [(pool, anzahl), …].
 
     * Java ohne Crossplay: ein TCP-Port.
     * Java mit Geyser: ein TCP-Port + ein UDP-Port für Bedrock-Spieler.
+    * Java-Modpack mit Simple Voice Chat: zusätzlich ein UDP-Port für den Sprach-Chat.
     * Bedrock (BDS mit NetherNet): ein TCP-Port für den Verbindungsaufbau + ein UDP-Block
       für die Spieldaten.
     """
@@ -118,6 +124,8 @@ def requirements(kind: str, *, geyser: bool = False, max_players: int = 10) -> l
         needs = [(JAVA_POOL, 1)]
         if geyser:
             needs.append((BEDROCK_POOL, 1))
+        if voice:
+            needs.append((VOICE_POOL, 1))
         return needs
     if kind == KIND_BEDROCK:
         return [(JAVA_POOL, 1), (BEDROCK_POOL, udp_block_size(max_players))]
@@ -310,10 +318,10 @@ class PortPool:
             "es laufen zu viele Server auf dieser Maschine.")
 
     def allocate_for(self, owner: str, kind: str, *, geyser: bool = False,
-                     max_players: int = 10) -> dict[str, PortLease]:
+                     max_players: int = 10, voice: bool = False) -> dict[str, PortLease]:
         """Alle Ports einer Instanz in einem Schritt buchen (alles oder nichts)."""
         owner = _check_owner(owner)
-        needs = requirements(kind, geyser=geyser, max_players=max_players)
+        needs = requirements(kind, geyser=geyser, max_players=max_players, voice=voice)
         keep = {ls.pool: ls for ls in self.leases(owner)}
         with self._lock:
             done: dict[str, PortLease] = {}
@@ -352,6 +360,7 @@ class PortPool:
         out: dict[str, int] = {}
         java = self.lease(owner, JAVA_POOL)
         bedrock = self.lease(owner, BEDROCK_POOL)
+        voice = self.lease(owner, VOICE_POOL)
         if java is not None:
             out["port"] = java.first
         if bedrock is not None:
@@ -359,6 +368,8 @@ class PortPool:
             if bedrock.count > 1:
                 out["udp_first"] = bedrock.first
                 out["udp_last"] = bedrock.last
+        if voice is not None:
+            out["voice_port"] = voice.first
         return out
 
     # ---------------------------------------------------------------- Speichern und Laden

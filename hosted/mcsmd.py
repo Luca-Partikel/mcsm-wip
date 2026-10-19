@@ -1068,6 +1068,30 @@ def apply_ports(inst: dict, folder: pathlib.Path, assignment: dict, geyser: bool
         patch_properties(folder / "server.properties", updates)
     if geyser and str(inst.get("type")) != "bedrock":
         write_geyser_config(folder, inst, assignment)
+    if "voice_port" in assignment:
+        write_voicechat_config(folder, int(assignment["voice_port"]), routen.subdomain(inst))
+
+
+def has_voicechat_mod(folder: pathlib.Path) -> bool:
+    """True, wenn im Modpack Simple Voice Chat steckt (dann braucht der Server einen UDP-Port)."""
+    moddir = pathlib.Path(folder) / "mods"
+    if not moddir.is_dir():
+        return False
+    return any("voicechat" in f.name.lower() for f in moddir.glob("*.jar"))
+
+
+def write_voicechat_config(folder: pathlib.Path, port: int, host: str) -> None:
+    """Simple Voice Chat auf den zugeteilten UDP-Port und die öffentliche Adresse stellen.
+
+    Nur ``port``, ``bind_address`` und ``voice_host`` werden gesetzt; den Rest (und die Kommentare)
+    ergänzt die Mod beim ersten Start selbst. ``bind_address=*`` lauscht auf allen Adressen, damit
+    die Firewall-Freigabe greift; ``voice_host`` sagt den Mitspielern, wohin sie den Sprach-Chat
+    schicken – der Verteiler kümmert sich nur um TCP, der UDP-Port geht direkt durch."""
+    cfg = pathlib.Path(folder) / "config" / "voicechat" / "voicechat-server.properties"
+    updates = {"port": str(int(port)), "bind_address": "*"}
+    if host:
+        updates["voice_host"] = f"{host}:{int(port)}"
+    patch_properties(cfg, updates)
 
 
 def ensure_crossplay_chat(folder: pathlib.Path, geyser: bool) -> bool:
@@ -2815,7 +2839,9 @@ def start_instanz(inst: dict) -> tuple:
             # Bedrock-Spieler herein. Die Sperre im Wecker hält ihn bis zum Ende des Servers
             # von diesem Port fern (`on_runner_exit` hebt sie auf).
             WECKER.freigeben(iid)
-            POOL.allocate_for(iid, kind, geyser=geyser, max_players=max_players_of(folder))
+            voice = ist_modpack_instanz(inst) and has_voicechat_mod(folder)
+            POOL.allocate_for(iid, kind, geyser=geyser, max_players=max_players_of(folder),
+                              voice=voice)
             assignment = POOL.assignment(iid)
             apply_ports(inst, folder, assignment, geyser)
             mirror_ports(inst, assignment)
