@@ -387,3 +387,130 @@ def start_command(cfg: dict, java_exe: str | pathlib.Path, ram_mb: int) -> list[
             return cmd + ["-jar", legacy.name, "nogui"]
         raise RuntimeError(f"Der {LOADER_NAMES[flavor]}-Server ist nicht vollständig installiert – bitte „Neu installieren“.")
     raise RuntimeError(f"Unbekannter Mod-Loader: {flavor}")
+
+
+# ================================================================== Eigenes Modpack importieren
+# Ein fertig geschnürter Server-Ordner als ZIP (Fabric/Quilt-Launcher + mods/ + Konfiguration).
+# Anders als bei einem Modrinth-Pack wird nichts nachgeladen – der Ordner ist schon vollständig.
+
+def _zip_base(names: list[str]) -> str:
+    """Erkennt einen einzelnen obersten Ordner, in dem alles liegt (manche ZIPs packen so). Sonst ""."""
+    real = [n for n in names if n.strip("/")]
+    if not real:
+        return ""
+    first = real[0].split("/")[0]
+    if "/" in real[0] and all(n.split("/")[0] == first for n in real):
+        return first + "/"
+    return ""
+
+
+def _detect_mc(names: list[str]) -> str:
+    """Häufigste Minecraft-Version in den Dateinamen (z. B. fabric-api-…+1.21.11.jar)."""
+    counts: dict[str, int] = {}
+    for n in names:
+        for m in re.findall(r"1\.\d{1,2}(?:\.\d{1,2})?", posixpath.basename(n)):
+            counts[m] = counts.get(m, 0) + 1
+    return max(counts, key=counts.get) if counts else ""
+
+
+def inspect_server_zip(path: str) -> dict:
+    """Ein eigenes Server-ZIP ansehen: Loader, Minecraft-Version, Launcher und Mods. Wirft
+    `sources.SourceError` bei Problemen. Erkennt zuverlässig Fabric/Quilt; NeoForge/Forge als
+    Vermutung (der Nutzer kann den Loader im Dialog bestätigen/ändern)."""
+    p = pathlib.Path(path)
+    if not p.is_file():
+        raise sources.SourceError("Die ZIP-Datei wurde nicht gefunden – bitte den Pfad prüfen.")
+    try:
+        with zipfile.ZipFile(p) as z:
+            names = z.namelist()
+    except zipfile.BadZipFile:
+        raise sources.SourceError("Das ist keine gültige ZIP-Datei.")
+    if not names:
+        raise sources.SourceError("Die ZIP-Datei ist leer.")
+    base = _zip_base(names)
+    rel = [n[len(base):] for n in names if n.startswith(base) and n[len(base):]]
+    tops = [n for n in rel if "/" not in n.rstrip("/")]
+    tops_low = {n.lower() for n in tops}
+    rel_low = {n.lower() for n in rel}
+
+    loader = ""
+    launcher = ""
+    if "quilt-server-launch.jar" in tops_low:
+        loader, launcher = "quilt", "quilt-server-launch.jar"
+    else:
+        fab = next((n for n in tops if re.fullmatch(r"fabric-server.*launch.*\.jar", n.lower())), None)
+        if fab:
+            loader, launcher = "fabric", fab
+        elif "server.jar" in tops_low and any("fabric" in n for n in rel_low):
+            loader, launcher = "fabric", "server.jar"
+        elif any("user_jvm_args.txt" in n or n in ("run.sh", "run.bat") for n in tops_low):
+            loader = "neoforge" if any("neoforged" in n or "neoforge" in n for n in rel_low) else "forge"
+    mods = sorted(posixpath.basename(n) for n in rel if "/mods/" in ("/" + n) and n.lower().endswith(".jar"))
+    mc = _detect_mc(rel)
+    if loader not in LOADER_NAMES:
+        raise sources.SourceError(
+            "In dem ZIP ist kein bekannter Server-Launcher zu finden (erwartet: fabric-server-launch.jar, "
+            "quilt-server-launch.jar oder ein NeoForge-/Forge-Server). Ist das wirklich ein Server-Ordner "
+            "als ZIP (nicht die .mrpack für den Launcher)?")
+    if not mods:
+        raise sources.SourceError("In dem ZIP ist kein mods-Ordner mit Mods zu finden.")
+    return {"loader": loader, "launcher": launcher, "mc_version": mc, "base": base,
+            "mods": mods, "mod_count": len(mods)}
+
+
+def _safe_extract(zip_path: pathlib.Path, sdir: pathlib.Path, base: str, job=None) -> None:
+    """ZIP in den Server-Ordner entpacken: einen etwaigen obersten Ordner abziehen und jeden Pfad
+    gegen Ausbrüche (``..`` / absolute Pfade) absichern."""
+    ziel_root = sdir.resolve()
+    with zipfile.ZipFile(zip_path) as z:
+        eintraege = [i for i in z.infolist() if not i.is_dir()]
+        gesamt = max(1, len(eintraege))
+        for nr, info in enumerate(eintraege):
+            name = info.filename
+            if base and name.startswith(base):
+                name = name[len(base):]
+            if not name:
+                continue
+            # Pfad säubern und prüfen, dass das Ziel innerhalb des Server-Ordners bleibt.
+            rel = posixpath.normpath(name)
+            if rel.startswith("..") or rel.startswith("/") or ":" in rel.split("/")[0]:
+                continue
+            ziel = (sdir / rel).resolve()
+            if not str(ziel).startswith(str(ziel_root)):
+                continue
+            ziel.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(info) as src, open(ziel, "wb") as out:
+                shutil.copyfileobj(src, out)
+            if job is not None and nr % 20 == 0 and _import_progress is not None:
+                _import_progress(job, nr + 1, gesamt)
+    return None
+
+
+# Wird vom Manager gesetzt, damit _safe_extract den Entpack-Fortschritt melden kann, ohne dass
+# core/modpacks.py den Job-Code von core/manager.py kennen muss.
+_import_progress = None
+
+
+def set_import_progress(fn) -> None:
+    global _import_progress
+    _import_progress = fn
+
+
+def normalize_launcher(sdir: pathlib.Path, flavor: str) -> None:
+    """Den Launcher auf den von MCSM erwarteten Namen bringen (Fabric → server.jar)."""
+    if flavor == "fabric":
+        if not (sdir / FABRIC_LAUNCHER).exists():
+            kandidat = None
+            for f in sdir.glob("*.jar"):
+                if re.fullmatch(r"fabric-server.*launch.*\.jar", f.name.lower()):
+                    kandidat = f
+                    break
+            if kandidat is not None:
+                kandidat.rename(sdir / FABRIC_LAUNCHER)
+    elif flavor == "quilt":
+        if not (sdir / QUILT_LAUNCHER).exists():
+            for f in sdir.glob("*.jar"):
+                if re.fullmatch(r"quilt-server.*launch.*\.jar", f.name.lower()):
+                    f.rename(sdir / QUILT_LAUNCHER)
+                    break
+    # NeoForge/Forge: run-Skripte/Arg-Dateien bleiben, start_command findet sie.

@@ -678,6 +678,67 @@ function wizardStepType(w) {
 
 /* ---------- Schritt „Modpack wählen“ (Modrinth-Suche → Pack-Version) */
 
+/* Dialog: eigenes Modpack aus einem Server-ZIP importieren. Prüft erst die Datei (Loader, MC-Version,
+   Mods), legt dann einen neuen Server an und entpackt das ZIP – es wird nichts nachgeladen. */
+async function importModpackDialog() {
+  const st = { path: '', info: null, checking: false, error: '', name: '', ram: 6 };
+  await dialog({
+    icon: '📦', title: 'Eigenes Modpack importieren', wide: true, confirmText: 'Importieren',
+    body: () => `
+      <p>Importiere einen fertigen <b>Server-Ordner als ZIP</b> (Fabric-/Quilt-Launcher + <code>mods/</code>).
+         Das ist <b>nicht</b> die <code>.mrpack</code> für den Launcher – die ist für dich und deine Mitspieler.</p>
+      <div class="field"><label for="imPath">Pfad zur Server-ZIP</label>
+        <div class="flex"><input type="text" id="imPath" value="${esc(st.path)}" class="mono-in" spellcheck="false"
+          placeholder="C:\\Users\\…\\Downloads\\mein-server.zip">
+          <button class="btn btn-sm" type="button" id="imCheck" ${st.checking ? 'disabled' : ''}>${st.checking ? 'Prüft …' : 'Prüfen'}</button></div>
+        <div class="hint">Die Datei liegt auf diesem PC und wird nicht hochgeladen. Pfad einfügen (im Explorer: Umschalt+Rechtsklick → „Als Pfad kopieren").</div></div>
+      ${st.error ? `<div class="note note-err mb0">${esc(st.error)}</div>` : ''}
+      ${st.info ? `
+        <div class="note note-ok"><b>Erkannt:</b> ${esc(LOADER_NAMES[st.info.loader] || st.info.loader)} ·
+          Minecraft <b>${esc(st.info.mc_version || '?')}</b> · ${st.info.mod_count} Mods</div>
+        <div class="field"><label for="imName">Name des Servers</label>
+          <input type="text" id="imName" value="${esc(st.name)}" maxlength="48"></div>
+        <div class="field"><label for="imRam">Arbeitsspeicher: <b id="imRamLbl">${st.ram} GB</b></label>
+          <input type="range" id="imRam" min="4" max="24" value="${st.ram}">
+          <div class="hint">Modpacks brauchen viel RAM – 6 GB sind ein guter Start. Nicht mehr als die Hälfte deines PC-RAMs.</div></div>
+        <label class="check"><input type="checkbox" id="imEula"><span>
+          <div class="t">Ich akzeptiere die Minecraft-EULA</div>
+          <div class="d">Pflicht, damit der Server starten darf (<a href="https://aka.ms/MinecraftEULA" target="_blank" rel="noopener noreferrer">aka.ms/MinecraftEULA</a>).</div></span></label>
+      ` : '<div class="muted small">Zuerst oben die ZIP prüfen.</div>'}`,
+    bind: (ctx) => {
+      const path = $('#imPath'); if (path) path.oninput = () => { st.path = path.value; };
+      const check = $('#imCheck');
+      if (check) check.onclick = async () => {
+        st.path = ($('#imPath').value || '').trim().replace(/^"|"$/g, '');
+        if (!st.path) { st.error = 'Bitte einen Pfad angeben.'; ctx.redraw(); return; }
+        st.checking = true; st.error = ''; ctx.redraw();
+        try {
+          const info = await api('modpacks/inspect', { method: 'POST', body: { path: st.path } });
+          st.info = info; if (!st.name) st.name = 'Eigenes Modpack';
+        } catch (e) { st.info = null; st.error = e.message; }
+        st.checking = false; ctx.redraw();
+      };
+      const name = $('#imName'); if (name) name.oninput = () => { st.name = name.value; };
+      const ram = $('#imRam'); if (ram) ram.oninput = () => { st.ram = Number(ram.value); const l = $('#imRamLbl'); if (l) l.textContent = st.ram + ' GB'; };
+    },
+    validate: () => {
+      if (!st.info) return 'Bitte zuerst eine ZIP prüfen.';
+      const e = $('#imEula');
+      if (!e || !e.checked) return 'Bitte die Minecraft-EULA bestätigen.';
+      return '';
+    },
+    onSubmit: async () => {
+      const body = { path: st.path, name: (($('#imName') || {}).value || st.name || '').trim(),
+        ram_mb: st.ram * 1024, eula_accepted: true, loader: st.info.loader, mc_version: st.info.mc_version };
+      const d = await api('modpacks/import', { method: 'POST', body });
+      state.install = { serverId: d.server.id, jobId: d.job_id, job: null, after: 'overview' };
+      state.view = 'install';
+      setTimeout(() => { render(); pollJob(); }, 0);
+      return true;
+    },
+  });
+}
+
 function wizardStepModpack(w) {
   const mp = w.mp;
   const sel = w.modpack;
@@ -713,7 +774,10 @@ function wizardStepModpack(w) {
   }
 
   return `
-  <p class="lead">Suche ein Modpack auf Modrinth und wähle die Pack-Version. Der Manager installiert Loader und Mods automatisch.</p>
+  <p class="lead">Suche ein Modpack auf Modrinth und wähle die Pack-Version – oder importiere ein eigenes.</p>
+  <div class="note note-info" style="margin:0 0 12px"><b>Eigenes Modpack?</b> Hast du einen fertigen
+    Server-Ordner als ZIP (z. B. aus eigener Entwicklung), kannst du ihn direkt einfügen.
+    <button class="btn btn-sm" type="button" id="wzMpImport" style="margin-left:8px">📦 Eigenes Modpack importieren (ZIP)</button></div>
   <div class="grid2" style="margin-top:0">
     <div>
       <div class="field"><label for="wzMpQuery">Modpack suchen</label>
@@ -1082,6 +1146,8 @@ function bindWizard() {
     $('#wzMpSearch').onclick = () => { w.mp.query = mq.value.trim(); modpackSearch(w); };
     if (document.activeElement !== mq && !w.mp.project) { mq.focus(); mq.setSelectionRange(mq.value.length, mq.value.length); }
   }
+  const imp = $('#wzMpImport');
+  if (imp) imp.onclick = () => importModpackDialog();
   $$('[data-mp-project]').forEach((el) => el.onclick = () => {
     const hit = (w.mp.results || []).find((h) => h.project_id === el.dataset.mpProject);
     if (hit) modpackVersions(w, hit);

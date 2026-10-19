@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, quote, urlparse
 BASE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from core import backups, cloud, companion, history, manager, notify, players, sources, store, tray, updater  # noqa: E402
+from core import backups, cloud, companion, history, manager, modpacks, notify, players, sources, store, tray, updater  # noqa: E402
 from core.version import __version__  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(24)
@@ -228,6 +228,49 @@ def api_create(body, _query) -> dict:
     store.save(cfg)
     job = manager.install_async(cfg)
     log.info("Server angelegt: %s (%s %s %s)", cfg["name"], cfg["type"], cfg.get("flavor", "paper"), cfg["version"])
+    return {"server": _server_view(cfg), "job_id": job["id"]}
+
+
+def api_modpack_inspect(body, _query) -> dict:
+    """Ein eigenes Server-ZIP ansehen (Loader, Minecraft-Version, Mods) – für den Import-Dialog."""
+    path = str((body or {}).get("path") or "").strip().strip('"')
+    if not path:
+        raise ApiError("Bitte den Pfad zur Server-ZIP angeben.")
+    try:
+        return modpacks.inspect_server_zip(path)
+    except sources.SourceError as exc:
+        raise ApiError(str(exc)) from exc
+
+
+def api_modpack_import(body, _query) -> dict:
+    """Einen fertigen Modpack-Server aus einem ZIP als neuen Server anlegen (nichts wird nachgeladen)."""
+    b = body or {}
+    path = str(b.get("path") or "").strip().strip('"')
+    if not path:
+        raise ApiError("Bitte den Pfad zur Server-ZIP angeben.")
+    if not b.get("eula_accepted"):
+        raise ApiError("Bitte zuerst die Minecraft-EULA bestätigen.")
+    try:
+        info = modpacks.inspect_server_zip(path)
+    except sources.SourceError as exc:
+        raise ApiError(str(exc)) from exc
+    loader = str(b.get("loader") or info["loader"])
+    mc = str(b.get("mc_version") or info["mc_version"]).strip()
+    name = str(b.get("name") or "").strip() or "Eigenes Modpack"
+    cfg = _sanitize({
+        "name": name, "type": "java",
+        "modpack": {"custom": True, "loader": loader, "mc_version": mc, "title": name,
+                    "version_name": str(b.get("version_name") or ""),
+                    "loader_version": str(b.get("loader_version") or "")},
+        "ram_mb": b.get("ram_mb"),
+        "eula_accepted": True,
+    })
+    if not store.is_modpack(cfg) or not cfg.get("version"):
+        raise ApiError("Der Loader oder die Minecraft-Version wurden nicht erkannt – bitte im Dialog ergänzen.")
+    cfg["port"] = manager.free_java_port()
+    store.save(cfg)
+    job = manager.import_zip_async(cfg, path, info.get("base") or "")
+    log.info("Modpack importiert: %s (%s %s) aus %s", cfg["name"], loader, mc, path)
     return {"server": _server_view(cfg), "job_id": job["id"]}
 
 
@@ -1779,6 +1822,8 @@ ROUTES = {
     ("GET", "bootstrap"): api_bootstrap,
     ("GET", "versions"): api_versions,
     ("GET", "modpacks/search"): api_modpack_search,
+    ("POST", "modpacks/inspect"): api_modpack_inspect,
+    ("POST", "modpacks/import"): api_modpack_import,
     ("GET", "publicip"): api_public_ip,
     ("POST", "servers"): api_create,
     ("POST", "shutdown"): api_shutdown,

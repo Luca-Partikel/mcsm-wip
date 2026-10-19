@@ -1389,6 +1389,46 @@ def install_async(cfg: dict) -> dict:
     return _run_job(job, lambda: install(cfg, job))
 
 
+def free_java_port() -> int:
+    """Ein freier TCP-Port für einen neuen Java-Server (nicht von einem anderen Server belegt)."""
+    used = {int(c.get("port") or 0) for c in store.all_servers()}
+    for p in range(25565, 25700):
+        if p in used or port_in_use(p, False) or port_in_use(p, False, ipv6=True):
+            continue
+        return p
+    return 25565
+
+
+def import_zip_async(cfg: dict, zip_path: str, base: str = "") -> dict:
+    """Einen fertigen Modpack-Server aus einem ZIP einrichten (nichts wird nachgeladen)."""
+    steps = ["ZIP prüfen", "Dateien entpacken", "Server einrichten"]
+    job = new_job(cfg["id"], steps)
+    return _run_job(job, lambda: _do_import(cfg, zip_path, base, job))
+
+
+def _do_import(cfg: dict, zip_path: str, base: str, job: dict) -> None:
+    modpacks.set_import_progress(
+        lambda j, done, total: job_detail(j, f"{done}/{total} Dateien entpackt",
+                                          int(done * 100 / max(1, total))))
+    job_step(job, 0, "Das ZIP wird geprüft …")
+    src = pathlib.Path(zip_path)
+    if not src.is_file():
+        raise sources.SourceError("Die ZIP-Datei wurde nicht gefunden.")
+    sdir = store.server_dir(cfg["id"])
+    if sdir.exists():
+        shutil.rmtree(sdir, ignore_errors=True)
+    sdir.mkdir(parents=True, exist_ok=True)
+    job_step(job, 1, "Dateien werden entpackt …")
+    modpacks._safe_extract(src, sdir, base, job)
+    modpacks.normalize_launcher(sdir, str(cfg.get("flavor") or "fabric"))
+    job_step(job, 2, "Der Server wird eingerichtet …")
+    if cfg.get("eula_accepted"):
+        (sdir / "eula.txt").write_text("eula=true\n", encoding="utf-8")
+    cfg["installed"] = True
+    store.save(cfg)
+    apply_config(cfg, initial=True)
+
+
 def needs_preparation(cfg: dict) -> bool:
     """True, wenn vor dem Start noch etwas nachgeladen werden muss (Java, VC++-Laufzeit)."""
     if cfg["type"] == "java":

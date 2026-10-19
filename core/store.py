@@ -117,16 +117,31 @@ def sanitize_modpack(raw) -> dict:
     Installation ohnehin noch einmal von dort geholt). Leeres dict = kein gültiges Modpack."""
     if not isinstance(raw, dict):
         return {}
+    clean = lambda s, n: re.sub(r"[\x00-\x1f]", "", str(s or "")).strip()[:n]     # noqa: E731
+    loader = str(raw.get("loader") or "").lower()
+    mc = str(raw.get("mc_version") or "").strip()
+    loader_version = str(raw.get("loader_version") or "").strip()
+
+    # Eigenes, importiertes Pack (Server-ZIP) – keine Modrinth-IDs, aber Loader + MC-Version nötig.
+    if raw.get("custom"):
+        if loader not in VALID_FLAVORS or loader == "paper" or not re.fullmatch(_VERSION_RE, mc):
+            return {}
+        return {
+            "custom": True, "project_id": "", "version_id": "",
+            "title": clean(raw.get("title"), 80) or "Eigenes Modpack",
+            "version_name": clean(raw.get("version_name"), 64),
+            "mc_version": mc,
+            "loader": loader,
+            "loader_version": loader_version if re.fullmatch(r"[0-9A-Za-z.\-+_]{1,40}", loader_version) else "",
+            "icon_url": "", "url": "",
+        }
+
     pid = str(raw.get("project_id") or "").strip()
     vid = str(raw.get("version_id") or "").strip()
     if not (re.fullmatch(_MODRINTH_ID_RE, pid) and re.fullmatch(_MODRINTH_ID_RE, vid)):
         return {}
-    loader = str(raw.get("loader") or "").lower()
-    mc = str(raw.get("mc_version") or "").strip()
-    loader_version = str(raw.get("loader_version") or "").strip()
     icon = str(raw.get("icon_url") or "").strip()
     url = str(raw.get("url") or "").strip()
-    clean = lambda s, n: re.sub(r"[\x00-\x1f]", "", str(s or "")).strip()[:n]     # noqa: E731
     return {
         "project_id": pid,
         "version_id": vid,
