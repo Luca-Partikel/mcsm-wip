@@ -3500,6 +3500,47 @@ def h_upload_status(req: Req, iid: str):
     return {"session": session.status(missing_limit=req.qint("missing", 50))}
 
 
+#: Java-Server mit eigenem Mod-Loader (eigene Modpacks). Sie bekommen keinen Paper-Kern und kein
+#: Crossplay, sondern den Launcher des Loaders – die Mods sind schon über die Übertragung da.
+MODPACK_LOADERS = ("fabric", "quilt", "neoforge", "forge")
+
+
+def ist_modpack_instanz(inst: dict) -> bool:
+    return (str(inst.get("type") or "java") != "bedrock"
+            and str(inst.get("flavor") or "paper") in MODPACK_LOADERS)
+
+
+def _modpack_kern_beschaffen(inst: dict, version: str, folder, status, progress) -> dict:
+    """Serverkern eines eigenen Modpacks beschaffen: Java + Loader-Launcher (ohne Paper/Crossplay).
+
+    Nur **Fabric** läuft auf dem Root-Server. Für andere Loader bleibt das Pack auf dem PC –
+    ein klarer Fehler ist besser als ein still danebenlaufender Paper-Server.
+    """
+    flavor = str(inst.get("flavor") or "")
+    major = offline_java_major(version)
+    status(f"Java {major} wird eingerichtet …")
+    sources_linux.ensure_java(major, progress=progress, status=status)
+    loader_version = str(inst.get("loader_version") or "")
+    if flavor == "fabric":
+        status("Fabric-Launcher wird geladen …")
+        info = sources_linux.install_fabric(version, folder, True, progress=progress,
+                                            status=status, loader_version=loader_version)
+    else:
+        raise sources_linux.SourceError(
+            f"Server mit „{flavor}“ laufen auf dem Root-Server noch nicht – bitte dieses "
+            f"Modpack lokal auf dem PC starten.")
+    if int(info.get("java_major") or 0) and int(info["java_major"]) != major:
+        status(f"Java {info['java_major']} wird nachgeladen …")
+        sources_linux.ensure_java(int(info["java_major"]), progress=progress, status=status)
+    write_install_info(folder, {"version": info.get("version", version),
+                                "jar": info.get("jar", "server.jar"),
+                                "loader": flavor,
+                                "loader_version": str(info.get("loader_version") or ""),
+                                "java_major": int(info.get("java_major") or major),
+                                "java_flags": list(info.get("java_flags") or [])})
+    return info
+
+
 def _kern_beschaffen_worker(inst: dict, version: str, geyser: bool, job: dict) -> None:
     """Nach einer Übertragung das Nachladbare beschaffen: Java und den Serverkern.
 
@@ -3528,6 +3569,8 @@ def _kern_beschaffen_worker(inst: dict, version: str, geyser: bool, job: dict) -
             info = sources_linux.install_bedrock(version, folder, progress=progress, status=status)
             write_install_info(folder, {"version": info.get("version", version),
                                         "binary": info.get("binary", "bedrock_server")})
+        elif ist_modpack_instanz(inst):
+            _modpack_kern_beschaffen(inst, version, folder, status, progress)
         else:
             major = offline_java_major(version)
             status(f"Java {major} wird eingerichtet …")
@@ -3895,6 +3938,14 @@ def _install_worker(inst: dict, version: str, geyser: bool, job: dict) -> None:
                               "gamemode": "survival", "difficulty": "normal",
                               "allow-cheats": "false", "max-players": "10",
                               "online-mode": "true", "level-name": "Bedrock level"})
+        elif ist_modpack_instanz(inst):
+            _modpack_kern_beschaffen(inst, version, folder, status, progress)
+            patch_properties(folder / "server.properties",
+                             {"motd": str(inst.get("name") or "Minecraft"),
+                              "gamemode": "survival", "difficulty": "normal",
+                              "online-mode": "true", "max-players": "10",
+                              "spawn-protection": "0"})
+            ensure_server_icon(folder)
         else:
             major = offline_java_major(version)
             status(f"Java {major} wird eingerichtet …")

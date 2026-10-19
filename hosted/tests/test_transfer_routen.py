@@ -223,5 +223,88 @@ class BeschaffenTest(Basis):
         self.assertTrue((self.folder / "server.jar").is_file())
 
 
+class ModpackBeschaffenTest(Basis):
+    """Ein eigenes Modpack (Fabric) bekommt den Fabric-Launcher – nicht Paper, kein Crossplay."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token, self.uid = self.make_user()
+        self.server = self.make_server(self.token, name="Modpack-A", flavor="fabric")
+        self.folder = mcsmd.sources_linux.users_dir() / self.uid / self.server["id"]
+        self.gerufen: dict = {}
+        self.echt = {"ensure_java": mcsmd.sources_linux.ensure_java,
+                     "install_paper": mcsmd.sources_linux.install_paper,
+                     "install_fabric": mcsmd.sources_linux.install_fabric,
+                     "install_crossplay": mcsmd.sources_linux.install_crossplay}
+
+        def ensure_java(major, progress=None, status=None):
+            self.gerufen["java"] = int(major)
+            return pathlib.Path("/kein/java")
+
+        def install_paper(version, target, eula, progress=None, status=None, jar="server.jar"):
+            self.gerufen["paper"] = str(version)       # darf nie gerufen werden
+            return {}
+
+        def install_fabric(version, target, eula, progress=None, status=None,
+                           jar="server.jar", loader_version=""):
+            self.gerufen["fabric"] = str(version)
+            pfad = pathlib.Path(target) / jar
+            pfad.parent.mkdir(parents=True, exist_ok=True)
+            pfad.write_bytes(b"Fabric-Launcher")
+            return {"version": str(version), "jar": jar, "loader": "fabric",
+                    "loader_version": "0.17.0", "java_major": 21, "java_flags": []}
+
+        def install_crossplay(target, progress=None, status=None):
+            self.gerufen["crossplay"] = True           # darf nie gerufen werden
+            return {}
+
+        mcsmd.sources_linux.ensure_java = ensure_java
+        mcsmd.sources_linux.install_paper = install_paper
+        mcsmd.sources_linux.install_fabric = install_fabric
+        mcsmd.sources_linux.install_crossplay = install_crossplay
+
+    def tearDown(self) -> None:
+        for name, fn in self.echt.items():
+            setattr(mcsmd.sources_linux, name, fn)
+        super().tearDown()
+
+    def test_modpack_bekommt_fabric_statt_paper(self):
+        self.set_state(self.server["id"], "local_only")
+        inhalt = b"level-name=welt\n"
+        manifest = {"version": 1, "files": [{"path": "server.properties", "size": len(inhalt),
+                                             "sha256": sha256_of(inhalt)}]}
+        status, data = self.call("POST", f"/api/servers/{self.server['id']}/upload/begin",
+                                 {"manifest": manifest, "purpose": "instance"}, token=self.token)
+        sitzung = data["session"]["id"]
+        self.call("POST", f"/api/servers/{self.server['id']}/upload/chunk", raw=inhalt,
+                  token=self.token, headers={"X-MCSM-Session": sitzung,
+                                             "X-MCSM-Path": "server.properties",
+                                             "X-MCSM-Offset": "0"})
+        # geyser=True: trotzdem darf ein Modpack kein Crossplay bekommen.
+        status, data = self.call("POST", f"/api/servers/{self.server['id']}/upload/finish",
+                                 {"session": sitzung, "version": "1.21.11", "geyser": True},
+                                 token=self.token)
+        self.assertEqual(status, 200, data)
+        ende = time.time() + 20
+        stand = {}
+        while time.time() < ende:
+            status, antwort = self.call("GET", f"/api/jobs/{data['job']['id']}", token=self.token)
+            stand = antwort.get("job") or {}
+            if stand.get("state") != "läuft":
+                break
+            time.sleep(0.1)
+        self.assertEqual(stand.get("state"), "fertig", stand)
+        self.assertEqual(self.gerufen.get("fabric"), "1.21.11")
+        self.assertIsNone(self.gerufen.get("paper"))
+        self.assertIsNone(self.gerufen.get("crossplay"))
+        self.assertEqual(self.gerufen.get("java"), 21)
+        self.assertTrue((self.folder / "server.jar").is_file())
+        info = mcsmd.read_install_info(self.folder)
+        self.assertEqual(info.get("loader"), "fabric")
+        self.assertEqual(int(info.get("java_major") or 0), 21)
+        # Die hochgeladenen Einstellungen bleiben unberührt.
+        self.assertEqual((self.folder / "server.properties").read_bytes(), inhalt)
+
+
 if __name__ == "__main__":
     unittest.main()

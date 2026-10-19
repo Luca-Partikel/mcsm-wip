@@ -60,6 +60,12 @@ _BEDROCK_HOSTS = ("www.minecraft.net", "net-secondary.web.minecraft-services.net
 _GEYSER_HOSTS = ("download.geysermc.org",)
 _HANGAR_HOSTS = ("hangar.papermc.io", "hangarcdn.papermc.io")
 
+# Fabric: der Server-Launcher kommt fertig aus der Meta-API. Er ist winzig (~0,2 MB) und lädt beim
+# ersten Start Vanilla + Bibliotheken selbst nach – genau wie der Launcher, den der PC schon nutzt.
+FABRIC_META = "https://meta.fabricmc.net/v2"
+_FABRIC_HOSTS = ("meta.fabricmc.net",)
+_LOADER_VER_RE = re.compile(r"[0-9A-Za-z.\-+_]{1,40}")
+
 CROSSPLAY_JARS = ("Geyser-Spigot.jar", "floodgate-spigot.jar", "ViaVersion.jar", "ViaBackwards.jar")
 
 AVAILABLE_JAVA = (8, 11, 17, 21, 25)            # LTS-Versionen, die Adoptium als JRE anbietet
@@ -820,6 +826,69 @@ def install_paper(version: str, target: str | os.PathLike, eula_accepted: bool,
     os.replace(tmp_eula, eula)
     return {"version": str(version), "build": filename, "jar": jar,
             "java_major": int(info["major"]), "java_flags": list(info["flags"])}
+
+
+# ---------------------------------------------------------------- Fabric (eigene Modpacks)
+
+def _fabric_pick(kind: str, game: str) -> str:
+    """Neueste **stabile** Loader- bzw. Installer-Version von Fabric (Fallback: die neueste)."""
+    if kind == "loader":
+        url = f"{FABRIC_META}/versions/loader/{urllib.parse.quote(game)}"
+    else:
+        url = f"{FABRIC_META}/versions/installer"
+    data = fetch_json(url, _FABRIC_HOSTS)
+    if not isinstance(data, list) or not data:
+        raise SourceError(f"Fabric nennt für Minecraft {game} keine {kind}-Version.")
+    best = ""
+    for entry in data:
+        node = ((entry or {}).get("loader") if kind == "loader" else entry) or {}
+        ver = str(node.get("version") or "")
+        if not _LOADER_VER_RE.fullmatch(ver):
+            continue
+        if node.get("stable"):
+            return ver                       # Liste ist neu-zuerst sortiert
+        if not best:
+            best = ver                       # ältester Notnagel: der neueste überhaupt
+    if best:
+        return best
+    raise SourceError(f"Fabric nennt für Minecraft {game} keine brauchbare {kind}-Version.")
+
+
+def install_fabric(version: str, target: str | os.PathLike, eula_accepted: bool,
+                   progress: Callable[[int, int], None] | None = None,
+                   status: Callable[[str], None] | None = None, jar: str = "server.jar",
+                   loader_version: str = "") -> dict:
+    """Den Fabric-Server-Launcher in den Instanzordner legen und die nötige Java-Version melden.
+
+    Anders als bei Paper laden wir **nicht** den fertigen Serverkern, sondern den kleinen
+    Fabric-Launcher aus der Meta-API; der holt beim ersten Start Vanilla und die Bibliotheken
+    selbst. Die Mods liegen bereits in ``mods/`` – sie sind über die Übertragung gekommen.
+    """
+    if not eula_accepted:
+        raise SourceError("Die Mojang-EULA muss im Programm bestätigt werden, "
+                          "bevor ein Server eingerichtet werden kann.")
+    if "/" in jar or "\\" in jar or not jar.endswith(".jar"):
+        raise ValueError("Der Name der Server-Datei muss auf .jar enden.")
+    game = check_version(version)
+    folder = pathlib.Path(target)
+    folder.mkdir(parents=True, exist_ok=True)
+    require_free_disk(512, folder)
+    loader = str(loader_version or "").strip()
+    if not _LOADER_VER_RE.fullmatch(loader):
+        loader = _fabric_pick("loader", game)
+    installer = _fabric_pick("installer", game)
+    url = (f"{FABRIC_META}/versions/loader/{urllib.parse.quote(game)}/"
+           f"{urllib.parse.quote(loader)}/{urllib.parse.quote(installer)}/server/jar")
+    if status:
+        status(f"Fabric-Launcher (Loader {loader}) wird geladen …")
+    download(_check_url(url, _FABRIC_HOSTS), folder / jar, progress, status, "", _FABRIC_HOSTS)
+    eula = folder / "eula.txt"
+    tmp_eula = eula.with_suffix(".tmp")
+    tmp_eula.write_text(EULA_TEXT, encoding="utf-8")
+    os.replace(tmp_eula, eula)
+    return {"version": str(game), "jar": jar, "loader": "fabric",
+            "loader_version": loader, "installer_version": installer,
+            "java_major": int(_guess_java_major(game)), "java_flags": []}
 
 
 # ---------------------------------------------------------------- Geyser, Floodgate, Via*
