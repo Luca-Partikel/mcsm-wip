@@ -143,6 +143,21 @@ class PortPoolTest(unittest.TestCase):
         self.assertIsNone(self.pool.lease("inst-a", ports.VOICE_POOL))
         self.assertEqual(self.pool.assignment("inst-a"), {"port": 25565})
 
+    def test_webpanel_bekommt_internen_port_nicht_in_firewall(self) -> None:
+        self.assertEqual(ports.requirements("java", webpanel=True),
+                         [(ports.JAVA_POOL, 1), (ports.WEBPANEL_POOL, 1)])
+        leases = self.pool.allocate_for("inst-a", "java", webpanel=True)
+        self.assertEqual(leases[ports.WEBPANEL_POOL].first, 8770)
+        self.assertEqual(self.pool.assignment("inst-a"), {"port": 25565, "webpanel_port": 8770})
+        # Der Webpanel-Bereich steht bewusst NICHT in der Firewall (nur nginx erreicht ihn).
+        self.assertNotIn((ports.TCP, 8770, 8869), ports.firewall_ranges())
+        self.assertIn((ports.TCP, 25565, 25700), ports.firewall_ranges())
+
+    def test_webpanel_und_voice_zusammen(self) -> None:
+        self.pool.allocate_for("inst-a", "java", voice=True, webpanel=True)
+        a = self.pool.assignment("inst-a")
+        self.assertEqual((a["port"], a["voice_port"], a["webpanel_port"]), (25565, 24454, 8770))
+
     def test_voller_bereich_meldet_sich_verstaendlich(self) -> None:
         # Bei 200 Spielerplätzen braucht jeder Bedrock-Server 64 UDP-Ports: in 19132-19300
         # passen zwei, der dritte darf nicht mehr durchkommen.

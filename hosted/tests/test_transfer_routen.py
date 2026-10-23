@@ -306,5 +306,51 @@ class ModpackBeschaffenTest(Basis):
         self.assertEqual((self.folder / "server.properties").read_bytes(), inhalt)
 
 
+class WebpanelConfigTest(unittest.TestCase):
+    """Webpanel-Erkennung und das Schreiben des [webpanel]-Abschnitts (reine Funktionen)."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        (self.dir / "mods").mkdir()
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_erkennung_ab_version_1(self) -> None:
+        (self.dir / "mods" / "psychohorror-1.0.3.jar").write_bytes(b"x")
+        self.assertTrue(mcsmd.has_webpanel_mod(self.dir))
+
+    def test_alte_beta_hat_kein_webpanel(self) -> None:
+        (self.dir / "mods" / "psychohorror-0.9.0-beta.1.jar").write_bytes(b"x")
+        self.assertFalse(mcsmd.has_webpanel_mod(self.dir))
+
+    def test_section_patch_setzt_werte_und_behaelt_rest(self) -> None:
+        cfg = self.dir / "config" / "psychohorror-common.toml"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text("[general]\n    enabled = true\n\n[webpanel]\n    enabled = false\n"
+                       "    port = 8765\n    bindAddress = \"\"\n    publicUrl = \"\"\n"
+                       "    sessionHours = 72\n", encoding="utf-8")
+        mcsmd.write_webpanel_config(self.dir, 8771, "https://keviony.arcardia-nexus.de")
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("enabled = true", text)
+        self.assertIn("port = 8771", text)
+        self.assertIn('bindAddress = "127.0.0.1"', text)
+        self.assertIn('publicUrl = "https://keviony.arcardia-nexus.de"', text)
+        self.assertIn("sessionHours = 72", text)       # übriges Feld bleibt
+        self.assertIn("[general]", text)               # anderer Abschnitt bleibt
+
+    def test_section_wird_angelegt_wenn_fehlt(self) -> None:
+        cfg = self.dir / "config" / "psychohorror-common.toml"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text("[general]\n    enabled = true\n", encoding="utf-8")
+        mcsmd.write_webpanel_config(self.dir, 8772, "https://x.arcardia-nexus.de")
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("[webpanel]", text)
+        self.assertIn("port = 8772", text)
+        self.assertIn('bindAddress = "127.0.0.1"', text)
+
+
 if __name__ == "__main__":
     unittest.main()

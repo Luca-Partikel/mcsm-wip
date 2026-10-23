@@ -177,6 +177,23 @@ chown -R root:root "$APP"
 chmod -R a+rX "$APP"
 chmod 0755 "$APP/deploy.sh" 2>/dev/null || true
 
+# ---------------------------------------------------------------- Webpanel-Helfer (HTTPS-vhost)
+# Der Daemon laeuft als mcsm und darf nicht an nginx/certbot. Dieser kleine root-Helfer legt fuer
+# einen Modpack-Server die HTTPS-vhost + das Zertifikat an; eine eng begrenzte sudoers-Regel
+# erlaubt mcsm genau dieses Skript als root.
+if [ -f "$APP/webpanel-proxy.sh" ]; then
+    say "Webpanel-Helfer wird installiert (/usr/local/sbin/mcsm-webpanel)."
+    tr -d '\r' < "$APP/webpanel-proxy.sh" > /usr/local/sbin/mcsm-webpanel
+    chown root:root /usr/local/sbin/mcsm-webpanel
+    chmod 0755 /usr/local/sbin/mcsm-webpanel
+    WPSUDO=/etc/sudoers.d/mcsm-webpanel
+    echo "mcsm ALL=(root) NOPASSWD: /usr/local/sbin/mcsm-webpanel" > "$WPSUDO.tmp"
+    if visudo -c -q -f "$WPSUDO.tmp" >/dev/null 2>&1; then
+        install -o root -g root -m 0440 "$WPSUDO.tmp" "$WPSUDO"
+    fi
+    rm -f "$WPSUDO.tmp"
+fi
+
 # ---------------------------------------------------------------- Selbsttests (wenn vorhanden)
 if [ -d "$APP/tests" ]; then
     say "Selbsttests werden als $USER ausgefuehrt."

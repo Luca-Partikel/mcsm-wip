@@ -40,6 +40,7 @@ import secrets
 import shutil
 import signal
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -1092,6 +1093,117 @@ def write_voicechat_config(folder: pathlib.Path, port: int, host: str) -> None:
     if host:
         updates["voice_host"] = f"{host}:{int(port)}"
     patch_properties(cfg, updates)
+
+
+# ---------------------------------------------------------------- psychohorror-Webpanel (HTTPS)
+#: Root-Helfer (nur über sudo erreichbar): legt die nginx-vhost + das Zertifikat an bzw. entfernt sie.
+WEBPANEL_HELPER = "/usr/local/sbin/mcsm-webpanel"
+#: Die psychohorror-Mod bringt das Webpanel ab Version 1.0 mit (davor gibt es den [webpanel]-Block nicht).
+_PSYCHO_VERSION_RE = re.compile(r"psychohorror-(\d+)\.(\d+)", re.I)
+
+
+def has_webpanel_mod(folder: pathlib.Path) -> bool:
+    """True, wenn im Modpack eine psychohorror-Version ≥ 1.0 steckt (die hat das Webpanel)."""
+    moddir = pathlib.Path(folder) / "mods"
+    if not moddir.is_dir():
+        return False
+    for f in moddir.glob("*.jar"):
+        m = _PSYCHO_VERSION_RE.match(f.name)
+        if m and (int(m.group(1)), int(m.group(2))) >= (1, 0):
+            return True
+    return False
+
+
+def _patch_toml_section(text: str, section: str, values: dict) -> str:
+    """Schlüssel innerhalb eines TOML-Abschnitts setzen; fehlt der Abschnitt, wird er angehängt.
+
+    ``values`` sind rohe TOML-Werte (Strings also schon in Anführungszeichen). Vorhandene Zeilen
+    werden ersetzt, fehlende direkt hinter der Abschnittsüberschrift ergänzt – Kommentare und
+    übrige Felder bleiben unangetastet. Die Mod ergänzt beim ersten Start den Rest."""
+    lines = text.split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*\[" + re.escape(section) + r"\]\s*$", line):
+            start = i
+            break
+    if start is None:
+        block = ["", "[%s]" % section] + ["    %s = %s" % (k, v) for k, v in values.items()]
+        return text.rstrip("\n") + "\n" + "\n".join(block) + "\n"
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if re.match(r"^\s*\[[^\]]+\]\s*$", lines[j]):
+            end = j
+            break
+    remaining = dict(values)
+    for k in range(start + 1, end):
+        m = re.match(r"^(\s*)([A-Za-z0-9_]+)(\s*=\s*).*$", lines[k])
+        if m and m.group(2) in remaining:
+            lines[k] = m.group(1) + m.group(2) + m.group(3) + str(remaining.pop(m.group(2)))
+    if remaining:
+        lines[start + 1:start + 1] = ["    %s = %s" % (k, v) for k, v in remaining.items()]
+    return "\n".join(lines)
+
+
+def write_webpanel_config(folder: pathlib.Path, port: int, public_url: str) -> None:
+    """Das Webpanel in der psychohorror-Config auf den internen Port + die HTTPS-Adresse stellen.
+
+    ``bindAddress = 127.0.0.1`` = nur der nginx-Reverse-Proxy auf demselben Rechner kommt heran;
+    von außen ist der Port nie offen. ``publicUrl`` ist der Link, den die Mod im Spiel zeigt."""
+    path = pathlib.Path(folder) / "config" / "psychohorror-common.toml"
+    values = {"enabled": "true", "port": str(int(port)),
+              "bindAddress": '"127.0.0.1"', "publicUrl": '"%s"' % public_url}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    except OSError:
+        text = ""
+    new = _patch_toml_section(text, "webpanel", values)
+    if not new.endswith("\n"):
+        new += "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".mcsmtmp")
+    tmp.write_text(new, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def webpanel_url(inst: dict) -> str:
+    """https://<marke>.<domain> – unter dieser Adresse erreichen Spieler das Webpanel."""
+    marke = str(inst.get("marke") or "").strip().lower()
+    return f"https://{marke}.{routen.domain()}" if marke else ""
+
+
+def _webpanel_proxy(marke: str, port: int) -> None:
+    """Den Root-Helfer aufrufen (nginx-vhost + Zertifikat) – im Hintergrund, da das Zertifikat
+    beim ersten Mal ein paar Sekunden dauert und den Start nicht aufhalten soll."""
+    try:
+        subprocess.run(["sudo", "-n", WEBPANEL_HELPER, "set", marke, str(int(port))],
+                       check=True, capture_output=True, text=True, timeout=180)
+        log_event(f"Webpanel bereit: https://{marke}.{routen.domain()} (intern 127.0.0.1:{port}).")
+    except (subprocess.SubprocessError, OSError) as exc:
+        err = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+        log_event(f"Webpanel-Proxy für „{marke}“ fehlgeschlagen: {err}")
+
+
+def webpanel_setup(inst: dict, folder: pathlib.Path, port: int) -> None:
+    """Config schreiben (vor dem Start) und die HTTPS-vhost anstoßen (im Hintergrund)."""
+    marke = ensure_marke(inst)
+    if not marke:
+        return
+    write_webpanel_config(folder, port, f"https://{marke}.{routen.domain()}")
+    threading.Thread(target=_webpanel_proxy, args=(marke, int(port)), daemon=True,
+                     name=f"webpanel-{marke}").start()
+
+
+def webpanel_remove(inst: dict) -> None:
+    """Die HTTPS-vhost eines Servers entfernen (beim Löschen oder Zurückholen)."""
+    marke = str(inst.get("marke") or "").strip().lower()
+    if not marke:
+        return
+    try:
+        subprocess.run(["sudo", "-n", WEBPANEL_HELPER, "remove", marke],
+                       check=True, capture_output=True, text=True, timeout=60)
+    except (subprocess.SubprocessError, OSError) as exc:
+        err = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+        log_event(f"Webpanel-vhost für „{marke}“ ließ sich nicht entfernen: {err}")
 
 
 def ensure_crossplay_chat(folder: pathlib.Path, geyser: bool) -> bool:
@@ -2782,6 +2894,8 @@ def h_server_delete(req: Req, iid: str):
     WECKER.freigeben(iid)               # der Bedrock-Port gehoert jetzt niemandem mehr
     POOL.release(iid)
     save_ports()
+    if folder.is_dir() and has_webpanel_mod(folder):
+        webpanel_remove(inst)           # die HTTPS-vhost dieser Subdomain abräumen
     removed = {"deleted": False}
     if folder.is_dir():
         try:
@@ -2839,13 +2953,18 @@ def start_instanz(inst: dict) -> tuple:
             # Bedrock-Spieler herein. Die Sperre im Wecker hält ihn bis zum Ende des Servers
             # von diesem Port fern (`on_runner_exit` hebt sie auf).
             WECKER.freigeben(iid)
-            voice = ist_modpack_instanz(inst) and has_voicechat_mod(folder)
+            modpack = ist_modpack_instanz(inst)
+            voice = modpack and has_voicechat_mod(folder)
+            webpanel = modpack and has_webpanel_mod(folder)
             POOL.allocate_for(iid, kind, geyser=geyser, max_players=max_players_of(folder),
-                              voice=voice)
+                              voice=voice, webpanel=webpanel)
             assignment = POOL.assignment(iid)
             apply_ports(inst, folder, assignment, geyser)
             mirror_ports(inst, assignment)
             ensure_marke(inst)
+            if assignment.get("webpanel_port"):
+                webpanel_setup(instances.get_instance(iid) or inst, folder,
+                               int(assignment["webpanel_port"]))
             # Vor jedem Start: Bedrock-Spieler müssen im Chat schreiben dürfen, und ohne eigenes
             # Bild bekommt der Server das Standardbild für die Serverliste.
             if ensure_crossplay_chat(folder, geyser):
@@ -3754,6 +3873,9 @@ def h_pull(req: Req, iid: str):
                        f"eine Rückholung ist da nicht vorgesehen.", 409)
     POOL.release(iid)
     save_ports()
+    folder = instance_dir(inst)
+    if folder.is_dir() and has_webpanel_mod(folder):
+        webpanel_remove(inst)           # die HTTPS-vhost gibt die Subdomain wieder frei
     _woken_vergessen(iid)
     schreibe_routen(f"Instanz {iid} wird zurückgeholt")
     return {"server": server_view(instances.get_instance(iid) or inst)}

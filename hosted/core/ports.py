@@ -34,6 +34,10 @@ BEDROCK_POOL = "bedrock"
 #: Simple Voice Chat (eigene Modpacks): ein eigener UDP-Port je Server. Der Mod bindet ihn direkt,
 #: die Firewall öffnet den Bereich; der Verteiler ist dafür nicht nötig (reiner UDP-Durchgang).
 VOICE_POOL = "voice"
+#: psychohorror-Webpanel (eigene Modpacks): ein **interner** TCP-Port je Server. Die Mod lauscht nur
+#: auf 127.0.0.1, nginx terminiert HTTPS und reicht an diesen Port weiter – der Port ist von außen
+#: nie offen (nicht in der Firewall), erreichbar ist nur https://<marke>.<domain>.
+WEBPANEL_POOL = "webpanel"
 
 # BDS bindet pro Spieler-Sitzung einen eigenen UDP-Port aus `server-udp-ports` – deshalb wächst
 # der Block mit max-players (wie im lokalen Programm, mindestens 16 Ports).
@@ -90,12 +94,19 @@ POOLS: dict[str, PortRange] = {
     JAVA_POOL: PortRange(JAVA_POOL, TCP, 25565, 25700),
     BEDROCK_POOL: PortRange(BEDROCK_POOL, UDP, 19132, 19300),
     VOICE_POOL: PortRange(VOICE_POOL, UDP, 24454, 24553),
+    WEBPANEL_POOL: PortRange(WEBPANEL_POOL, TCP, 8770, 8869),
 }
+
+#: Pools, die von außen erreichbar sein müssen und darum in der Firewall offen stehen. Der
+#: Webpanel-Pool gehört bewusst **nicht** dazu – er ist nur lokal (nginx terminiert HTTPS).
+PUBLIC_POOLS = (JAVA_POOL, BEDROCK_POOL, VOICE_POOL)
 
 
 def firewall_ranges() -> list[tuple[str, int, int]]:
-    """[(proto, erster, letzter)] – für die Firewall-Regeln des Root-Servers."""
-    return [(r.proto, r.first, r.last) for r in POOLS.values()]
+    """[(proto, erster, letzter)] – für die Firewall-Regeln des Root-Servers.
+
+    Nur die öffentlich erreichbaren Pools; interne Pools (Webpanel) bleiben außen vor."""
+    return [(POOLS[name].proto, POOLS[name].first, POOLS[name].last) for name in PUBLIC_POOLS]
 
 
 def udp_block_size(max_players: int | None = 10) -> int:
@@ -110,12 +121,13 @@ def udp_block_size(max_players: int | None = 10) -> int:
 
 
 def requirements(kind: str, *, geyser: bool = False, max_players: int = 10,
-                 voice: bool = False) -> list[tuple[str, int]]:
+                 voice: bool = False, webpanel: bool = False) -> list[tuple[str, int]]:
     """Welche Pools eine Instanz mit wie vielen Ports braucht: [(pool, anzahl), …].
 
     * Java ohne Crossplay: ein TCP-Port.
     * Java mit Geyser: ein TCP-Port + ein UDP-Port für Bedrock-Spieler.
     * Java-Modpack mit Simple Voice Chat: zusätzlich ein UDP-Port für den Sprach-Chat.
+    * Java-Modpack mit psychohorror-Webpanel: zusätzlich ein interner TCP-Port (nur nginx).
     * Bedrock (BDS mit NetherNet): ein TCP-Port für den Verbindungsaufbau + ein UDP-Block
       für die Spieldaten.
     """
@@ -126,6 +138,8 @@ def requirements(kind: str, *, geyser: bool = False, max_players: int = 10,
             needs.append((BEDROCK_POOL, 1))
         if voice:
             needs.append((VOICE_POOL, 1))
+        if webpanel:
+            needs.append((WEBPANEL_POOL, 1))
         return needs
     if kind == KIND_BEDROCK:
         return [(JAVA_POOL, 1), (BEDROCK_POOL, udp_block_size(max_players))]
@@ -318,10 +332,12 @@ class PortPool:
             "es laufen zu viele Server auf dieser Maschine.")
 
     def allocate_for(self, owner: str, kind: str, *, geyser: bool = False,
-                     max_players: int = 10, voice: bool = False) -> dict[str, PortLease]:
+                     max_players: int = 10, voice: bool = False,
+                     webpanel: bool = False) -> dict[str, PortLease]:
         """Alle Ports einer Instanz in einem Schritt buchen (alles oder nichts)."""
         owner = _check_owner(owner)
-        needs = requirements(kind, geyser=geyser, max_players=max_players, voice=voice)
+        needs = requirements(kind, geyser=geyser, max_players=max_players, voice=voice,
+                             webpanel=webpanel)
         keep = {ls.pool: ls for ls in self.leases(owner)}
         with self._lock:
             done: dict[str, PortLease] = {}
@@ -361,6 +377,7 @@ class PortPool:
         java = self.lease(owner, JAVA_POOL)
         bedrock = self.lease(owner, BEDROCK_POOL)
         voice = self.lease(owner, VOICE_POOL)
+        webpanel = self.lease(owner, WEBPANEL_POOL)
         if java is not None:
             out["port"] = java.first
         if bedrock is not None:
@@ -370,6 +387,8 @@ class PortPool:
                 out["udp_last"] = bedrock.last
         if voice is not None:
             out["voice_port"] = voice.first
+        if webpanel is not None:
+            out["webpanel_port"] = webpanel.first
         return out
 
     # ---------------------------------------------------------------- Speichern und Laden
