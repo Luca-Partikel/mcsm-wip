@@ -72,9 +72,19 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer" always;
 
+    # Schläft der Server, lauscht niemand auf dem Port -> freundliche Seite statt rohem 502.
+    # Wichtig: die error_page-Regel muss **in** location / stehen, damit sie den Proxy-Fehler fängt.
+    location @mcsm_asleep {
+        default_type text/html;
+        return 503 '<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Server schläft</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f1115;color:#e6e8ec;font-family:system-ui,"Segoe UI",Roboto,sans-serif}.b{max-width:460px;padding:32px;text-align:center}.z{font-size:3rem;line-height:1}h1{font-size:1.35rem;margin:.6rem 0 .4rem}p{color:#9aa0a8;line-height:1.55;margin:.4rem 0 0}</style></head><body><div class="b"><div class="z">&#128564;</div><h1>Der Server schl&auml;ft gerade</h1><p>Tritt dem Server in Minecraft bei &ndash; dann wacht er automatisch auf. Sobald er l&auml;uft, ist auch dieses Webpanel wieder da. Danach einfach neu laden.</p></div></body></html>';
+    }
+
     location / {
         proxy_pass http://127.0.0.1:$port;
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @mcsm_asleep;
         proxy_http_version 1.1;
+        proxy_connect_timeout 3s;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
