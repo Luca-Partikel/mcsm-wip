@@ -3398,6 +3398,48 @@ function hostedFilesTab(s, r) {
 
 /* ---------- Einstellungen: Instanz auf dem Root und server.properties */
 
+/** Versionen vergleichen: "26.3" > "26.2", "1.21.51.2" > "1.21.50". >0 wenn a neuer als b. */
+function cmpVer(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/** Versions-Update eines Root-Servers: neuere Versionen laden, Knopf verdrahten. */
+async function bindHostedVersionUpdate(s, r) {
+  const sel = $('#hsVersion'); const btn = $('#hsUpdateBtn'); const hint = $('#hsUpdateHint');
+  if (!sel || !btn) return;
+  const kind = (r.type || s.type) === 'bedrock' ? 'bedrock' : 'java';
+  const cur = String(r.version || s.version || '');
+  await loadVersions(kind);
+  const list = state.versions[kind];
+  if (!Array.isArray(list)) { sel.innerHTML = '<option value="">Versionen nicht ladbar</option>'; return; }
+  const newer = list.filter((v) => cmpVer(v, cur) > 0);
+  if (!newer.length) { sel.innerHTML = `<option value="">Schon aktuell (${esc(cur)})</option>`; btn.disabled = true; return; }
+  sel.innerHTML = newer.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  btn.disabled = false;
+  btn.onclick = async () => {
+    const version = sel.value;
+    if (!version) return;
+    if (!(await askConfirm({
+      tone: 'danger', title: `Auf Version ${version} aktualisieren?`, confirmText: 'Aktualisieren',
+      text: `„${s.name}" wird auf dem Root-Server auf ${version} gehoben. Welt und Einstellungen bleiben – `
+        + 'nur der Serverkern wird neu geholt. Achtung: Nach dem ersten Start mit der neuen Version lässt '
+        + 'sich die Welt oft nicht mehr mit der alten Version öffnen.',
+    }))) return;
+    btn.disabled = true; if (hint) hint.textContent = 'wird angemeldet …';
+    try {
+      const resp = await api(`servers/${s.id}/update`, { method: 'POST', body: { version } });
+      state.install = { serverId: s.id, jobId: resp.job_id, job: null, after: 'overview' };
+      state.view = 'install'; render(); pollJob();
+    } catch (e) { toast(e.message, true); btn.disabled = false; if (hint) hint.textContent = ''; }
+  };
+}
+
 function hostedSettings(s, r) {
   const set = state.hosted.settings || {};
   const d = cloudData();
@@ -3454,6 +3496,21 @@ function hostedSettings(s, r) {
   </div>
   <div class="btn-row"><button class="btn btn-primary" id="hsSave">Einstellungen speichern</button>
     <span class="muted small" id="hsHint"></span></div>
+
+  ${isModpack(s) ? `<div class="note note-info" style="margin-top:16px">Dieses <b>Modpack</b> aktualisierst du,
+    indem du eine neue Modpack-ZIP importierst – die Mods müssen zur neuen Minecraft-Version passen.</div>`
+  : `<div class="card" style="margin-top:16px">
+      <div class="card-head"><h3 style="margin:0">⬆ Minecraft-Version aktualisieren</h3>
+        <span class="muted small">aktuell <b>${esc(r.version || s.version || '?')}</b></span></div>
+      ${laeuft ? '<div class="note note-warn mb0">Stoppe den Server, um die Version zu wechseln.</div>'
+      : `<div class="field"><label for="hsVersion">Neue Version</label>
+          <select id="hsVersion"><option value="">wird geladen …</option></select></div>
+        <div class="note note-warn mb0">Welt und Einstellungen bleiben – nur der Serverkern wird neu geholt.
+          <b>Achtung:</b> Nach dem ersten Start mit einer neueren Version lässt sich die Welt oft <b>nicht mehr</b>
+          mit der alten öffnen. Willst du auf Nummer sicher gehen, hol dir vorher über „Zurückholen" eine Kopie.</div>
+        <div class="btn-row"><button class="btn btn-primary" id="hsUpdateBtn" disabled>Aktualisieren</button>
+          <span class="muted small" id="hsUpdateHint"></span></div>`}
+    </div>`}
 
   <details class="opt-block">
     <summary class="opt-sum">
@@ -3665,6 +3722,7 @@ function bindHostedServer(s) {
     if (!state.hosted.props) loadHostedProps(s);
     else { const box = $('#hostedProps'); if (box) { box.innerHTML = hostedPropsBox(!!r.running); bindHostedProps(s); } }
     bindIcon(s, true, r.running ? 'Der Server auf dem Root-Server läuft – bitte zuerst stoppen.' : '');
+    if (!isModpack(s) && !r.running) bindHostedVersionUpdate(s, r);
   }
 
   // Beim ersten Öffnen ist noch kein Stand da (die Cloud-Liste kommt nur jede Minute) – einmal

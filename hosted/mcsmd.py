@@ -4039,6 +4039,46 @@ def h_job(req: Req, jid: str):
     return {"job": dict(job)}
 
 
+@route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/update$")
+def h_server_update(req: Req, iid: str):
+    """Einen gehosteten Server auf eine neue Minecraft-Version heben.
+
+    Anders als „Einrichten“ bleiben Welt **und** ``server.properties`` unangetastet – es wird nur
+    der Serverkern (Paper/Bedrock) in der neuen Version geholt (`_kern_beschaffen_worker`). Modpacks
+    gehen diesen Weg bewusst nicht: ihre Mods müssen zur neuen Version passen, das macht man über
+    einen neuen Import.
+    """
+    inst = req.instance(iid)
+    data = req.json()
+    if str(inst.get("state")) not in ("hosted", "suspended"):
+        raise ApiError(f"„{inst.get('name')}“ liegt gerade nicht auf dem Root-Server.", 409)
+    run = REGISTRY.find(iid)
+    if (run is not None and run.running) or instances.is_running(inst):
+        raise ApiError(f"„{inst.get('name')}“ läuft noch – bitte zuerst stoppen.", 409)
+    if not bool(data.get("eula")):
+        raise ApiError("Die Mojang-EULA muss im Programm bestätigt werden, bevor aktualisiert "
+                       "werden kann.", 400)
+    if ist_modpack_instanz(inst):
+        raise ApiError("Ein Modpack lässt sich so nicht aktualisieren – die Mods müssen zur neuen "
+                       "Minecraft-Version passen. Importiere dafür eine neue Modpack-ZIP.", 400)
+    version = str(data.get("version") or "").strip()
+    if not version:
+        raise ApiError("Es fehlt die neue Minecraft-Version.", 400)
+    if str(inst.get("type")) != "bedrock":
+        try:
+            version = sources_linux.check_version(version)
+        except sources_linux.SourceError as exc:
+            raise ApiError(str(exc), 400) from exc
+    if version == str(inst.get("version") or ""):
+        raise ApiError(f"„{inst.get('name')}“ läuft bereits auf {version}.", 400)
+    geyser = has_geyser(ensure_instance_dir(inst))
+    job = job_new_exclusive("update", iid, owner=str(inst.get("owner") or ""))
+    thread = threading.Thread(target=_kern_beschaffen_worker, args=(dict(inst), version, geyser, job),
+                              daemon=True, name=f"update-{iid}")
+    thread.start()
+    return 202, {"job": dict(job)}
+
+
 @route("POST", r"^/api/servers/([A-Za-z0-9._-]{1,64})/install$")
 def h_install(req: Req, iid: str):
     inst = req.instance(iid)

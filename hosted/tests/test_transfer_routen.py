@@ -352,5 +352,84 @@ class WebpanelConfigTest(unittest.TestCase):
         self.assertIn('bindAddress = "127.0.0.1"', text)
 
 
+class ServerUpdateTest(Basis):
+    """/update hebt einen gehosteten Server auf eine neue Version (Welt/Einstellungen bleiben)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token, self.uid = self.make_user()
+        self.server = self.make_server(self.token)            # Paper, Version 1.21.1
+        self.folder = mcsmd.sources_linux.users_dir() / self.uid / self.server["id"]
+        self.gerufen: dict = {}
+        self.echt = {"ensure_java": mcsmd.sources_linux.ensure_java,
+                     "install_paper": mcsmd.sources_linux.install_paper,
+                     "install_crossplay": mcsmd.sources_linux.install_crossplay}
+
+        def ensure_java(major, progress=None, status=None):
+            return pathlib.Path("/kein/java")
+
+        def install_paper(version, target, eula, progress=None, status=None, jar="server.jar"):
+            self.gerufen["paper"] = str(version)
+            pfad = pathlib.Path(target) / jar
+            pfad.parent.mkdir(parents=True, exist_ok=True)
+            pfad.write_bytes(b"Paper")
+            return {"version": str(version), "build": "paper-1.jar", "jar": jar,
+                    "java_major": 21, "java_flags": []}
+
+        def install_crossplay(target, progress=None, status=None):
+            return {}
+
+        mcsmd.sources_linux.ensure_java = ensure_java
+        mcsmd.sources_linux.install_paper = install_paper
+        mcsmd.sources_linux.install_crossplay = install_crossplay
+
+    def tearDown(self) -> None:
+        for name, fn in self.echt.items():
+            setattr(mcsmd.sources_linux, name, fn)
+        super().tearDown()
+
+    def _warte(self, job_id: str) -> dict:
+        ende = time.time() + 20
+        while time.time() < ende:
+            status, antwort = self.call("GET", f"/api/jobs/{job_id}", token=self.token)
+            stand = antwort.get("job") or {}
+            if stand.get("state") != "läuft":
+                return stand
+            time.sleep(0.1)
+        return {}
+
+    def test_update_holt_neuen_kern_und_setzt_version(self):
+        self.set_state(self.server["id"], "hosted")
+        status, data = self.call("POST", f"/api/servers/{self.server['id']}/update",
+                                 {"version": "1.21.11", "eula": True}, token=self.token)
+        self.assertEqual(status, 202, data)
+        stand = self._warte(data["job"]["id"])
+        self.assertEqual(stand.get("state"), "fertig", stand)
+        self.assertEqual(self.gerufen.get("paper"), "1.21.11")
+        _, ansicht = self.call("GET", f"/api/servers/{self.server['id']}", token=self.token)
+        self.assertEqual((ansicht.get("server") or {}).get("version"), "1.21.11")
+
+    def test_gleiche_version_abgelehnt(self):
+        self.set_state(self.server["id"], "hosted")
+        status, data = self.call("POST", f"/api/servers/{self.server['id']}/update",
+                                 {"version": "1.21.1", "eula": True}, token=self.token)
+        self.assertEqual(status, 400, data)
+
+    def test_ohne_eula_abgelehnt(self):
+        self.set_state(self.server["id"], "hosted")
+        status, data = self.call("POST", f"/api/servers/{self.server['id']}/update",
+                                 {"version": "1.21.11"}, token=self.token)
+        self.assertEqual(status, 400, data)
+
+    def test_modpack_abgelehnt(self):
+        token, uid = self.make_user("Mara")
+        pack = self.make_server(token, name="Modpack-U", flavor="fabric")
+        self.set_state(pack["id"], "hosted")
+        status, data = self.call("POST", f"/api/servers/{pack['id']}/update",
+                                 {"version": "1.21.11", "eula": True}, token=token)
+        self.assertEqual(status, 400, data)
+        self.assertIn("Modpack", str(data))
+
+
 if __name__ == "__main__":
     unittest.main()

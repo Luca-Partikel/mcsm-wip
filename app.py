@@ -311,6 +311,43 @@ def api_reinstall(body, _query, server_id: str = "") -> dict:
     return {"job_id": job["id"], "safety_backup": gesichert}
 
 
+def api_server_update(body, _query, server_id: str = "") -> dict:
+    """Einen Server auf eine neue Minecraft-Version heben – lokal oder auf dem Root-Server.
+
+    Welt und Einstellungen bleiben; nur der Serverkern (Paper/Bedrock) wird in der neuen Version
+    geholt. Modpacks gehen diesen Weg bewusst nicht – ihre Mods müssen zur neuen Version passen.
+    """
+    cfg = _require(store.get(server_id))
+    version = str((body or {}).get("version") or "").strip()
+    if not version:
+        raise ApiError("Bitte eine Zielversion wählen.")
+    if store.is_modpack(cfg):
+        raise ApiError("Ein Modpack aktualisierst du, indem du eine neue Modpack-ZIP importierst – "
+                       "die Mods müssen zur neuen Minecraft-Version passen.")
+    if version == str(cfg.get("version") or ""):
+        raise ApiError(f"„{cfg['name']}“ läuft schon auf Version {version}.")
+    if cloud.locked(cfg):
+        # Auf dem Root-Server: der Daemon holt den neuen Kern (Welt/Einstellungen bleiben).
+        job = cloud.remote_update(cfg, version)
+        return {"job_id": job["id"], "server_id": cfg["id"], "hosted": True}
+    # Lokal: vor dem Versionswechsel einmal sichern, dann neu installieren (Welt + Properties bleiben).
+    _no_job(server_id)
+    if manager.is_running(server_id):
+        raise ApiError("Bitte den Server zuerst stoppen.")
+    updated = _sanitize(dict(cfg, version=version), existing=cfg)
+    gesichert = None
+    if cfg.get("installed"):
+        try:
+            ziel = backups.pack_now(cfg, "vor-update")
+            if ziel is not None:
+                gesichert = ziel.name
+        except Exception:                             # noqa: BLE001 – Sicherung darf das Update nie blockieren
+            log.exception("Sicherung vor Versionswechsel fehlgeschlagen")
+    store.save(updated)
+    job = manager.install_async(updated)
+    return {"job_id": job["id"], "server_id": cfg["id"], "hosted": False, "safety_backup": gesichert}
+
+
 def api_start(_body, _query, server_id: str = "") -> dict:
     cfg = _require(store.get(server_id))
     _no_job(server_id)
@@ -1900,6 +1937,7 @@ ROUTES = {
 SERVER_ROUTES = {
     ("POST", "settings"): api_settings,
     ("POST", "reinstall"): api_reinstall,
+    ("POST", "update"): api_server_update,
     ("POST", "start"): api_start,
     ("POST", "stop"): api_stop,
     ("POST", "restart"): api_restart,

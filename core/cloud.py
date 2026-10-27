@@ -1985,6 +1985,36 @@ def _warte_auf_kern(job: dict, rid: str, kern_job) -> None:
         time.sleep(2)
 
 
+def remote_update(cfg: dict, version: str) -> dict:
+    """Einen gehosteten Server auf eine neue Minecraft-Version heben – als Job, der den Root-Job
+    verfolgt. Welt und Einstellungen bleiben; nur der Serverkern wird in der neuen Version geholt."""
+    if not logged_in():
+        raise AuthError("Bitte zuerst am Root-Server anmelden.")
+    rid = str(link_of(cfg).get("instance") or "")
+    if not rid:
+        raise CloudError(f"„{cfg['name']}“ liegt nicht auf dem Root-Server.")
+    version = str(version or "").strip()
+    if not version:
+        raise CloudError("Es fehlt die neue Minecraft-Version.")
+    job = manager.new_job(cfg["id"], ["Aktualisierung anmelden", "Serverkern holen"])
+    return manager._run_job(job, lambda: _update_work(job, cfg, rid, version))     # noqa: SLF001
+
+
+def _update_work(job: dict, cfg: dict, rid: str, version: str) -> None:
+    manager._step(job, 0, f"Aktualisierung auf {version} wird angemeldet …")       # noqa: SLF001
+    data = _api("POST", f"/api/servers/{urllib.parse.quote(rid)}/update",
+                body={"version": version, "eula": True}, timeout=120)
+    manager._step(job, 1, "Der Root-Server holt den neuen Serverkern …")           # noqa: SLF001
+    _warte_auf_kern(job, rid, data.get("job"))
+    fresh = store.get(cfg["id"]) or cfg
+    fresh = dict(fresh)
+    fresh["version"] = version
+    store.save(fresh)
+    _set_link(cfg, instance=rid)
+    _drop_cache()
+    log.info("Server „%s“ auf dem Root-Server auf Version %s aktualisiert.", cfg["name"], version)
+
+
 def _upload_runde(rid: str, sid: str, folder: pathlib.Path, index: dict, offen: list,
                   fortschritt: _Fortschritt, local_id: str, session: dict) -> None:
     """Eine Runde: alle offenen Dateien schicken – kleine gebündelt, mehrere gleichzeitig."""
