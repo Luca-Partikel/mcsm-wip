@@ -477,6 +477,7 @@ class Broadcaster:
         self.exit_code: int | None = None
         self.state = self._frisch()
         self.started_sig: tuple = ()
+        self.started_jar: pathlib.Path | None = None   # welche MCXboxBroadcast-Jar gerade läuft
         self._buf_lock = threading.Lock()
         self._proc_lock = threading.RLock()
 
@@ -571,6 +572,7 @@ class Broadcaster:
             self.exit_code = None
             self.state = self._frisch()
             self.started_sig = spec.signature
+            self.started_jar = pathlib.Path(jar)
             self.log("[Manager] Starte Xbox-Freunde-Modus (MCXboxBroadcast) …")
             cmd = build_command(spec, jar, java)
             env = build_env(spec)

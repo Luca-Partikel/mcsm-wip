@@ -1795,6 +1795,10 @@ def xbox_neustart_faellig(bot) -> str:
         return f"der Bedrock-Port hat sich geändert ({alt.port} → {neu.port})"
     if str(alt.address) != str(neu.address):
         return f"die beworbene Adresse hat sich geändert ({alt.address} → {neu.address})"
+    neueste = xbox.cached_jar()
+    if neueste is not None and bot.started_jar is not None \
+            and neueste.name != bot.started_jar.name:
+        return f"eine neuere Version des Freunde-Bots ist da ({bot.started_jar.name} → {neueste.name})"
     return ""
 
 
@@ -1844,6 +1848,38 @@ def bedrock_ziel_fuer(inst: dict, *, frei: int | None = None,
         wecken=wecken)
 
 
+#: Höchstens so selten prüft der Dienst auf eine neuere MCXboxBroadcast-Jar (etwa täglich).
+XBOX_JAR_INTERVALL = 20 * 3600
+_xbox_jar_check = {"at": 0.0}
+_xbox_jar_lock = threading.Lock()
+
+
+def xbox_jar_auffrischen() -> None:
+    """Die neueste MCXboxBroadcast-Jar holen – höchstens einmal am Tag, im Hintergrund.
+
+    Der Bot nimmt sie beim nächsten Start (``xbox.cached_jar``); ``konsolen_abgleichen`` meldet einen
+    laufenden Bot neu an, sobald eine neuere Jar da ist (``xbox_neustart_faellig``). So aktualisiert
+    sich der Xbox-Freunde-Modus von selbst, ohne dass jemand etwas neu einrichten muss.
+    """
+    now = time.time()
+    with _xbox_jar_lock:
+        if now - _xbox_jar_check["at"] < XBOX_JAR_INTERVALL:
+            return
+        _xbox_jar_check["at"] = now
+
+    def holen() -> None:
+        try:
+            vorher = xbox.cached_jar()
+            jar = xbox.ensure_jar()
+            if vorher is None or vorher.name != jar.name:
+                log_event(f"MCXboxBroadcast aktualisiert: {jar.name} – laufende Bots werden beim "
+                          f"nächsten Abgleich neu angemeldet.")
+        except Exception as exc:                                        # noqa: BLE001
+            log_event(f"MCXboxBroadcast ließ sich nicht aktualisieren: {exc}")
+
+    threading.Thread(target=holen, daemon=True, name="xbox-jar-update").start()
+
+
 def konsolen_abgleichen(now: int | None = None) -> dict:
     """Xbox-Bots und Bedrock-Wecker auf den wirklichen Zustand bringen.
 
@@ -1886,6 +1922,8 @@ def konsolen_abgleichen(now: int | None = None) -> dict:
             _xbox_fehlversuch_setzen(iid, "")   # frischer Anlauf, sobald er wieder darf
             continue
         soll.append(inst)
+    if XBOX.running_ids():
+        xbox_jar_auffrischen()      # nur wenn Bots laufen; höchstens täglich; hält sie aktuell
     wecker = WECKER.abgleichen(ziele)
 
     gestartet: list = []

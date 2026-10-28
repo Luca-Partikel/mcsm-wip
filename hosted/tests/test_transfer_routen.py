@@ -431,5 +431,24 @@ class ServerUpdateTest(Basis):
         self.assertIn("Modpack", str(data))
 
 
+class XboxJarUpdateTest(unittest.TestCase):
+    """Der Freunde-Bot wird neu angemeldet, sobald eine neuere MCXboxBroadcast-Jar da ist."""
+
+    def test_neustart_nur_bei_neuerer_jar(self):
+        import types
+        spec = types.SimpleNamespace(port=19132, address="x.arcardia-nexus.de")
+        bot = types.SimpleNamespace(active_spec=spec, spec=spec,
+                                    started_jar=pathlib.Path("/c/MCXboxBroadcastStandalone-156.jar"))
+        orig = mcsmd.xbox.cached_jar
+        try:
+            mcsmd.xbox.cached_jar = lambda: pathlib.Path("/c/MCXboxBroadcastStandalone-157.jar")
+            self.assertIn("neuere Version", mcsmd.xbox_neustart_faellig(bot))
+            # Gleiche Jar -> kein Neustart (nicht wegen Kosmetik neu anmelden).
+            mcsmd.xbox.cached_jar = lambda: pathlib.Path("/c/MCXboxBroadcastStandalone-156.jar")
+            self.assertEqual(mcsmd.xbox_neustart_faellig(bot), "")
+        finally:
+            mcsmd.xbox.cached_jar = orig
+
+
 if __name__ == "__main__":
     unittest.main()
