@@ -950,13 +950,15 @@ def install_crossplay(target: str | os.PathLike,
         if status:
             status(f"{project} wird geladen …")
         url, _name, sha = geyser_download(project, flavor)
-        download(url, plugins / name, progress, status, sha, _GEYSER_HOSTS)
+        # cached_download überspringt, wenn die vorhandene Jar schon zur Prüfsumme passt – ein
+        # täglicher Auffrisch-Lauf lädt so nur, was sich wirklich geändert hat (Geyser ist 50 MB).
+        cached_download(url, plugins / name, sha, progress, status, _GEYSER_HOSTS)
         out[name] = sha
     for project in ("ViaVersion", "ViaBackwards"):
         if status:
             status(f"{project} wird geladen …")
         url, version, sha = hangar_download(project)
-        download(url, plugins / f"{project}.jar", progress, status, sha, _HANGAR_HOSTS)
+        cached_download(url, plugins / f"{project}.jar", sha, progress, status, _HANGAR_HOSTS)
         out[f"{project}.jar"] = version
     return out
 

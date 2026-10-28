@@ -1880,6 +1880,52 @@ def xbox_jar_auffrischen() -> None:
     threading.Thread(target=holen, daemon=True, name="xbox-jar-update").start()
 
 
+_crossplay_check = {"at": 0.0}
+_crossplay_lock = threading.Lock()
+
+
+def crossplay_plugins_auffrischen() -> None:
+    """Höchstens einmal am Tag die neuesten Geyser/Floodgate/Via*-Plugins in die Ordner der
+    Crossplay-Server legen. ``cached_download`` lädt nur geänderte Jars. Ein laufender Server
+    übernimmt sie beim nächsten (Ruhezustand-)Neustart – niemand wird dafür aus dem Spiel geworfen.
+
+    Der allererste Durchlauf lädt nichts (nur den Zeitpunkt merken): So macht weder ein frischer
+    Dienststart noch ein Selbsttest gleich einen Netzzugriff.
+    """
+    now = time.time()
+    with _crossplay_lock:
+        if _crossplay_check["at"] == 0.0:
+            _crossplay_check["at"] = now
+            return
+        if now - _crossplay_check["at"] < XBOX_JAR_INTERVALL:
+            return
+        _crossplay_check["at"] = now
+
+    def holen() -> None:
+        aktualisiert = 0
+        for inst in instances.all_instances():
+            if str(inst.get("state")) not in ("hosted", "suspended"):
+                continue
+            if str(inst.get("type")) == "bedrock":
+                continue
+            folder = instance_dir(inst)
+            if not has_geyser(folder):
+                continue
+            try:
+                sources_linux.install_crossplay(folder)
+                _grant_group(folder / "plugins",
+                             isolation.user_for_owner(str(inst.get("owner") or "")),
+                             str(inst.get("id") or ""))
+                aktualisiert += 1
+            except Exception as exc:                                    # noqa: BLE001
+                log_event(f"Crossplay-Plugins für {inst.get('id')} nicht aktualisiert: {exc}")
+        if aktualisiert:
+            log_event(f"Crossplay-Plugins von {aktualisiert} Server(n) auf den neuesten Stand "
+                      f"geprüft (wirkt beim nächsten Neustart).")
+
+    threading.Thread(target=holen, daemon=True, name="crossplay-update").start()
+
+
 def konsolen_abgleichen(now: int | None = None) -> dict:
     """Xbox-Bots und Bedrock-Wecker auf den wirklichen Zustand bringen.
 
@@ -1924,6 +1970,7 @@ def konsolen_abgleichen(now: int | None = None) -> dict:
         soll.append(inst)
     if XBOX.running_ids():
         xbox_jar_auffrischen()      # nur wenn Bots laufen; höchstens täglich; hält sie aktuell
+    crossplay_plugins_auffrischen()  # Geyser/Via* der Crossplay-Server höchstens täglich auffrischen
     wecker = WECKER.abgleichen(ziele)
 
     gestartet: list = []
