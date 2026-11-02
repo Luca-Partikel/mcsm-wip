@@ -478,6 +478,7 @@ class Broadcaster:
         self.state = self._frisch()
         self.started_sig: tuple = ()
         self.started_jar: pathlib.Path | None = None   # welche MCXboxBroadcast-Jar gerade läuft
+        self.last_online = 0.0        # zuletzt eine gültige Xbox-Sitzung gemeldet (Zeitstempel)
         self._buf_lock = threading.Lock()
         self._proc_lock = threading.RLock()
 
@@ -573,6 +574,7 @@ class Broadcaster:
             self.state = self._frisch()
             self.started_sig = spec.signature
             self.started_jar = pathlib.Path(jar)
+            self.last_online = 0.0        # beim Start zurücksetzen – die Anlaufzeit zählt ab jetzt
             self.log("[Manager] Starte Xbox-Freunde-Modus (MCXboxBroadcast) …")
             cmd = build_command(spec, jar, java)
             env = build_env(spec)
@@ -617,6 +619,7 @@ class Broadcaster:
                 st["state"] = "starting"
         if ONLINE_RE.search(line):
             st.update(state="online", code="", url="", authed=True, error="")
+            self.last_online = time.time()   # Sitzung frisch – der Gesundheits-Check zählt neu
             return
         # Stacktrace-Zeilen und der harmlose Ping-Fehler sind keine Meldung für die Oberfläche.
         if IGNORE_RE.search(line) or line.startswith(("\tat ", "\t... ", "java.", "Caused by")):

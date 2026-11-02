@@ -450,5 +450,37 @@ class XboxJarUpdateTest(unittest.TestCase):
             mcsmd.xbox.cached_jar = orig
 
 
+class XboxHealthTest(unittest.TestCase):
+    """Ein laufender, aber hängender Freunde-Bot (keine frische Sitzung) wird neu angemeldet."""
+
+    @staticmethod
+    def _bot(**kw):
+        import types
+        base = dict(running=True, state={}, uptime=600, last_online=0.0, started_at=0.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_haengender_bot_wird_neu_gestartet(self):
+        now = time.time()
+        bot = self._bot(last_online=now - 20 * 60, started_at=now - 30 * 60)
+        self.assertIn("keine gültige", mcsmd.xbox_ungesund(bot))
+
+    def test_frische_sitzung_kein_neustart(self):
+        bot = self._bot(last_online=time.time() - 60)
+        self.assertEqual(mcsmd.xbox_ungesund(bot), "")
+
+    def test_anlaufzeit_kein_neustart(self):
+        bot = self._bot(uptime=60, started_at=time.time() - 60)
+        self.assertEqual(mcsmd.xbox_ungesund(bot), "")
+
+    def test_code_wartet_kein_neustart(self):
+        now = time.time()
+        bot = self._bot(state={"code": "ABC-DEF"}, last_online=now - 30 * 60, started_at=now - 40 * 60)
+        self.assertEqual(mcsmd.xbox_ungesund(bot), "")
+
+    def test_gestoppter_bot_kein_neustart(self):
+        self.assertEqual(mcsmd.xbox_ungesund(self._bot(running=False)), "")
+
+
 if __name__ == "__main__":
     unittest.main()

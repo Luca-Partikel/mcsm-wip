@@ -2587,11 +2587,16 @@ class StubBot:
         self.running = False
         self.starts = 0
         self.stops = 0
+        self.state = {}                 # wie Broadcaster.state (für xbox_ungesund)
+        self.last_online = 0.0
+        self.started_at = 0.0
+        self.started_jar = None
 
     def start(self) -> None:
         self.starts += 1
         self.running = True
         self.active_spec = self.spec
+        self.started_at = time.time()
 
     def stop(self, timeout: int = 15) -> None:
         self.stops += 1

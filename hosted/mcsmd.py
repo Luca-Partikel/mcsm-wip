@@ -1802,6 +1802,33 @@ def xbox_neustart_faellig(bot) -> str:
     return ""
 
 
+#: Anlaufzeit, bevor ein Bot als „hängt" gilt, und wie lange er ohne frische Sitzung laufen darf.
+XBOX_ANLAUF = 4 * 60
+XBOX_SITZUNG_TIMEOUT = 15 * 60
+
+
+def xbox_ungesund(bot) -> str:
+    """Läuft der Bot zwar, meldet aber seit zu lange keine gültige Xbox-Sitzung? Dann der Grund.
+
+    MCXboxBroadcast frischt eine gesunde Sitzung regelmäßig auf (``Updated session!``). Bricht die
+    Sitzung ab, läuft der Prozess oft weiter, steht aber nicht mehr in der Freundesliste – dann
+    kommt niemand mehr über den Autostart herein, und bisher musste man den Bot von Hand neu
+    starten. Wartet der Bot auf die Account-Verknüpfung (Code), wird **nicht** neu gestartet –
+    das muss der Besitzer selbst erledigen.
+    """
+    if not bot.running:
+        return ""
+    if bot.state.get("code"):
+        return ""
+    if bot.uptime < XBOX_ANLAUF:
+        return ""
+    letzte = bot.last_online or bot.started_at
+    seit = time.time() - letzte
+    if seit > XBOX_SITZUNG_TIMEOUT:
+        return f"der Bot meldet seit {int(seit / 60)} min keine gültige Xbox-Sitzung mehr"
+    return ""
+
+
 def bedrock_ziel_fuer(inst: dict, *, frei: int | None = None,
                       now: int | None = None) -> "bedrock.Ziel | None":
     """Das Ziel des Bedrock-Weckers für eine schlafende Instanz – oder ``None``.
@@ -1983,7 +2010,7 @@ def konsolen_abgleichen(now: int | None = None) -> dict:
                 XBOX.get(build_xbox_spec(inst))          # neue Angaben hinterlegen
             except ValueError:
                 pass
-            fall = xbox_neustart_faellig(bot)
+            fall = xbox_neustart_faellig(bot) or xbox_ungesund(bot)
             if fall:
                 log_event(f"Der Xbox-Bot von {iid} wird neu angemeldet: {fall}.")
                 xbox_stop_for(iid, fall)
