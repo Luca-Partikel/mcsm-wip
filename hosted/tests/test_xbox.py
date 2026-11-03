@@ -296,6 +296,30 @@ class ZustandTest(XboxBase):
         bot._track("[ERROR] Failed to create Xbox LIVE session: 401 Unauthorized")
         self.assertIn("401", bot.state["error"])
 
+    def test_v162_nethernet_signaling_ist_online(self) -> None:
+        # Build 162 schreibt „signaling" statt „Broadcaster" – muss trotzdem online bedeuten.
+        bot = self._bot()
+        bot._track("[INFO] [Primary Session] NetherNet signaling started on ID: 3354700237649112478")
+        self.assertEqual(bot.state["state"], "online")
+        self.assertGreater(bot.last_online, 0.0)
+
+    def test_lebenszeichen_frischt_den_herzschlag(self) -> None:
+        # Server schläft: MCXboxBroadcast meldet alle 30 s „… falling back to config values".
+        # Kein Fehler, sondern der Herzschlag für den Gesundheits-Check (sonst liefe der Bot in
+        # einen 15-min-Neustart-Kreis). Setzt last_online und hakt den harmlosen Fehler ab.
+        bot = self._bot()
+        bot.last_online = 0.0
+        bot.state["error"] = "alter Fehler"
+        bot._track("[ERROR] [Primary Session] Failed to ping server, falling back to config values")
+        self.assertGreater(bot.last_online, 0.0)
+        self.assertEqual(bot.state["error"], "")
+
+    def test_durchgereichter_spieler_ist_lebenszeichen(self) -> None:
+        bot = self._bot()
+        bot.last_online = 0.0
+        bot._track("[INFO] [Primary Session] Relayed bedrock client Another5495 (253547) to target server.")
+        self.assertGreater(bot.last_online, 0.0)
+
     def test_klartext_nennt_den_code(self) -> None:
         text = xbox.state_text("login", code="A1B2C3D4", url="https://microsoft.com/link")
         self.assertIn("A1B2C3D4", text)

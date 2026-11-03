@@ -451,7 +451,12 @@ class XboxJarUpdateTest(unittest.TestCase):
 
 
 class XboxHealthTest(unittest.TestCase):
-    """Ein laufender, aber hängender Freunde-Bot (keine frische Sitzung) wird neu angemeldet."""
+    """Nur ein wirklich hängender Freunde-Bot wird neu angemeldet – ein stiller, gesunder nie.
+
+    Zurückhaltend mit Absicht: Ein laufender Bot reicht Konsolen über NetherNet durch; ein
+    unnötiger Neustart risse diese Verbindungen ab. Darum greift der Check nur, wenn der Bot sich
+    gar nicht anmelden konnte oder in einem echten Fehler feststeckt.
+    """
 
     @staticmethod
     def _bot(**kw):
@@ -460,22 +465,37 @@ class XboxHealthTest(unittest.TestCase):
         base.update(kw)
         return types.SimpleNamespace(**base)
 
-    def test_haengender_bot_wird_neu_gestartet(self):
-        now = time.time()
-        bot = self._bot(last_online=now - 20 * 60, started_at=now - 30 * 60)
-        self.assertIn("keine gültige", mcsmd.xbox_ungesund(bot))
+    def test_nie_angemeldet_wird_neu_gestartet(self):
+        # Nach der Anlaufzeit, nie ein Lebenszeichen, nicht authentifiziert → hängt beim Login.
+        bot = self._bot(state={"authed": False}, last_online=0.0)
+        self.assertIn("anmelden", mcsmd.xbox_ungesund(bot))
 
-    def test_frische_sitzung_kein_neustart(self):
-        bot = self._bot(last_online=time.time() - 60)
+    def test_feststeckender_fehler_wird_neu_gestartet(self):
+        now = time.time()
+        bot = self._bot(state={"authed": True, "error": "Failed to update session"},
+                        last_online=now - 30 * 60)
+        self.assertIn("Fehler", mcsmd.xbox_ungesund(bot))
+
+    def test_stiller_aber_gesunder_bot_kein_neustart(self):
+        # Angemeldet, kein Fehler, nur lange still (reicht evtl. gerade Spieler durch): NICHT
+        # neu starten – sonst reißen laufende NetherNet-Verbindungen ab. Das ist der Kern des Fixes.
+        now = time.time()
+        bot = self._bot(state={"authed": True, "error": ""}, last_online=now - 30 * 60)
+        self.assertEqual(mcsmd.xbox_ungesund(bot), "")
+
+    def test_frisches_lebenszeichen_kein_neustart(self):
+        # Herzschlag vor 60 s (z. B. die 30-s-Server-Abfrage, während der Server schläft).
+        bot = self._bot(state={"authed": True}, last_online=time.time() - 60)
         self.assertEqual(mcsmd.xbox_ungesund(bot), "")
 
     def test_anlaufzeit_kein_neustart(self):
-        bot = self._bot(uptime=60, started_at=time.time() - 60)
+        bot = self._bot(uptime=60, state={"authed": False}, started_at=time.time() - 60)
         self.assertEqual(mcsmd.xbox_ungesund(bot), "")
 
     def test_code_wartet_kein_neustart(self):
         now = time.time()
-        bot = self._bot(state={"code": "ABC-DEF"}, last_online=now - 30 * 60, started_at=now - 40 * 60)
+        bot = self._bot(state={"code": "ABC-DEF", "authed": False},
+                        last_online=now - 30 * 60, started_at=now - 40 * 60)
         self.assertEqual(mcsmd.xbox_ungesund(bot), "")
 
     def test_gestoppter_bot_kein_neustart(self):

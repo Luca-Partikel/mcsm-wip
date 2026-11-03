@@ -1808,24 +1808,37 @@ XBOX_SITZUNG_TIMEOUT = 15 * 60
 
 
 def xbox_ungesund(bot) -> str:
-    """Läuft der Bot zwar, meldet aber seit zu lange keine gültige Xbox-Sitzung? Dann der Grund.
+    """Hängt der Bot sichtbar? Dann der Grund für einen Neustart, sonst ''.
 
-    MCXboxBroadcast frischt eine gesunde Sitzung regelmäßig auf (``Updated session!``). Bricht die
-    Sitzung ab, läuft der Prozess oft weiter, steht aber nicht mehr in der Freundesliste – dann
-    kommt niemand mehr über den Autostart herein, und bisher musste man den Bot von Hand neu
-    starten. Wartet der Bot auf die Account-Verknüpfung (Code), wird **nicht** neu gestartet –
-    das muss der Besitzer selbst erledigen.
+    **Zurückhaltend mit Absicht.** Ein laufender Bot reicht Konsolenspieler über NetherNet durch;
+    ein unnötiger Neustart risse genau diese Verbindungen ab. Darum wird nur eingegriffen, wenn
+    der Bot nach der Anlaufzeit gar keine Xbox-Anmeldung zustande bringt oder in einem echten
+    Fehler feststeckt, aus dem er nicht von selbst zurückfindet. Ein gesunder, nur gerade stiller
+    Bot (Sitzung steht, niemand spielt) wird in Ruhe gelassen. Wartet er auf die Geräte-Anmeldung
+    (Code), bleibt er ebenfalls unangetastet – das muss der Besitzer selbst erledigen.
+
+    Lebenszeichen pflegt ``core/xbox.py`` in ``bot.last_online`` ein: eine frische Sitzung, ein
+    durchgereichter Spieler oder – während der Server schläft – die alle 30 s auflaufende,
+    harmlose Server-Abfrage. Solange das frisch ist, gilt der Bot ohne Wenn und Aber als gesund.
+    Früher hing der Check allein an einer „Sitzung erstellt"-Zeile; weil Build 162 danach keine
+    solche mehr schreibt, wurde ein kerngesunder Bot alle 15 min grundlos neu gestartet.
     """
     if not bot.running:
         return ""
-    if bot.state.get("code"):
+    if bot.state.get("code"):           # wartet auf die Geräte-Anmeldung – kein Fehler
         return ""
     if bot.uptime < XBOX_ANLAUF:
         return ""
-    letzte = bot.last_online or bot.started_at
-    seit = time.time() - letzte
-    if seit > XBOX_SITZUNG_TIMEOUT:
-        return f"der Bot meldet seit {int(seit / 60)} min keine gültige Xbox-Sitzung mehr"
+    letzte = bot.last_online
+    if letzte and time.time() - letzte <= XBOX_SITZUNG_TIMEOUT:
+        return ""                       # vor Kurzem noch ein Lebenszeichen – gesund, Finger weg
+    # Kein frisches Lebenszeichen. Nur eingreifen, wenn der Bot wirklich hängt – nicht, bloß weil
+    # er still ist (dann reicht er vielleicht gerade jemanden durch).
+    if not bot.state.get("authed"):
+        return "der Bot hat sich nach der Anlaufzeit nicht bei Xbox Live anmelden können"
+    fehler = str(bot.state.get("error") or "").strip()
+    if fehler:
+        return f"der Bot steckt in einem Fehler fest ({fehler[:120]})"
     return ""
 
 

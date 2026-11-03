@@ -88,12 +88,25 @@ MAX_LINE_CHARS = 2000
 
 #: Der Geräte-Code: „… open https://microsoft.com/link and enter the code ABCD-1234 …“
 CODE_RE = re.compile(r"(https://(?:www\.)?microsoft\.com/link)\S*.*?\bcode\s+([A-Z0-9]{6,12})", re.I)
-#: Meldungen des Standalone, sobald die Sitzung bei Xbox Live steht.
-ONLINE_RE = re.compile(r"Creation of Xbox LIVE session was successful|NetherNet Broadcaster started on ID"
-                       r"|Session recreated after device token refresh|Updated session!", re.I)
+#: Meldungen des Standalone, sobald die Sitzung bei Xbox Live frisch steht (Zustand → „online").
+#: Die Wortwahl wechselt zwischen den Fassungen: ab Build 162 heißt es „NetherNet signaling started
+#: on ID", früher „NetherNet Broadcaster started on ID" – beide gelten.
+ONLINE_RE = re.compile(r"Creation of Xbox LIVE session was successful"
+                       r"|NetherNet (?:signaling|Broadcaster) started on ID"
+                       r"|Session recreated after device token refresh|Updated session", re.I)
+#: Lebenszeichen: Der Bot läuft und pflegt seine Sitzung weiter – auch ohne neue „Sitzung
+#: erstellt"-Zeile. MCXboxBroadcast frischt die Sitzung alle 30 s auf; schläft der Server,
+#: scheitert dabei die Server-Abfrage und wird protokolliert („… falling back to config values"),
+#: und jeder Konsolen-Beitrittsversuch erzeugt eine „relay offer"-Zeile. Das ist der verlässliche
+#: Herzschlag für den Fall „Server aus, Bot läuft" – ohne ihn hielte der Gesundheits-Check einen
+#: kerngesunden Bot fälschlich für tot und startete ihn im Kreis neu (alle ~15 min).
+LEBEN_RE = re.compile(r"falling back to config values|Relayed bedrock client|relay offer"
+                      r"|Updated session|Received (?:session|offer)", re.I)
 USER_RE = re.compile(r"(?:authenticated|logged in|signed in)\s+as\s+([^\s(]+)", re.I)
-#: Harmlos: der RakNet-Ping klappt gegen einen gestoppten Server (und nie gegen NetherNet-BDS).
-IGNORE_RE = re.compile(r"Failed to ping server", re.I)
+#: Harmlos und nur ein Zeichen, dass der Server gerade schläft – kein Fehler für die Oberfläche:
+#: die RakNet-Server-Abfrage (nie gegen NetherNet-BDS) und das Durchreichen eines Beitritts an
+#: einen noch nicht laufenden Server („could not be reached").
+IGNORE_RE = re.compile(r"Failed to ping server|Failed to relay offer|could not be reached", re.I)
 FEHLER_RE = re.compile(r"\bFailed to\b|Exception:")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -621,7 +634,16 @@ class Broadcaster:
             st.update(state="online", code="", url="", authed=True, error="")
             self.last_online = time.time()   # Sitzung frisch – der Gesundheits-Check zählt neu
             return
-        # Stacktrace-Zeilen und der harmlose Ping-Fehler sind keine Meldung für die Oberfläche.
+        if LEBEN_RE.search(line):
+            # Lebenszeichen: Der Bot pflegt seine Sitzung weiter (Aktualisierung alle 30 s) oder
+            # reicht gerade einen Beitritt durch. Kein neuer Zustand für die Oberfläche, aber ein
+            # Herzschlag für den Gesundheits-Check – und der harmlose „Server schläft"-Fehler
+            # gilt damit als abgehakt.
+            self.last_online = time.time()
+            st["error"] = ""
+            return
+        # Stacktrace-Zeilen und die harmlosen „Server schläft"-Fehler sind keine Meldung für die
+        # Oberfläche.
         if IGNORE_RE.search(line) or line.startswith(("\tat ", "\t... ", "java.", "Caused by")):
             return
         if FEHLER_RE.search(line):
